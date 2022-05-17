@@ -28,7 +28,7 @@ def mo_nh_diffusion_stencil_02_khc_numpy(
 ) -> np.array:
     e_bln_c_s = np.expand_dims(e_bln_c_s, axis=-1)
     diff_multfac_smag = np.expand_dims(diff_multfac_smag, axis=-1)
-    mul = kh_smag_ec.array()[c2e] * e_bln_c_s
+    mul = kh_smag_ec[c2e] * e_bln_c_s
     summed = np.sum(mul, axis=1)  # sum along edge dimension
     kh_c = summed / diff_multfac_smag
     return kh_c
@@ -64,7 +64,10 @@ def test_mo_nh_diffusion_stencil_02_khc():
     c2k = get_cell_to_k_table(diff_multfac_smag, mesh.k_level)
 
     ref = mo_nh_diffusion_stencil_02_khc_numpy(
-        mesh.c2e, kh_smag_ec, e_bln_c_s, diff_multfac_smag
+        mesh.c2e,
+        np.asarray(kh_smag_ec),
+        np.asarray(e_bln_c_s),
+        np.asarray(diff_multfac_smag),
     )
     mo_nh_diffusion_stencil_02_khc(
         kh_smag_ec,

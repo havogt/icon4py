@@ -10,9 +10,7 @@ def mo_nh_diffusion_stencil_14_numpy(
     c2e: np.array, z_nabla2_e: np.array, geofac_div: np.array
 ) -> np.array:
     geofac_div = np.expand_dims(geofac_div, axis=-1)
-    z_temp = np.sum(
-        z_nabla2_e.array()[c2e] * geofac_div, axis=1
-    )  # sum along edge dimension
+    z_temp = np.sum(z_nabla2_e[c2e] * geofac_div, axis=1)  # sum along edge dimension
     return z_temp
 
 
@@ -23,7 +21,9 @@ def test_mo_nh_diffusion_stencil_14():
     geofac_div = random_field(mesh, CellDim, C2EDim)
     out = zero_field(mesh, CellDim, KDim)
 
-    ref = mo_nh_diffusion_stencil_14_numpy(mesh.c2e, z_nabla2_e, geofac_div)
+    ref = mo_nh_diffusion_stencil_14_numpy(
+        mesh.c2e, np.asarray(z_nabla2_e), np.asarray(geofac_div)
+    )
     mo_nh_diffusion_stencil_14(
         z_nabla2_e,
         geofac_div,
