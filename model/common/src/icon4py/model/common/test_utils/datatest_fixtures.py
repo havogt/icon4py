@@ -16,6 +16,7 @@ from . import data_handling as data, datatest_utils as dt_utils
 @pytest.fixture
 def experiment():
     return dt_utils.REGIONAL_EXPERIMENT
+    # return dt_utils.JABW_EXPERIMENT
 
 
 @pytest.fixture(params=[False], scope="session")
