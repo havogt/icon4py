@@ -283,7 +283,7 @@ def {{ func.name }}_wrapper(
         {% if arg.is_array %}
         msg = 'shape of {{ arg.name }} after computation = %s' % str({{ arg.name}}.shape if {{arg.name}} is not None else "None")
         logging.debug(msg)
-        msg = '{{ arg.name }} after computation: %s' % str({{ arg.name }}.ndarray if {{ arg.name }} is not None else "None")
+        msg = '{{ arg.name }} after computation: %s' % str(({{ arg.name }}.ndarray if hasattr({{ arg.name}}, 'ndarray') else {{ arg.name }}) if {{ arg.name }} is not None else "None")
         logging.debug(msg)
         {% endif %}
         {% endfor %}

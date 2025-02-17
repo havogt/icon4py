@@ -521,14 +521,18 @@ def diffusion_init_wrapper(
             vct_a.shape if vct_a is not None else "None"
         )
         logging.debug(msg)
-        msg = "vct_a after computation: %s" % str(vct_a.ndarray if vct_a is not None else "None")
+        msg = "vct_a after computation: %s" % str(
+            (vct_a.ndarray if hasattr(vct_a, "ndarray") else vct_a) if vct_a is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of vct_b after computation = %s" % str(
             vct_b.shape if vct_b is not None else "None"
         )
         logging.debug(msg)
-        msg = "vct_b after computation: %s" % str(vct_b.ndarray if vct_b is not None else "None")
+        msg = "vct_b after computation: %s" % str(
+            (vct_b.ndarray if hasattr(vct_b, "ndarray") else vct_b) if vct_b is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of theta_ref_mc after computation = %s" % str(
@@ -536,7 +540,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "theta_ref_mc after computation: %s" % str(
-            theta_ref_mc.ndarray if theta_ref_mc is not None else "None"
+            (theta_ref_mc.ndarray if hasattr(theta_ref_mc, "ndarray") else theta_ref_mc)
+            if theta_ref_mc is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -545,7 +551,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "wgtfac_c after computation: %s" % str(
-            wgtfac_c.ndarray if wgtfac_c is not None else "None"
+            (wgtfac_c.ndarray if hasattr(wgtfac_c, "ndarray") else wgtfac_c)
+            if wgtfac_c is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -554,7 +562,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "e_bln_c_s after computation: %s" % str(
-            e_bln_c_s.ndarray if e_bln_c_s is not None else "None"
+            (e_bln_c_s.ndarray if hasattr(e_bln_c_s, "ndarray") else e_bln_c_s)
+            if e_bln_c_s is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -563,7 +573,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "geofac_div after computation: %s" % str(
-            geofac_div.ndarray if geofac_div is not None else "None"
+            (geofac_div.ndarray if hasattr(geofac_div, "ndarray") else geofac_div)
+            if geofac_div is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -572,7 +584,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "geofac_grg_x after computation: %s" % str(
-            geofac_grg_x.ndarray if geofac_grg_x is not None else "None"
+            (geofac_grg_x.ndarray if hasattr(geofac_grg_x, "ndarray") else geofac_grg_x)
+            if geofac_grg_x is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -581,7 +595,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "geofac_grg_y after computation: %s" % str(
-            geofac_grg_y.ndarray if geofac_grg_y is not None else "None"
+            (geofac_grg_y.ndarray if hasattr(geofac_grg_y, "ndarray") else geofac_grg_y)
+            if geofac_grg_y is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -590,7 +606,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "geofac_n2s after computation: %s" % str(
-            geofac_n2s.ndarray if geofac_n2s is not None else "None"
+            (geofac_n2s.ndarray if hasattr(geofac_n2s, "ndarray") else geofac_n2s)
+            if geofac_n2s is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -599,7 +617,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "nudgecoeff_e after computation: %s" % str(
-            nudgecoeff_e.ndarray if nudgecoeff_e is not None else "None"
+            (nudgecoeff_e.ndarray if hasattr(nudgecoeff_e, "ndarray") else nudgecoeff_e)
+            if nudgecoeff_e is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -608,7 +628,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "rbf_coeff_1 after computation: %s" % str(
-            rbf_coeff_1.ndarray if rbf_coeff_1 is not None else "None"
+            (rbf_coeff_1.ndarray if hasattr(rbf_coeff_1, "ndarray") else rbf_coeff_1)
+            if rbf_coeff_1 is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -617,7 +639,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "rbf_coeff_2 after computation: %s" % str(
-            rbf_coeff_2.ndarray if rbf_coeff_2 is not None else "None"
+            (rbf_coeff_2.ndarray if hasattr(rbf_coeff_2, "ndarray") else rbf_coeff_2)
+            if rbf_coeff_2 is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -626,7 +650,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "mask_hdiff after computation: %s" % str(
-            mask_hdiff.ndarray if mask_hdiff is not None else "None"
+            (mask_hdiff.ndarray if hasattr(mask_hdiff, "ndarray") else mask_hdiff)
+            if mask_hdiff is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -635,7 +661,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "zd_diffcoef after computation: %s" % str(
-            zd_diffcoef.ndarray if zd_diffcoef is not None else "None"
+            (zd_diffcoef.ndarray if hasattr(zd_diffcoef, "ndarray") else zd_diffcoef)
+            if zd_diffcoef is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -644,7 +672,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "zd_vertoffset after computation: %s" % str(
-            zd_vertoffset.ndarray if zd_vertoffset is not None else "None"
+            (zd_vertoffset.ndarray if hasattr(zd_vertoffset, "ndarray") else zd_vertoffset)
+            if zd_vertoffset is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -653,7 +683,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "zd_intcoef after computation: %s" % str(
-            zd_intcoef.ndarray if zd_intcoef is not None else "None"
+            (zd_intcoef.ndarray if hasattr(zd_intcoef, "ndarray") else zd_intcoef)
+            if zd_intcoef is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -662,7 +694,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "tangent_orientation after computation: %s" % str(
-            tangent_orientation.ndarray if tangent_orientation is not None else "None"
+            (
+                tangent_orientation.ndarray
+                if hasattr(tangent_orientation, "ndarray")
+                else tangent_orientation
+            )
+            if tangent_orientation is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -671,7 +709,11 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "inverse_primal_edge_lengths after computation: %s" % str(
-            inverse_primal_edge_lengths.ndarray
+            (
+                inverse_primal_edge_lengths.ndarray
+                if hasattr(inverse_primal_edge_lengths, "ndarray")
+                else inverse_primal_edge_lengths
+            )
             if inverse_primal_edge_lengths is not None
             else "None"
         )
@@ -682,7 +724,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "inv_dual_edge_length after computation: %s" % str(
-            inv_dual_edge_length.ndarray if inv_dual_edge_length is not None else "None"
+            (
+                inv_dual_edge_length.ndarray
+                if hasattr(inv_dual_edge_length, "ndarray")
+                else inv_dual_edge_length
+            )
+            if inv_dual_edge_length is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -691,7 +739,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "inv_vert_vert_length after computation: %s" % str(
-            inv_vert_vert_length.ndarray if inv_vert_vert_length is not None else "None"
+            (
+                inv_vert_vert_length.ndarray
+                if hasattr(inv_vert_vert_length, "ndarray")
+                else inv_vert_vert_length
+            )
+            if inv_vert_vert_length is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -700,13 +754,17 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "edge_areas after computation: %s" % str(
-            edge_areas.ndarray if edge_areas is not None else "None"
+            (edge_areas.ndarray if hasattr(edge_areas, "ndarray") else edge_areas)
+            if edge_areas is not None
+            else "None"
         )
         logging.debug(msg)
 
         msg = "shape of f_e after computation = %s" % str(f_e.shape if f_e is not None else "None")
         logging.debug(msg)
-        msg = "f_e after computation: %s" % str(f_e.ndarray if f_e is not None else "None")
+        msg = "f_e after computation: %s" % str(
+            (f_e.ndarray if hasattr(f_e, "ndarray") else f_e) if f_e is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of cell_center_lat after computation = %s" % str(
@@ -714,7 +772,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "cell_center_lat after computation: %s" % str(
-            cell_center_lat.ndarray if cell_center_lat is not None else "None"
+            (cell_center_lat.ndarray if hasattr(cell_center_lat, "ndarray") else cell_center_lat)
+            if cell_center_lat is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -723,7 +783,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "cell_center_lon after computation: %s" % str(
-            cell_center_lon.ndarray if cell_center_lon is not None else "None"
+            (cell_center_lon.ndarray if hasattr(cell_center_lon, "ndarray") else cell_center_lon)
+            if cell_center_lon is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -732,7 +794,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "cell_areas after computation: %s" % str(
-            cell_areas.ndarray if cell_areas is not None else "None"
+            (cell_areas.ndarray if hasattr(cell_areas, "ndarray") else cell_areas)
+            if cell_areas is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -741,7 +805,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "primal_normal_vert_x after computation: %s" % str(
-            primal_normal_vert_x.ndarray if primal_normal_vert_x is not None else "None"
+            (
+                primal_normal_vert_x.ndarray
+                if hasattr(primal_normal_vert_x, "ndarray")
+                else primal_normal_vert_x
+            )
+            if primal_normal_vert_x is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -750,7 +820,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "primal_normal_vert_y after computation: %s" % str(
-            primal_normal_vert_y.ndarray if primal_normal_vert_y is not None else "None"
+            (
+                primal_normal_vert_y.ndarray
+                if hasattr(primal_normal_vert_y, "ndarray")
+                else primal_normal_vert_y
+            )
+            if primal_normal_vert_y is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -759,7 +835,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "dual_normal_vert_x after computation: %s" % str(
-            dual_normal_vert_x.ndarray if dual_normal_vert_x is not None else "None"
+            (
+                dual_normal_vert_x.ndarray
+                if hasattr(dual_normal_vert_x, "ndarray")
+                else dual_normal_vert_x
+            )
+            if dual_normal_vert_x is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -768,7 +850,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "dual_normal_vert_y after computation: %s" % str(
-            dual_normal_vert_y.ndarray if dual_normal_vert_y is not None else "None"
+            (
+                dual_normal_vert_y.ndarray
+                if hasattr(dual_normal_vert_y, "ndarray")
+                else dual_normal_vert_y
+            )
+            if dual_normal_vert_y is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -777,7 +865,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "primal_normal_cell_x after computation: %s" % str(
-            primal_normal_cell_x.ndarray if primal_normal_cell_x is not None else "None"
+            (
+                primal_normal_cell_x.ndarray
+                if hasattr(primal_normal_cell_x, "ndarray")
+                else primal_normal_cell_x
+            )
+            if primal_normal_cell_x is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -786,7 +880,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "primal_normal_cell_y after computation: %s" % str(
-            primal_normal_cell_y.ndarray if primal_normal_cell_y is not None else "None"
+            (
+                primal_normal_cell_y.ndarray
+                if hasattr(primal_normal_cell_y, "ndarray")
+                else primal_normal_cell_y
+            )
+            if primal_normal_cell_y is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -795,7 +895,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "dual_normal_cell_x after computation: %s" % str(
-            dual_normal_cell_x.ndarray if dual_normal_cell_x is not None else "None"
+            (
+                dual_normal_cell_x.ndarray
+                if hasattr(dual_normal_cell_x, "ndarray")
+                else dual_normal_cell_x
+            )
+            if dual_normal_cell_x is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -804,7 +910,13 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "dual_normal_cell_y after computation: %s" % str(
-            dual_normal_cell_y.ndarray if dual_normal_cell_y is not None else "None"
+            (
+                dual_normal_cell_y.ndarray
+                if hasattr(dual_normal_cell_y, "ndarray")
+                else dual_normal_cell_y
+            )
+            if dual_normal_cell_y is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -813,7 +925,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "edge_center_lat after computation: %s" % str(
-            edge_center_lat.ndarray if edge_center_lat is not None else "None"
+            (edge_center_lat.ndarray if hasattr(edge_center_lat, "ndarray") else edge_center_lat)
+            if edge_center_lat is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -822,7 +936,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "edge_center_lon after computation: %s" % str(
-            edge_center_lon.ndarray if edge_center_lon is not None else "None"
+            (edge_center_lon.ndarray if hasattr(edge_center_lon, "ndarray") else edge_center_lon)
+            if edge_center_lon is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -831,7 +947,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "primal_normal_x after computation: %s" % str(
-            primal_normal_x.ndarray if primal_normal_x is not None else "None"
+            (primal_normal_x.ndarray if hasattr(primal_normal_x, "ndarray") else primal_normal_x)
+            if primal_normal_x is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -840,7 +958,9 @@ def diffusion_init_wrapper(
         )
         logging.debug(msg)
         msg = "primal_normal_y after computation: %s" % str(
-            primal_normal_y.ndarray if primal_normal_y is not None else "None"
+            (primal_normal_y.ndarray if hasattr(primal_normal_y, "ndarray") else primal_normal_y)
+            if primal_normal_y is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -950,19 +1070,25 @@ def diffusion_run_wrapper(
 
         msg = "shape of w after computation = %s" % str(w.shape if w is not None else "None")
         logging.debug(msg)
-        msg = "w after computation: %s" % str(w.ndarray if w is not None else "None")
+        msg = "w after computation: %s" % str(
+            (w.ndarray if hasattr(w, "ndarray") else w) if w is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of vn after computation = %s" % str(vn.shape if vn is not None else "None")
         logging.debug(msg)
-        msg = "vn after computation: %s" % str(vn.ndarray if vn is not None else "None")
+        msg = "vn after computation: %s" % str(
+            (vn.ndarray if hasattr(vn, "ndarray") else vn) if vn is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of exner after computation = %s" % str(
             exner.shape if exner is not None else "None"
         )
         logging.debug(msg)
-        msg = "exner after computation: %s" % str(exner.ndarray if exner is not None else "None")
+        msg = "exner after computation: %s" % str(
+            (exner.ndarray if hasattr(exner, "ndarray") else exner) if exner is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of theta_v after computation = %s" % str(
@@ -970,13 +1096,17 @@ def diffusion_run_wrapper(
         )
         logging.debug(msg)
         msg = "theta_v after computation: %s" % str(
-            theta_v.ndarray if theta_v is not None else "None"
+            (theta_v.ndarray if hasattr(theta_v, "ndarray") else theta_v)
+            if theta_v is not None
+            else "None"
         )
         logging.debug(msg)
 
         msg = "shape of rho after computation = %s" % str(rho.shape if rho is not None else "None")
         logging.debug(msg)
-        msg = "rho after computation: %s" % str(rho.ndarray if rho is not None else "None")
+        msg = "rho after computation: %s" % str(
+            (rho.ndarray if hasattr(rho, "ndarray") else rho) if rho is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of hdef_ic after computation = %s" % str(
@@ -984,7 +1114,9 @@ def diffusion_run_wrapper(
         )
         logging.debug(msg)
         msg = "hdef_ic after computation: %s" % str(
-            hdef_ic.ndarray if hdef_ic is not None else "None"
+            (hdef_ic.ndarray if hasattr(hdef_ic, "ndarray") else hdef_ic)
+            if hdef_ic is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -992,21 +1124,29 @@ def diffusion_run_wrapper(
             div_ic.shape if div_ic is not None else "None"
         )
         logging.debug(msg)
-        msg = "div_ic after computation: %s" % str(div_ic.ndarray if div_ic is not None else "None")
+        msg = "div_ic after computation: %s" % str(
+            (div_ic.ndarray if hasattr(div_ic, "ndarray") else div_ic)
+            if div_ic is not None
+            else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of dwdx after computation = %s" % str(
             dwdx.shape if dwdx is not None else "None"
         )
         logging.debug(msg)
-        msg = "dwdx after computation: %s" % str(dwdx.ndarray if dwdx is not None else "None")
+        msg = "dwdx after computation: %s" % str(
+            (dwdx.ndarray if hasattr(dwdx, "ndarray") else dwdx) if dwdx is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of dwdy after computation = %s" % str(
             dwdy.shape if dwdy is not None else "None"
         )
         logging.debug(msg)
-        msg = "dwdy after computation: %s" % str(dwdy.ndarray if dwdy is not None else "None")
+        msg = "dwdy after computation: %s" % str(
+            (dwdy.ndarray if hasattr(dwdy, "ndarray") else dwdy) if dwdy is not None else "None"
+        )
         logging.debug(msg)
 
         logging.critical("Python Execution Context End")
@@ -1207,7 +1347,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "cell_starts after computation: %s" % str(
-            cell_starts.ndarray if cell_starts is not None else "None"
+            (cell_starts.ndarray if hasattr(cell_starts, "ndarray") else cell_starts)
+            if cell_starts is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1216,7 +1358,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "cell_ends after computation: %s" % str(
-            cell_ends.ndarray if cell_ends is not None else "None"
+            (cell_ends.ndarray if hasattr(cell_ends, "ndarray") else cell_ends)
+            if cell_ends is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1225,7 +1369,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "vertex_starts after computation: %s" % str(
-            vertex_starts.ndarray if vertex_starts is not None else "None"
+            (vertex_starts.ndarray if hasattr(vertex_starts, "ndarray") else vertex_starts)
+            if vertex_starts is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1234,7 +1380,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "vertex_ends after computation: %s" % str(
-            vertex_ends.ndarray if vertex_ends is not None else "None"
+            (vertex_ends.ndarray if hasattr(vertex_ends, "ndarray") else vertex_ends)
+            if vertex_ends is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1243,7 +1391,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "edge_starts after computation: %s" % str(
-            edge_starts.ndarray if edge_starts is not None else "None"
+            (edge_starts.ndarray if hasattr(edge_starts, "ndarray") else edge_starts)
+            if edge_starts is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1252,59 +1402,79 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "edge_ends after computation: %s" % str(
-            edge_ends.ndarray if edge_ends is not None else "None"
+            (edge_ends.ndarray if hasattr(edge_ends, "ndarray") else edge_ends)
+            if edge_ends is not None
+            else "None"
         )
         logging.debug(msg)
 
         msg = "shape of c2e after computation = %s" % str(c2e.shape if c2e is not None else "None")
         logging.debug(msg)
-        msg = "c2e after computation: %s" % str(c2e.ndarray if c2e is not None else "None")
+        msg = "c2e after computation: %s" % str(
+            (c2e.ndarray if hasattr(c2e, "ndarray") else c2e) if c2e is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of e2c after computation = %s" % str(e2c.shape if e2c is not None else "None")
         logging.debug(msg)
-        msg = "e2c after computation: %s" % str(e2c.ndarray if e2c is not None else "None")
+        msg = "e2c after computation: %s" % str(
+            (e2c.ndarray if hasattr(e2c, "ndarray") else e2c) if e2c is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of c2e2c after computation = %s" % str(
             c2e2c.shape if c2e2c is not None else "None"
         )
         logging.debug(msg)
-        msg = "c2e2c after computation: %s" % str(c2e2c.ndarray if c2e2c is not None else "None")
+        msg = "c2e2c after computation: %s" % str(
+            (c2e2c.ndarray if hasattr(c2e2c, "ndarray") else c2e2c) if c2e2c is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of e2c2e after computation = %s" % str(
             e2c2e.shape if e2c2e is not None else "None"
         )
         logging.debug(msg)
-        msg = "e2c2e after computation: %s" % str(e2c2e.ndarray if e2c2e is not None else "None")
+        msg = "e2c2e after computation: %s" % str(
+            (e2c2e.ndarray if hasattr(e2c2e, "ndarray") else e2c2e) if e2c2e is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of e2v after computation = %s" % str(e2v.shape if e2v is not None else "None")
         logging.debug(msg)
-        msg = "e2v after computation: %s" % str(e2v.ndarray if e2v is not None else "None")
+        msg = "e2v after computation: %s" % str(
+            (e2v.ndarray if hasattr(e2v, "ndarray") else e2v) if e2v is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of v2e after computation = %s" % str(v2e.shape if v2e is not None else "None")
         logging.debug(msg)
-        msg = "v2e after computation: %s" % str(v2e.ndarray if v2e is not None else "None")
+        msg = "v2e after computation: %s" % str(
+            (v2e.ndarray if hasattr(v2e, "ndarray") else v2e) if v2e is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of v2c after computation = %s" % str(v2c.shape if v2c is not None else "None")
         logging.debug(msg)
-        msg = "v2c after computation: %s" % str(v2c.ndarray if v2c is not None else "None")
+        msg = "v2c after computation: %s" % str(
+            (v2c.ndarray if hasattr(v2c, "ndarray") else v2c) if v2c is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of e2c2v after computation = %s" % str(
             e2c2v.shape if e2c2v is not None else "None"
         )
         logging.debug(msg)
-        msg = "e2c2v after computation: %s" % str(e2c2v.ndarray if e2c2v is not None else "None")
+        msg = "e2c2v after computation: %s" % str(
+            (e2c2v.ndarray if hasattr(e2c2v, "ndarray") else e2c2v) if e2c2v is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of c2v after computation = %s" % str(c2v.shape if c2v is not None else "None")
         logging.debug(msg)
-        msg = "c2v after computation: %s" % str(c2v.ndarray if c2v is not None else "None")
+        msg = "c2v after computation: %s" % str(
+            (c2v.ndarray if hasattr(c2v, "ndarray") else c2v) if c2v is not None else "None"
+        )
         logging.debug(msg)
 
         msg = "shape of c_owner_mask after computation = %s" % str(
@@ -1312,7 +1482,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "c_owner_mask after computation: %s" % str(
-            c_owner_mask.ndarray if c_owner_mask is not None else "None"
+            (c_owner_mask.ndarray if hasattr(c_owner_mask, "ndarray") else c_owner_mask)
+            if c_owner_mask is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1321,7 +1493,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "e_owner_mask after computation: %s" % str(
-            e_owner_mask.ndarray if e_owner_mask is not None else "None"
+            (e_owner_mask.ndarray if hasattr(e_owner_mask, "ndarray") else e_owner_mask)
+            if e_owner_mask is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1330,7 +1504,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "v_owner_mask after computation: %s" % str(
-            v_owner_mask.ndarray if v_owner_mask is not None else "None"
+            (v_owner_mask.ndarray if hasattr(v_owner_mask, "ndarray") else v_owner_mask)
+            if v_owner_mask is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1339,7 +1515,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "c_glb_index after computation: %s" % str(
-            c_glb_index.ndarray if c_glb_index is not None else "None"
+            (c_glb_index.ndarray if hasattr(c_glb_index, "ndarray") else c_glb_index)
+            if c_glb_index is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1348,7 +1526,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "e_glb_index after computation: %s" % str(
-            e_glb_index.ndarray if e_glb_index is not None else "None"
+            (e_glb_index.ndarray if hasattr(e_glb_index, "ndarray") else e_glb_index)
+            if e_glb_index is not None
+            else "None"
         )
         logging.debug(msg)
 
@@ -1357,7 +1537,9 @@ def grid_init_diffusion_wrapper(
         )
         logging.debug(msg)
         msg = "v_glb_index after computation: %s" % str(
-            v_glb_index.ndarray if v_glb_index is not None else "None"
+            (v_glb_index.ndarray if hasattr(v_glb_index, "ndarray") else v_glb_index)
+            if v_glb_index is not None
+            else "None"
         )
         logging.debug(msg)
 
