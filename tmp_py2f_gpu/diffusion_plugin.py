@@ -26,22 +26,16 @@ C2E2C = gtx.Dimension("C2E2C", kind=gtx.DimensionKind.LOCAL)
 C2E2CO = gtx.Dimension("C2E2CO", kind=gtx.DimensionKind.LOCAL)
 C2V = gtx.Dimension("C2V", kind=gtx.DimensionKind.LOCAL)
 Cell = gtx.Dimension("Cell", kind=gtx.DimensionKind.HORIZONTAL)
-CellGlobalIndex = gtx.Dimension("CellGlobalIndex", kind=gtx.DimensionKind.HORIZONTAL)
-CellIndex = gtx.Dimension("CellIndex", kind=gtx.DimensionKind.HORIZONTAL)
 E2C = gtx.Dimension("E2C", kind=gtx.DimensionKind.LOCAL)
 E2C2E = gtx.Dimension("E2C2E", kind=gtx.DimensionKind.LOCAL)
 E2C2V = gtx.Dimension("E2C2V", kind=gtx.DimensionKind.LOCAL)
 E2V = gtx.Dimension("E2V", kind=gtx.DimensionKind.LOCAL)
 Edge = gtx.Dimension("Edge", kind=gtx.DimensionKind.HORIZONTAL)
-EdgeGlobalIndex = gtx.Dimension("EdgeGlobalIndex", kind=gtx.DimensionKind.HORIZONTAL)
-EdgeIndex = gtx.Dimension("EdgeIndex", kind=gtx.DimensionKind.HORIZONTAL)
 K = gtx.Dimension("K", kind=gtx.DimensionKind.VERTICAL)
 KHalf = gtx.Dimension("KHalf", kind=gtx.DimensionKind.VERTICAL)
 V2C = gtx.Dimension("V2C", kind=gtx.DimensionKind.LOCAL)
 V2E = gtx.Dimension("V2E", kind=gtx.DimensionKind.LOCAL)
 Vertex = gtx.Dimension("Vertex", kind=gtx.DimensionKind.HORIZONTAL)
-VertexGlobalIndex = gtx.Dimension("VertexGlobalIndex", kind=gtx.DimensionKind.HORIZONTAL)
-VertexIndex = gtx.Dimension("VertexIndex", kind=gtx.DimensionKind.HORIZONTAL)
 
 
 @ffi.def_extern()
@@ -173,11 +167,11 @@ def diffusion_init_wrapper(
         # Convert ptr to GT4Py fields
 
         vct_a = wrapper_utils.as_field(
-            ffi, xp, vct_a, ts.ScalarKind.FLOAT64, {K: vct_a_size_0}, False
+            ffi, xp, vct_a, ts.ScalarKind.FLOAT64, {KHalf: vct_a_size_0}, False
         )
 
         vct_b = wrapper_utils.as_field(
-            ffi, xp, vct_b, ts.ScalarKind.FLOAT64, {K: vct_b_size_0}, False
+            ffi, xp, vct_b, ts.ScalarKind.FLOAT64, {KHalf: vct_b_size_0}, False
         )
 
         theta_ref_mc = wrapper_utils.as_field(
@@ -194,7 +188,7 @@ def diffusion_init_wrapper(
             xp,
             wgtfac_c,
             ts.ScalarKind.FLOAT64,
-            {Cell: wgtfac_c_size_0, K: wgtfac_c_size_1},
+            {Cell: wgtfac_c_size_0, KHalf: wgtfac_c_size_1},
             False,
         )
 
@@ -897,7 +891,7 @@ def diffusion_run_wrapper(
         # Convert ptr to GT4Py fields
 
         w = wrapper_utils.as_field(
-            ffi, xp, w, ts.ScalarKind.FLOAT64, {Cell: w_size_0, K: w_size_1}, False
+            ffi, xp, w, ts.ScalarKind.FLOAT64, {Cell: w_size_0, KHalf: w_size_1}, False
         )
 
         vn = wrapper_utils.as_field(
@@ -922,19 +916,29 @@ def diffusion_run_wrapper(
         )
 
         hdef_ic = wrapper_utils.as_field(
-            ffi, xp, hdef_ic, ts.ScalarKind.FLOAT64, {Cell: hdef_ic_size_0, K: hdef_ic_size_1}, True
+            ffi,
+            xp,
+            hdef_ic,
+            ts.ScalarKind.FLOAT64,
+            {Cell: hdef_ic_size_0, KHalf: hdef_ic_size_1},
+            True,
         )
 
         div_ic = wrapper_utils.as_field(
-            ffi, xp, div_ic, ts.ScalarKind.FLOAT64, {Cell: div_ic_size_0, K: div_ic_size_1}, True
+            ffi,
+            xp,
+            div_ic,
+            ts.ScalarKind.FLOAT64,
+            {Cell: div_ic_size_0, KHalf: div_ic_size_1},
+            True,
         )
 
         dwdx = wrapper_utils.as_field(
-            ffi, xp, dwdx, ts.ScalarKind.FLOAT64, {Cell: dwdx_size_0, K: dwdx_size_1}, True
+            ffi, xp, dwdx, ts.ScalarKind.FLOAT64, {Cell: dwdx_size_0, KHalf: dwdx_size_1}, True
         )
 
         dwdy = wrapper_utils.as_field(
-            ffi, xp, dwdy, ts.ScalarKind.FLOAT64, {Cell: dwdy_size_0, K: dwdy_size_1}, True
+            ffi, xp, dwdy, ts.ScalarKind.FLOAT64, {Cell: dwdy_size_0, KHalf: dwdy_size_1}, True
         )
 
         assert isinstance(linit, int)
@@ -1081,29 +1085,25 @@ def grid_init_diffusion_wrapper(
 
         # Convert ptr to GT4Py fields
 
-        cell_starts = wrapper_utils.as_field(
-            ffi, xp, cell_starts, ts.ScalarKind.INT32, {CellIndex: cell_starts_size_0}, False
+        cell_starts = wrapper_utils.as_numpy(
+            ffi, cell_starts, ts.ScalarKind.INT32, cell_starts_size_0
         )
 
-        cell_ends = wrapper_utils.as_field(
-            ffi, xp, cell_ends, ts.ScalarKind.INT32, {CellIndex: cell_ends_size_0}, False
+        cell_ends = wrapper_utils.as_numpy(ffi, cell_ends, ts.ScalarKind.INT32, cell_ends_size_0)
+
+        vertex_starts = wrapper_utils.as_numpy(
+            ffi, vertex_starts, ts.ScalarKind.INT32, vertex_starts_size_0
         )
 
-        vertex_starts = wrapper_utils.as_field(
-            ffi, xp, vertex_starts, ts.ScalarKind.INT32, {VertexIndex: vertex_starts_size_0}, False
+        vertex_ends = wrapper_utils.as_numpy(
+            ffi, vertex_ends, ts.ScalarKind.INT32, vertex_ends_size_0
         )
 
-        vertex_ends = wrapper_utils.as_field(
-            ffi, xp, vertex_ends, ts.ScalarKind.INT32, {VertexIndex: vertex_ends_size_0}, False
+        edge_starts = wrapper_utils.as_numpy(
+            ffi, edge_starts, ts.ScalarKind.INT32, edge_starts_size_0
         )
 
-        edge_starts = wrapper_utils.as_field(
-            ffi, xp, edge_starts, ts.ScalarKind.INT32, {EdgeIndex: edge_starts_size_0}, False
-        )
-
-        edge_ends = wrapper_utils.as_field(
-            ffi, xp, edge_ends, ts.ScalarKind.INT32, {EdgeIndex: edge_ends_size_0}, False
-        )
+        edge_ends = wrapper_utils.as_numpy(ffi, edge_ends, ts.ScalarKind.INT32, edge_ends_size_0)
 
         c2e = wrapper_utils.as_field(
             ffi, xp, c2e, ts.ScalarKind.INT32, {Cell: c2e_size_0, C2E: c2e_size_1}, False
@@ -1141,33 +1141,28 @@ def grid_init_diffusion_wrapper(
             ffi, xp, c2v, ts.ScalarKind.INT32, {Cell: c2v_size_0, C2V: c2v_size_1}, False
         )
 
-        c_owner_mask = wrapper_utils.as_field(
-            ffi, xp, c_owner_mask, ts.ScalarKind.BOOL, {Cell: c_owner_mask_size_0}, False
+        c_owner_mask = wrapper_utils.as_numpy(
+            ffi, c_owner_mask, ts.ScalarKind.BOOL, c_owner_mask_size_0
         )
 
-        e_owner_mask = wrapper_utils.as_field(
-            ffi, xp, e_owner_mask, ts.ScalarKind.BOOL, {Edge: e_owner_mask_size_0}, False
+        e_owner_mask = wrapper_utils.as_numpy(
+            ffi, e_owner_mask, ts.ScalarKind.BOOL, e_owner_mask_size_0
         )
 
-        v_owner_mask = wrapper_utils.as_field(
-            ffi, xp, v_owner_mask, ts.ScalarKind.BOOL, {Vertex: v_owner_mask_size_0}, False
+        v_owner_mask = wrapper_utils.as_numpy(
+            ffi, v_owner_mask, ts.ScalarKind.BOOL, v_owner_mask_size_0
         )
 
-        c_glb_index = wrapper_utils.as_field(
-            ffi, xp, c_glb_index, ts.ScalarKind.INT32, {CellGlobalIndex: c_glb_index_size_0}, False
+        c_glb_index = wrapper_utils.as_numpy(
+            ffi, c_glb_index, ts.ScalarKind.INT32, c_glb_index_size_0
         )
 
-        e_glb_index = wrapper_utils.as_field(
-            ffi, xp, e_glb_index, ts.ScalarKind.INT32, {EdgeGlobalIndex: e_glb_index_size_0}, False
+        e_glb_index = wrapper_utils.as_numpy(
+            ffi, e_glb_index, ts.ScalarKind.INT32, e_glb_index_size_0
         )
 
-        v_glb_index = wrapper_utils.as_field(
-            ffi,
-            xp,
-            v_glb_index,
-            ts.ScalarKind.INT32,
-            {VertexGlobalIndex: v_glb_index_size_0},
-            False,
+        v_glb_index = wrapper_utils.as_numpy(
+            ffi, v_glb_index, ts.ScalarKind.INT32, v_glb_index_size_0
         )
 
         assert isinstance(limited_area, int)

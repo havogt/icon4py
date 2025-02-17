@@ -16,10 +16,6 @@ import numpy as np
 from gt4py.next import common as gtx_common
 from gt4py.next.type_system import type_specifications as ts
 
-from icon4py.tools.icon4pygen.bindings.codegen.type_conversion import (
-    BUILTIN_TO_NUMPY_TYPE,
-)
-
 
 if TYPE_CHECKING:
     import cffi
@@ -128,6 +124,14 @@ def _int_array_to_bool_array(int_array: np.typing.NDArray) -> np.typing.NDArray:
     """
     bool_array = int_array != 0
     return bool_array
+
+
+def as_numpy(ffi: cffi.FFI, ptr, scalar_kind: ts.ScalarKind, *sizes) -> np.ndarray:
+    # TODO optional support
+    arr = _unpack(ffi, ptr, *sizes)
+    if scalar_kind == ts.ScalarKind.BOOL:
+        arr = _int_array_to_bool_array(arr)
+    return arr
 
 
 def as_field(  # type: ignore[no-untyped-def] # CData type not public?

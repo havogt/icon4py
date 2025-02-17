@@ -31,29 +31,36 @@ class DimensionType(Node):
 
 class FuncParameter(Node):
     name: str
+    rank: Optional[int]
     d_type: ts.ScalarKind
-    dimensions: Sequence[gtx.Dimension]
     is_optional: bool = False
-    size_args: list[str] = datamodels.field(init=False)
+    use_device: bool = True
+    meta: dict[str, Any]
+    size_args: Optional[list[str]] = datamodels.field(init=False)
     is_array: bool = datamodels.field(init=False)
     is_bool: bool = datamodels.field(init=False)
-    gtdims: list[str] = datamodels.field(init=False)
-    size_args_len: int = datamodels.field(init=False)
+    gtdims: Optional[list[str]] = datamodels.field(init=False)
     np_type: str = datamodels.field(init=False)
-    domain: str = datamodels.field(init=False)
+    domain: Optional[str] = datamodels.field(init=False)
 
     def __post_init__(self) -> None:
-        self.size_args = [_size_arg_name(self, i) for i in range(len(self.dimensions))]
-        self.size_args_len = len(self.size_args)
-        self.is_array = True if len(self.dimensions) >= 1 else False
-        self.is_bool = self.d_type == ts.ScalarKind.BOOL
-        self.gtdims = [dim.value if not dim.value == "KHalf" else "K" for dim in self.dimensions]
-        self.np_type = to_np_type(self.d_type)
-        self.domain = (
-            "{"
-            + ",".join(f"{d}:{s}" for d, s in zip(self.gtdims, self.size_args, strict=True))
-            + "}"
+        self.size_args = (
+            [_size_arg_name(self, i) for i in range(self.rank)] if self.rank is not None else None
         )
+        self.is_array = self.rank is not None
+        self.is_bool = self.d_type == ts.ScalarKind.BOOL
+        dims = self.meta.get("dimensions", None)
+        self.gtdims = [dim.value for dim in dims] if dims is not None else None
+        self.np_type = to_np_type(self.d_type)
+        if self.gtdims is not None:
+            assert self.size_args is not None
+            self.domain = (
+                "{"
+                + ",".join(f"{d}:{s}" for d, s in zip(self.gtdims, self.size_args, strict=True))
+                + "}"
+            )
+        else:
+            self.domain = None
 
 
 class Func(Node):
@@ -65,8 +72,10 @@ class Func(Node):
         params = []
         for param in self.args:
             params.append(param.name)
-            for i in range(len(param.dimensions)):
-                params.append(_size_arg_name(param, i))
+
+            if param.is_array:
+                for i in range(param.rank):
+                    params.append(_size_arg_name(param, i))
         self.rendered_params = ", ".join(params)
 
 
@@ -90,7 +99,8 @@ class PythonWrapper(CffiPlugin):
         _used_dimensions: set[gtx.Dimension] = set()
         for func in self.functions:
             for arg in func.args:
-                _used_dimensions.update(arg.dimensions)
+                if arg.rank is not None:
+                    _used_dimensions.update(arg.meta.get("dimensions", []))
         self.used_dimensions = sorted(list(_used_dimensions), key=lambda x: x.value)
 
 
@@ -119,12 +129,12 @@ def as_f90_value(param: FuncParameter) -> Optional[str]:
     Returns:
         A string containing 'value,' for scalar types, otherwise an empty string.
     """
-    return "value" if len(param.dimensions) == 0 else None
+    return "value" if param.rank is None else None
 
 
 def render_c_pointer(param: FuncParameter) -> str:
     """Render a C pointer symbol for array types."""
-    return "*" if len(param.dimensions) > 0 else ""
+    return "*" if param.rank is not None else ""
 
 
 def render_fortran_array_dimensions(
@@ -139,11 +149,11 @@ def render_fortran_array_dimensions(
     Returns:
         A string representing Fortran array dimensions.
     """
-    if len(param.dimensions) > 0 and assumed_size_array:
+    if param.rank is not None and assumed_size_array:
         return "dimension(*)"
 
-    if len(param.dimensions) > 0 and not assumed_size_array:
-        dims = ",".join(":" for _ in param.dimensions)
+    if param.rank is not None and not assumed_size_array:
+        dims = ",".join([":"] * param.rank)
         return f"dimension({dims})"
 
     return None
@@ -236,7 +246,7 @@ def {{ func.name }}_wrapper(
         # Convert ptr to GT4Py fields
         {% for arg in func.args %}
         {% if arg.is_array %}
-        {{ arg.name }} = wrapper_utils.as_field(ffi, xp, {{ arg.name }}, ts.ScalarKind.{{ arg.d_type.name }}, {{arg.domain}}, {{arg.is_optional}})
+        {{ arg.meta['py_renderer'](arg) }}
         {% elif arg.is_bool %}
         assert isinstance({{ arg.name }}, int)
         {{ arg.name }} = {{ arg.name }} != 0
@@ -303,7 +313,7 @@ class CHeaderGenerator(TemplatedGenerator):
         params = []
         for param in func.args:
             params.append(self.visit(param))
-            for i in range(len(param.dimensions)):
+            for i in range(param.rank) if param.rank is not None else []:
                 params.append(f"int {_size_arg_name(param, i)}")
         rendered_params = ", ".join(params)
         return self.generic_visit(func, rendered_params=rendered_params)
@@ -330,27 +340,8 @@ class DimensionPosition(Node):
 
 
 class F90FunctionDefinition(Func):
-    dimension_positions: Sequence[DimensionPosition] = datamodels.field(init=False)
-
     def __post_init__(self, *args: Any, **kwargs: Any) -> None:
         super().__post_init__()  # call Func __post_init__
-        self.dimension_positions = self.extract_dimension_positions()
-
-    def extract_dimension_positions(self) -> Sequence[DimensionPosition]:
-        """Extract a unique set of dimension positions which are used to infer dimension sizes at runtime."""
-        dim_positions: list[DimensionPosition] = []
-        unique_size_args: set[str] = set()
-        non_optional_args = [arg for arg in self.args if not arg.is_optional]
-        for arg in non_optional_args:
-            for index, size_arg in enumerate(arg.size_args):
-                if size_arg not in unique_size_args:
-                    dim_positions.append(
-                        DimensionPosition(
-                            variable=str(arg.name), size_arg=size_arg, index=index + 1
-                        )
-                    )  # Use Fortran indexing
-                    unique_size_args.add(size_arg)
-        return dim_positions
 
 
 def _render_parameter_declaration(name: str, attributes: Sequence[str | None]) -> str:
@@ -420,10 +411,11 @@ end module
                     ],
                 )
             )
-            for i in range(len(param.dimensions)):
-                name = _size_arg_name(param, i)
-                param_names.append(name)
-                param_declarations.append(_size_param_declaration(name))
+            if param.is_array:
+                for i in range(param.rank):
+                    name = _size_arg_name(param, i)
+                    param_names.append(name)
+                    param_declarations.append(_size_param_declaration(name))
         param_names_str = ", &\n ".join(param_names)
 
         return self.generic_visit(
@@ -457,9 +449,10 @@ end function {{name}}_wrapper
         args = []
         for arg in func.args:
             args.append(render_args(arg))
-            for i in range(len(arg.dimensions)):
-                name = _size_arg_name(arg, i)
-                args.append(f"{name} = {name}")
+            if arg.is_array:
+                for i in range(arg.rank):
+                    name = _size_arg_name(arg, i)
+                    args.append(f"{name} = {name}")
 
         compiled_arg_names = ", &\n".join(args)
 
@@ -478,24 +471,20 @@ end function {{name}}_wrapper
 
         def get_sizes_maker(arg: FuncParameter) -> str:
             return "\n".join(
-                f"{_size_arg_name(arg, i)} = SIZE({arg.name}, {i + 1})"
-                for i in range(len(arg.dimensions))
+                f"{_size_arg_name(arg, i)} = SIZE({arg.name}, {i + 1})" for i in range(arg.rank)
             )
 
         for param in func.args:
-            for i in range(len(param.dimensions)):
-                name = _size_arg_name(param, i)
-                param_declarations.append(_size_param_declaration(name, value=False))
+            if param.is_array:
+                for i in range(param.rank):
+                    name = _size_arg_name(param, i)
+                    param_declarations.append(_size_param_declaration(name, value=False))
 
         return self.generic_visit(
             func,
             assumed_size_array=False,
             param_names=param_names,
             args_with_size_args=compiled_arg_names,
-            non_optional_arrays=[
-                arg.name for arg in func.args if arg.is_array if not arg.is_optional
-            ],
-            optional_arrays=[arg.name for arg in func.args if arg.is_array if arg.is_optional],
             as_allocatable=True,
             param_declarations=param_declarations,
             to_iso_c_type=to_iso_c_type,
@@ -506,46 +495,42 @@ end function {{name}}_wrapper
     F90FunctionDefinition = as_jinja(
         """
 subroutine {{name}}({{param_names}})
-   use, intrinsic :: iso_c_binding
-   {% for arg in param_declarations %}
-   {{ arg }}
-   {% endfor %}
-   integer(c_int) :: rc  ! Stores the return code
-   ! ptrs
-   {% for arg in _this_node.args if arg.is_optional %}
-   type(c_ptr) :: {{ arg.name }}_ptr
-   {% endfor %}
+    use, intrinsic :: iso_c_binding
+    {% for arg in param_declarations %}
+    {{ arg }}
+    {% endfor %}
+    integer(c_int) :: rc  ! Stores the return code
+    ! ptrs
+    {% for arg in _this_node.args if arg.is_optional %}
+    type(c_ptr) :: {{ arg.name }}_ptr
+    {% endfor %}
 
-   {% for arg in _this_node.args if arg.is_optional %}
-   {{ arg.name }}_ptr = c_null_ptr
-   {% endfor %}
+    {% for arg in _this_node.args if arg.is_optional %}
+    {{ arg.name }}_ptr = c_null_ptr
+    {% endfor %}
 
-   {%- for arr in non_optional_arrays %}
-       !$acc host_data use_device({{ arr }})
-   {%- endfor %}
-   {%- for arr in optional_arrays %}
-       !$acc host_data use_device({{ arr }}) if(associated({{ arr }}))
-   {%- endfor %}
+    {%- for arg in _this_node.args if (arg.is_array and arg.use_device) %}
+        !$acc host_data use_device({{ arg.name }}) {% if arg.is_optional %}if(associated({{ arg.name }})){% endif %}
+    {%- endfor %}
 
-   {% for arg in _this_node.args if not arg.is_optional %}
-     {{ get_sizes_maker(arg) }}
-   {% endfor %}
+    {% for arg in _this_node.args if not arg.is_optional %}
+        {% if arg.is_array %}
+        {{ get_sizes_maker(arg) }}
+        {% endif %}
+    {% endfor %}
 
-   {% for arg in _this_node.args if arg.is_optional %}
-   if(associated({{ arg.name }})) then
-   {{ arg.name }}_ptr = c_loc({{ arg.name }})
-     {{ get_sizes_maker(arg) }}
-    endif
-   {% endfor %}
+    {% for arg in _this_node.args if arg.is_optional %}
+    if(associated({{ arg.name }})) then
+    {{ arg.name }}_ptr = c_loc({{ arg.name }})
+        {% if arg.is_array %}{{ get_sizes_maker(arg) }}{% endif %}
+        endif
+    {% endfor %}
 
-   rc = {{ name }}_wrapper({{ args_with_size_args }})
+    rc = {{ name }}_wrapper({{ args_with_size_args }})
 
-   {%- for arr in non_optional_arrays %}
-   !$acc end host_data
-   {%- endfor %}
-   {%- for arr in optional_arrays %}
-   !$acc end host_data
-   {%- endfor %}
+    {%- for arg in _this_node.args if (arg.is_array and arg.use_device) %}
+    !$acc end host_data
+    {%- endfor %}
 end subroutine {{name}}
     """
     )

@@ -987,6 +987,10 @@ contains
       !$acc host_data use_device(nudgecoeff_e)
       !$acc host_data use_device(rbf_coeff_1)
       !$acc host_data use_device(rbf_coeff_2)
+      !$acc host_data use_device(mask_hdiff) if(associated(mask_hdiff))
+      !$acc host_data use_device(zd_diffcoef) if(associated(zd_diffcoef))
+      !$acc host_data use_device(zd_vertoffset) if(associated(zd_vertoffset))
+      !$acc host_data use_device(zd_intcoef) if(associated(zd_intcoef))
       !$acc host_data use_device(tangent_orientation)
       !$acc host_data use_device(inverse_primal_edge_lengths)
       !$acc host_data use_device(inv_dual_edge_length)
@@ -1008,10 +1012,6 @@ contains
       !$acc host_data use_device(edge_center_lon)
       !$acc host_data use_device(primal_normal_x)
       !$acc host_data use_device(primal_normal_y)
-      !$acc host_data use_device(mask_hdiff) if(associated(mask_hdiff))
-      !$acc host_data use_device(zd_diffcoef) if(associated(zd_diffcoef))
-      !$acc host_data use_device(zd_vertoffset) if(associated(zd_vertoffset))
-      !$acc host_data use_device(zd_intcoef) if(associated(zd_intcoef))
 
       vct_a_size_0 = SIZE(vct_a, 1)
 
@@ -1614,12 +1614,6 @@ contains
       integer(c_int) :: rc  ! Stores the return code
       ! ptrs
 
-      !$acc host_data use_device(cell_starts)
-      !$acc host_data use_device(cell_ends)
-      !$acc host_data use_device(vertex_starts)
-      !$acc host_data use_device(vertex_ends)
-      !$acc host_data use_device(edge_starts)
-      !$acc host_data use_device(edge_ends)
       !$acc host_data use_device(c2e)
       !$acc host_data use_device(e2c)
       !$acc host_data use_device(c2e2c)
@@ -1629,12 +1623,6 @@ contains
       !$acc host_data use_device(v2c)
       !$acc host_data use_device(e2c2v)
       !$acc host_data use_device(c2v)
-      !$acc host_data use_device(c_owner_mask)
-      !$acc host_data use_device(e_owner_mask)
-      !$acc host_data use_device(v_owner_mask)
-      !$acc host_data use_device(c_glb_index)
-      !$acc host_data use_device(e_glb_index)
-      !$acc host_data use_device(v_glb_index)
 
       cell_starts_size_0 = SIZE(cell_starts, 1)
 
@@ -1746,18 +1734,6 @@ contains
                                        num_edges=num_edges, &
                                        vertical_size=vertical_size, &
                                        limited_area=limited_area)
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
-      !$acc end host_data
       !$acc end host_data
       !$acc end host_data
       !$acc end host_data

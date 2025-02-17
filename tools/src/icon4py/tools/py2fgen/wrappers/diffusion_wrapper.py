@@ -22,6 +22,7 @@ import pstats
 from typing import Optional
 
 import gt4py.next as gtx
+import numpy as np
 
 import icon4py.model.common.grid.states as grid_states
 from icon4py.model.atmosphere.diffusion.diffusion import (
@@ -49,14 +50,6 @@ from icon4py.tools.py2fgen import settings as settings
 from icon4py.tools.py2fgen.settings import backend, config as config_settings, device
 from icon4py.tools.py2fgen.wrappers import common as wrapper_common
 from icon4py.tools.py2fgen.wrappers.debug_utils import print_grid_decomp_info
-from icon4py.tools.py2fgen.wrappers.wrapper_dimension import (
-    CellGlobalIndexDim,
-    CellIndexDim,
-    EdgeGlobalIndexDim,
-    EdgeIndexDim,
-    VertexGlobalIndexDim,
-    VertexIndexDim,
-)
 
 
 logger = setup_logger(__name__)
@@ -335,12 +328,12 @@ def diffusion_run(
 
 
 def grid_init_diffusion(
-    cell_starts: gtx.Field[gtx.Dims[CellIndexDim], gtx.int32],
-    cell_ends: gtx.Field[gtx.Dims[CellIndexDim], gtx.int32],
-    vertex_starts: gtx.Field[gtx.Dims[VertexIndexDim], gtx.int32],
-    vertex_ends: gtx.Field[gtx.Dims[VertexIndexDim], gtx.int32],
-    edge_starts: gtx.Field[gtx.Dims[EdgeIndexDim], gtx.int32],
-    edge_ends: gtx.Field[gtx.Dims[EdgeIndexDim], gtx.int32],
+    cell_starts: np.ndarray[tuple[int], np.dtype[np.int32]],
+    cell_ends: np.ndarray[tuple[int], np.dtype[np.int32]],
+    vertex_starts: np.ndarray[tuple[int], np.dtype[np.int32]],
+    vertex_ends: np.ndarray[tuple[int], np.dtype[np.int32]],
+    edge_starts: np.ndarray[tuple[int], np.dtype[np.int32]],
+    edge_ends: np.ndarray[tuple[int], np.dtype[np.int32]],
     c2e: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], gtx.int32],
     e2c: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2CDim], gtx.int32],
     c2e2c: gtx.Field[gtx.Dims[dims.CellDim, dims.C2E2CDim], gtx.int32],
@@ -350,12 +343,12 @@ def grid_init_diffusion(
     v2c: gtx.Field[gtx.Dims[dims.VertexDim, dims.V2CDim], gtx.int32],
     e2c2v: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2VDim], gtx.int32],
     c2v: gtx.Field[gtx.Dims[dims.CellDim, dims.C2VDim], gtx.int32],
-    c_owner_mask: gtx.Field[[dims.CellDim], bool],
-    e_owner_mask: gtx.Field[[dims.EdgeDim], bool],
-    v_owner_mask: gtx.Field[[dims.VertexDim], bool],
-    c_glb_index: gtx.Field[[CellGlobalIndexDim], gtx.int32],
-    e_glb_index: gtx.Field[[EdgeGlobalIndexDim], gtx.int32],
-    v_glb_index: gtx.Field[[VertexGlobalIndexDim], gtx.int32],
+    c_owner_mask: np.ndarray[tuple[int], np.dtype[np.bool_]],  # TODO bool conversion!!!
+    e_owner_mask: np.ndarray[tuple[int], np.dtype[np.bool_]],
+    v_owner_mask: np.ndarray[tuple[int], np.dtype[np.bool_]],
+    c_glb_index: np.ndarray[tuple[int], np.dtype[np.int32]],
+    e_glb_index: np.ndarray[tuple[int], np.dtype[np.int32]],
+    v_glb_index: np.ndarray[tuple[int], np.dtype[np.int32]],
     comm_id: gtx.int32,
     global_root: gtx.int32,
     global_level: gtx.int32,
@@ -365,38 +358,6 @@ def grid_init_diffusion(
     vertical_size: gtx.int32,
     limited_area: bool,
 ):
-    on_gpu = config_settings.device == settings.Device.GPU
-    xp = c2e.array_ns
-
-    # TODO(havogt): add direct support for ndarrays in py2fgen
-    cell_starts = cell_starts.ndarray
-    cell_ends = cell_ends.ndarray
-    vertex_starts = vertex_starts.ndarray
-    vertex_ends = vertex_ends.ndarray
-    edge_starts = edge_starts.ndarray
-    edge_ends = edge_ends.ndarray
-    c_owner_mask = c_owner_mask.ndarray
-    e_owner_mask = e_owner_mask.ndarray
-    v_owner_mask = v_owner_mask.ndarray
-    c_glb_index = c_glb_index.ndarray
-    e_glb_index = e_glb_index.ndarray
-    v_glb_index = v_glb_index.ndarray
-
-    if on_gpu:
-        cp = xp
-        cell_starts = cp.asnumpy(cell_starts)
-        cell_ends = cp.asnumpy(cell_ends)
-        vertex_starts = cp.asnumpy(vertex_starts)
-        vertex_ends = cp.asnumpy(vertex_ends)
-        edge_starts = cp.asnumpy(edge_starts)
-        edge_ends = cp.asnumpy(edge_ends)
-        c_owner_mask = cp.asnumpy(c_owner_mask)
-        e_owner_mask = cp.asnumpy(e_owner_mask)
-        v_owner_mask = cp.asnumpy(v_owner_mask)
-        c_glb_index = cp.asnumpy(c_glb_index)
-        e_glb_index = cp.asnumpy(e_glb_index)
-        v_glb_index = cp.asnumpy(v_glb_index)
-
     global_grid_params = GlobalGridParams(level=global_level, root=global_root)
 
     diffusion_wrapper_state["grid"] = wrapper_common.construct_icon_grid(
@@ -422,7 +383,7 @@ def grid_init_diffusion(
         num_edges=num_edges,
         vertical_size=vertical_size,
         limited_area=limited_area,
-        on_gpu=on_gpu,
+        on_gpu=config_settings.device == settings.Device.GPU,
     )
 
     if config_settings.parallel_run:

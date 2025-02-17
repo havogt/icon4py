@@ -28,6 +28,7 @@ Fortran granule interfaces:
 - all arguments needed from external sources are passed.
 - passing of scalar types or fields of simple types
 """
+
 import cProfile
 import pstats
 
@@ -44,11 +45,6 @@ from icon4py.model.common.utils import data_allocation as data_alloc
 from icon4py.tools.common.logger import setup_logger
 from icon4py.tools.py2fgen.settings import backend, device
 from icon4py.tools.py2fgen.wrappers import common as wrapper_common
-from icon4py.tools.py2fgen.wrappers.wrapper_dimension import (
-    CellIndexDim,
-    EdgeIndexDim,
-    VertexIndexDim,
-)
 
 
 logger = setup_logger(__name__)

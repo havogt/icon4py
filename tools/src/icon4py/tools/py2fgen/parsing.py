@@ -7,11 +7,13 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import importlib
+import types
 import typing
 from inspect import signature, unwrap
 from types import ModuleType, NoneType
-from typing import Any, Callable, List, Union
+from typing import Any, Callable, List, Sequence, Union
 
+import numpy as np
 from gt4py.next.type_system import (
     type_specifications as gtx_type_specifications,
     type_translation as gtx_type_translation,
@@ -49,13 +51,60 @@ def _unpack_optional_type_hint(type_hint: Any) -> tuple[Any, bool]:
         return type_hint, False
 
 
+def _canonical_type(type_hint: Any) -> Any:
+    canonical_type = (
+        typing.get_origin(type_hint)
+        if isinstance(type_hint, types.GenericAlias) or type(type_hint).__module__ == "typing"
+        else type_hint
+    )
+    return canonical_type, typing.get_args(type_hint)
+
+
+def _from_ndarray(
+    type_hint: Any, args: Sequence[Any]
+) -> tuple[int, gtx_type_specifications.ScalarKind]:
+    rank = len(typing.get_args(args[0]))
+    dtype_type_hint = _canonical_type(args[1])[0]
+    if dtype_type_hint is np.dtype:
+        dtype = typing.get_args(args[1])[0]
+    dtype = gtx_type_translation.from_type_hint(dtype).kind
+    return rank, dtype
+
+
 def _parse_params(func: Callable) -> List[FuncParameter]:
     sig_params = signature(func, follow_wrapped=False).parameters
     params = []
     for s, param in sig_params.items():
         non_optional_type, is_optional = _unpack_optional_type_hint(param.annotation)
-        gt4py_type = gtx_type_translation.from_type_hint(non_optional_type)
-        dims, dtype = parse_type_spec(gt4py_type)
-        params.append(FuncParameter(name=s, d_type=dtype, dimensions=dims, is_optional=is_optional))
+        canonical_type, args = _canonical_type(non_optional_type)
+        if canonical_type is np.ndarray:
+            rank, dtype = _from_ndarray(canonical_type, args)
+
+            def _py_field_renderer(arg):
+                return f"{arg.name} = wrapper_utils.as_numpy(ffi, {arg.name}, ts.ScalarKind.{arg.d_type.name}, {','.join(arg.size_args)})"
+
+            meta = {"py_renderer": _py_field_renderer}
+            use_device = False
+        else:
+            dims, dtype = parse_type_spec(gtx_type_translation.from_type_hint(non_optional_type))
+            rank = len(dims) if len(dims) > 0 else None
+            meta = {"dimensions": dims if len(dims) > 0 else None}
+
+            def _py_field_renderer(arg):
+                return f"{arg.name} = wrapper_utils.as_field(ffi, xp, {arg.name}, ts.ScalarKind.{arg.d_type.name}, {arg.domain}, {arg.is_optional})"
+
+            meta["py_renderer"] = _py_field_renderer
+            use_device = True
+
+        params.append(
+            FuncParameter(
+                name=s,
+                rank=rank,
+                d_type=dtype,
+                is_optional=is_optional,
+                use_device=use_device,
+                meta=meta,
+            )
+        )
 
     return params
