@@ -24,7 +24,7 @@ from icon4py.model.testing.helpers import StencilTest
 
 class TestComputeExnerFromRhotheta(StencilTest):
     PROGRAM = _compute_exner_from_rhotheta
-    OUTPUTS = ("theta_v", "exner")
+    OUTPUTS = ("out",)
 
     @staticmethod
     def reference(
@@ -37,13 +37,14 @@ class TestComputeExnerFromRhotheta(StencilTest):
     ) -> dict:
         theta_v = np.copy(exner)
         exner = np.exp(rd_o_cvd * np.log(rd_o_p0ref * rho * theta_v))
-        return dict(theta_v=theta_v, exner=exner)
+        return dict(out=(theta_v, exner))
 
     @pytest.fixture
     def input_data(self, grid: base.BaseGrid) -> dict[str, gtx.Field | state_utils.ScalarType]:
         rd_o_cvd = wpfloat("10.0")
         rd_o_p0ref = wpfloat("20.0")
         rho = random_field(grid, dims.CellDim, dims.KDim, low=1, high=2, dtype=wpfloat)
+        theta_v = random_field(grid, dims.CellDim, dims.KDim, low=1, high=2, dtype=wpfloat)
         exner = random_field(grid, dims.CellDim, dims.KDim, low=1, high=2, dtype=wpfloat)
 
         return dict(
@@ -51,8 +52,9 @@ class TestComputeExnerFromRhotheta(StencilTest):
             exner=exner,
             rd_o_cvd=rd_o_cvd,
             rd_o_p0ref=rd_o_p0ref,
-            horizontal_start=0,
-            horizontal_end=gtx.int32(grid.num_cells),
-            vertical_start=0,
-            vertical_end=gtx.int32(grid.num_levels),
+            domain={
+                dims.CellDim: (0, gtx.int32(grid.num_cells)),
+                dims.KDim: (0, gtx.int32(grid.num_levels)),
+            },
+            out=(theta_v, exner),
         )

@@ -140,17 +140,23 @@ def _verify_stencil_test(
             if isinstance(out, Output)
             else (out, (slice(None),), (slice(None),))
         )
-        if isinstance(self.PROGRAM, FieldOperator):
-            output_field = input_data["out"][list(reference_outputs.keys()).index(name)]
-        else:
-            output_field = input_data[name]
+        output_field = input_data[name]
 
-        np.testing.assert_allclose(
-            output_field.asnumpy()[gtslice],
-            reference_outputs[name][refslice],
-            equal_nan=True,
-            err_msg=f"Verification failed for '{name}'",
-        )
+        if isinstance(output_field, tuple):
+            for o, ref in zip(output_field, reference_outputs[name], strict=True):
+                np.testing.assert_allclose(
+                    o.asnumpy()[gtslice],
+                    ref[refslice],
+                    equal_nan=True,
+                    err_msg=f"Verification failed for '{name}'",
+                )
+        else:
+            np.testing.assert_allclose(
+                output_field.asnumpy()[gtslice],
+                reference_outputs[name][refslice],
+                equal_nan=True,
+                err_msg=f"Verification failed for '{name}'",
+            )
 
 
 def _test_and_benchmark(
@@ -169,11 +175,6 @@ def _test_and_benchmark(
         connectivities,
         **{k: v.asnumpy() if isinstance(v, gtx.Field) else v for k, v in input_data.items()},
     )
-
-    input_data = allocate_data(backend, input_data)
-
-    if isinstance(self.PROGRAM, FieldOperator):
-        input_data, reference_outputs = _refactor_field_operator(input_data, reference_outputs)
 
     run_verify_and_benchmark(
         functools.partial(
@@ -229,46 +230,3 @@ def reshape(arr: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
 def as_1d_connectivity(connectivity: np.ndarray) -> np.ndarray:
     old_shape = connectivity.shape
     return np.arange(old_shape[0] * old_shape[1], dtype=gtx.int32).reshape(old_shape)
-
-
-def _refactor_field_operator(input_data: dict, reference_outputs: dict) -> tuple[dict, dict]:
-    ref_vals = list(reference_outputs.values())
-    size = ref_vals[0].shape
-    full_field_idx = [
-        i_dt_val
-        for i_dt_val, dt_val in enumerate(list(input_data.values()))
-        if (isinstance(dt_val, gtx.Field) and dt_val.shape == size)
-    ]
-    input_data.update(
-        out=tuple(
-            gtx.as_field((input_data[list(input_data)[full_field_idx[0]]]._domain), ref_val)
-            for ref_val in ref_vals
-        )
-    )
-    input_data.update(domain={})
-    if "horizontal_start" in input_data.keys():
-        input_data["domain"].update(
-            {
-                input_data["out"][0].domain.dims[0]: (
-                    input_data["horizontal_start"],
-                    input_data["horizontal_end"],
-                )
-            }
-        )
-
-    if "vertical_start" in input_data.keys():
-        input_data["domain"].update(
-            {
-                input_data["out"][0].domain.dims[1]: (
-                    input_data["vertical_start"],
-                    input_data["vertical_end"],
-                )
-            }
-        )
-
-    input_data.pop("horizontal_start")
-    input_data.pop("horizontal_end")
-    input_data.pop("vertical_start")
-    input_data.pop("vertical_end")
-
-    return input_data, reference_outputs
