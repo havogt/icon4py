@@ -81,7 +81,7 @@ class IconSavepoint:
     def log_meta_info(self):
         self.log.info(self.savepoint.metainfo)
 
-    def _get_field(self, name, *dimensions, dtype=float):
+    def _get_field(self, name, *dimensions, dtype=float) -> gtx.Field:
         buffer = np.squeeze(self.serializer.read(name, self.savepoint).astype(dtype))
         buffer = self._reduce_to_dim_size(buffer, dimensions)
 
@@ -520,19 +520,6 @@ class IconGridSavepoint(IconSavepoint):
         )
 
     def construct_edge_geometry(self) -> grid_states.EdgeParams:
-        primal_normal_vert: tuple[
-            gtx.Field[[dims.ECVDim], float], gtx.Field[[dims.ECVDim], float]
-        ] = (
-            data_alloc.flatten_first_two_dims(dims.ECVDim, field=self.primal_normal_vert_x()),
-            data_alloc.flatten_first_two_dims(dims.ECVDim, field=self.primal_normal_vert_y()),
-        )
-        dual_normal_vert: tuple[
-            gtx.Field[[dims.ECVDim], float], gtx.Field[[dims.ECVDim], float]
-        ] = (
-            data_alloc.flatten_first_two_dims(dims.ECVDim, field=self.dual_normal_vert_x()),
-            data_alloc.flatten_first_two_dims(dims.ECVDim, field=self.dual_normal_vert_y()),
-        )
-
         primal_normal_cell: tuple[
             gtx.Field[[dims.ECDim], float], gtx.Field[[dims.ECDim], float]
         ] = (
@@ -549,10 +536,10 @@ class IconGridSavepoint(IconSavepoint):
             inverse_primal_edge_lengths=self.inverse_primal_edge_lengths(),
             inverse_dual_edge_lengths=self.inv_dual_edge_length(),
             inverse_vertex_vertex_lengths=self.inv_vert_vert_length(),
-            primal_normal_vert_x=primal_normal_vert[0],
-            primal_normal_vert_y=primal_normal_vert[1],
-            dual_normal_vert_x=dual_normal_vert[0],
-            dual_normal_vert_y=dual_normal_vert[1],
+            primal_normal_vert_x=self.primal_normal_vert_x(),
+            primal_normal_vert_y=self.primal_normal_vert_y(),
+            dual_normal_vert_x=self.dual_normal_vert_x(),
+            dual_normal_vert_y=self.dual_normal_vert_y(),
             primal_normal_cell_x=primal_normal_cell[0],
             dual_normal_cell_x=dual_normal_cell[0],
             primal_normal_cell_y=primal_normal_cell[1],
