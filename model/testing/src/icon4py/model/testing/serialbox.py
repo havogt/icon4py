@@ -520,17 +520,6 @@ class IconGridSavepoint(IconSavepoint):
         )
 
     def construct_edge_geometry(self) -> grid_states.EdgeParams:
-        primal_normal_cell: tuple[
-            gtx.Field[[dims.ECDim], float], gtx.Field[[dims.ECDim], float]
-        ] = (
-            data_alloc.flatten_first_two_dims(dims.ECDim, field=self.primal_normal_cell_x()),
-            data_alloc.flatten_first_two_dims(dims.ECDim, field=self.primal_normal_cell_y()),
-        )
-
-        dual_normal_cell: tuple[gtx.Field[[dims.ECDim], float], gtx.Field[[dims.ECDim], float]] = (
-            data_alloc.flatten_first_two_dims(dims.ECDim, field=self.dual_normal_cell_x()),
-            data_alloc.flatten_first_two_dims(dims.ECDim, field=self.dual_normal_cell_y()),
-        )
         return grid_states.EdgeParams(
             tangent_orientation=self.tangent_orientation(),
             inverse_primal_edge_lengths=self.inverse_primal_edge_lengths(),
@@ -540,10 +529,10 @@ class IconGridSavepoint(IconSavepoint):
             primal_normal_vert_y=self.primal_normal_vert_y(),
             dual_normal_vert_x=self.dual_normal_vert_x(),
             dual_normal_vert_y=self.dual_normal_vert_y(),
-            primal_normal_cell_x=primal_normal_cell[0],
-            dual_normal_cell_x=dual_normal_cell[0],
-            primal_normal_cell_y=primal_normal_cell[1],
-            dual_normal_cell_y=dual_normal_cell[1],
+            primal_normal_cell_x=self.primal_normal_cell_x(),
+            dual_normal_cell_x=self.dual_normal_cell_x(),
+            primal_normal_cell_y=self.primal_normal_cell_y(),
+            dual_normal_cell_y=self.dual_normal_cell_y(),
             edge_areas=self.edge_areas(),
             coriolis_frequency=self.f_e(),
             edge_center_lat=self.edge_center_lat(),
@@ -605,16 +594,10 @@ class InterpolationSavepoint(IconSavepoint):
         return self._get_field("nudgecoeff_e", dims.EdgeDim)
 
     def pos_on_tplane_e_x(self):
-        field = self._get_field("pos_on_tplane_e_x", dims.EdgeDim, dims.E2CDim)
-        return data_alloc.flatten_first_two_dims(
-            dims.ECDim, field=field[:, 0:2], backend=self.backend
-        )
+        return self._get_field("pos_on_tplane_e_x", dims.EdgeDim, dims.E2CDim)[:, 0:2]
 
     def pos_on_tplane_e_y(self):
-        field = self._get_field("pos_on_tplane_e_y", dims.EdgeDim, dims.E2CDim)
-        return data_alloc.flatten_first_two_dims(
-            dims.ECDim, field=field[:, 0:2], backend=self.backend
-        )
+        return self._get_field("pos_on_tplane_e_y", dims.EdgeDim, dims.E2CDim)[:, 0:2]
 
     def rbf_vec_coeff_e(self):
         return self._get_field("rbf_vec_coeff_e", dims.EdgeDim, dims.E2C2EDim)
@@ -727,14 +710,12 @@ class MetricSavepoint(IconSavepoint):
         return self._get_field("wgtfacq_c_dsl", dims.CellDim, dims.KDim)
 
     def zdiff_gradp(self):
-        field = self._get_field("zdiff_gradp_dsl", dims.EdgeDim, dims.E2CDim, dims.KDim)
-        return data_alloc.flatten_first_two_dims(dims.ECDim, dims.KDim, field=field)
+        return self._get_field("zdiff_gradp_dsl", dims.EdgeDim, dims.E2CDim, dims.KDim)
 
     def vertoffset_gradp(self):
-        field = self._get_field(
+        return self._get_field(
             "vertoffset_gradp_dsl", dims.EdgeDim, dims.E2CDim, dims.KDim, dtype=gtx.int32
         )
-        return data_alloc.flatten_first_two_dims(dims.ECDim, dims.KDim, field=field)
 
     def coeff1_dwdz(self):
         return self._get_field("coeff1_dwdz", dims.CellDim, dims.KDim)
