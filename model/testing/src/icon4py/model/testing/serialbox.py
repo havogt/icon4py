@@ -17,6 +17,7 @@ from gt4py.next import backend as gtx_backend
 import icon4py.model.common.decomposition.definitions as decomposition
 import icon4py.model.common.field_type_aliases as fa
 import icon4py.model.common.grid.states as grid_states
+from icon4py.model.atmosphere.diffusion import diffusion_states  # TODO: should not be here
 from icon4py.model.common import dimension as dims, type_alias
 from icon4py.model.common.grid import base, horizontal as h_grid, icon
 from icon4py.model.common.states import prognostic_state
@@ -850,6 +851,50 @@ class AdvectionExitSavepoint(IconSavepoint):
 
     def tracer(self, ntracer: int):
         return self._get_field_component("tracers", ntracer, (dims.CellDim, dims.KDim))
+
+
+FIELD_DEFS = {
+    "hdef_ic": (dims.CellDim, dims.KDim),
+    "div_ic": (dims.CellDim, dims.KDim),
+    "dwdx": (dims.CellDim, dims.KDim),
+    "dwdy": (dims.CellDim, dims.KDim),
+    "vn": (dims.EdgeDim, dims.KDim),
+    "theta_v": (dims.CellDim, dims.KDim),
+    "w": (dims.CellDim, dims.KDim),
+    "exner": (dims.CellDim, dims.KDim),
+    "rho": (dims.CellDim, dims.KDim),
+}
+
+
+def get_field(savepoint: IconSavepoint, field_name: str):
+    if field_name not in FIELD_DEFS:
+        raise ValueError(f"Field {field_name} not recognized. Known fields: {FIELD_DEFS.keys()}")
+    return savepoint._get_field(field_name, *FIELD_DEFS[field_name])
+
+
+def _prognostic_state(savepoint: IconSavepoint) -> prognostic_state.PrognosticState:
+    return prognostic_state.PrognosticState(
+        w=get_field(savepoint, "w"),
+        vn=get_field(savepoint, "vn"),
+        exner=get_field(savepoint, "exner"),
+        theta_v=get_field(savepoint, "theta_v"),
+        rho=get_field(savepoint, "rho"),
+    )
+
+
+def _diffusion_diagnostic_state(
+    savepoint: IconSavepoint,
+) -> diffusion_states.DiffusionDiagnosticState:
+    return diffusion_states.DiffusionDiagnosticState(
+        hdef_ic=get_field(savepoint, "hdef_ic"),
+        div_ic=get_field(savepoint, "div_ic"),
+        dwdx=get_field(savepoint, "dwdx"),
+        dwdy=get_field(savepoint, "dwdy"),
+    )
+
+
+def _dtime(savepoint: IconSavepoint) -> float:
+    return savepoint.savepoint.metainfo["dtime"]
 
 
 class IconDiffusionInitSavepoint(IconSavepoint):

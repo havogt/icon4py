@@ -9,6 +9,7 @@ import functools
 
 import numpy as np
 import pytest
+from typing import ClassVar, Final, Callable
 
 import icon4py.model.common.dimension as dims
 import icon4py.model.common.grid.states as grid_states
@@ -53,10 +54,14 @@ def get_cell_geometry_for_experiment(experiment, backend):
     return _get_or_initialize(experiment, backend, "cell_geometry")
 
 
-def _get_or_initialize(experiment_name: str, backend, name):
-    experiment = dt_utils.experiment_from_name(experiment_name=experiment_name)  # TODO
+def _get_or_initialize(experiment_name: definitions.Experiment | str, backend, name):
+    experiment = (
+        experiment_name
+        if isinstance(experiment_name, definitions.Experiment)
+        else dt_utils.experiment_from_name(experiment_name=experiment_name)
+    )
 
-    if not grid_functionality[experiment_name].get(name):
+    if not grid_functionality[experiment.name].get(name):
         geometry_ = grid_utils.get_grid_geometry(backend, experiment)
         grid = geometry_.grid
 
@@ -89,10 +94,10 @@ def _get_or_initialize(experiment_name: str, backend, name):
             dual_normal_vert_x=geometry_.get(geometry_meta.EDGE_TANGENT_VERTEX_U),
             dual_normal_vert_y=geometry_.get(geometry_meta.EDGE_TANGENT_VERTEX_V),
         )
-        grid_functionality[experiment_name]["grid"] = grid
-        grid_functionality[experiment_name]["edge_geometry"] = edge_params
-        grid_functionality[experiment_name]["cell_geometry"] = cell_params
-    return grid_functionality[experiment_name].get(name)
+        grid_functionality[experiment.name]["grid"] = grid
+        grid_functionality[experiment.name]["edge_geometry"] = edge_params
+        grid_functionality[experiment.name]["cell_geometry"] = cell_params
+    return grid_functionality[experiment.name].get(name)
 
 
 def test_diffusion_coefficients_with_hdiff_efdt_ratio(experiment):
@@ -349,6 +354,138 @@ def test_verify_diffusion_init_against_savepoint(
     _verify_init_values_against_savepoint(savepoint_diffusion_init, diffusion_granule, backend)
 
 
+DIFFUSION_INIT: Final[str] = "diffusion-init"
+DIFFUSION_EXIT: Final[str] = "diffusion-exit"
+
+#  def __init__(
+#         self,
+#         sp: serialbox.Savepoint,
+#         ser: serialbox.Serializer,
+#         size: dict,
+#         backend: gtx_backend.Backend | None,
+#     ):
+#         self.savepoint = sp
+#         self.serializer = ser
+#         self.sizes = size
+#         self.log = logging.getLogger(__name__)
+#         self.backend = backend
+#         self.xp = data_alloc.import_array_ns(self.backend)
+
+# return IconNonHydroInitSavepoint(
+#     savepoint, self.serializer, size=self.grid_size, backend=self.backend
+# )
+
+
+class DataTest:
+    INIT_SAVEPOINT: ClassVar[str]
+    EXIT_SAVEPOINT: ClassVar[str]
+    INPUT: ClassVar[dict[str, Callable]]
+    OUTPUT: ClassVar[dict[str, Callable]]
+
+    def test_function(self, data_provider: sb.IconSerialDataProvider, testfunc):
+        init_savepoint = data_provider.serializer.savepoint[self.INIT_SAVEPOINT]
+        for savepoint in init_savepoint.savepoints():
+            init_savepoint = sb.IconSavepoint(
+                savepoint, data_provider.serializer, data_provider.grid_size, data_provider.backend
+            )
+            exit_savepoint = data_provider.serializer.savepoint[self.EXIT_SAVEPOINT]
+            exit_savepoint.exit[True]
+            for k, v in savepoint.metainfo.to_dict().items():
+                exit_savepoint = getattr(exit_savepoint, k, None)
+                if exit_savepoint is None:
+                    raise ValueError(f"Could not find metainfo {k} in exit savepoint")
+                exit_savepoint = exit_savepoint[v]
+            exit_savepoint = sb.IconSavepoint(
+                exit_savepoint,
+                data_provider.serializer,
+                data_provider.grid_size,
+                data_provider.backend,
+            )
+            assert exit_savepoint is not None
+            # field = icon_savepoint._get_field("hdef_ic", dims.CellDim, dims.KDim)
+            # print(field)
+            input_data = {k: v(init_savepoint) for k, v in self.INPUT.items()}
+            # print(input_data["prognostic_state"])
+
+            testfunc(**input_data)
+
+            ref_data = {k: v(exit_savepoint) for k, v in self.OUTPUT.items()}
+            # verify()
+
+        # .linit[linit].date[date].as_savepoint()
+        ...
+
+    # def verify()
+
+
+class TestDiffusionSingleStep(DataTest):
+    INIT_SAVEPOINT = DIFFUSION_INIT
+    EXIT_SAVEPOINT = DIFFUSION_EXIT
+    INPUT = {
+        "prognostic_state": sb._prognostic_state,
+        "diagnostic_state": sb._diffusion_diagnostic_state,
+        "dtime": sb._dtime,
+    }
+
+    @pytest.fixture
+    def testfunc(
+        self,
+        experiment,
+        backend,
+        interpolation_state: diffusion_states.DiffusionInterpolationState,
+        metric_state: diffusion_states.DiffusionMetricState,
+        lowest_layer_thickness,
+        model_top_height,
+        stretch_factor,
+        damping_height,
+        ndyn_substeps,
+    ):
+        grid = get_grid_for_experiment(experiment, backend)
+        cell_geometry = get_cell_geometry_for_experiment(experiment, backend)
+        edge_geometry = get_edge_geometry_for_experiment(experiment, backend)
+
+        # dtime = savepoint_diffusion_init.get_metadata("dtime").get("dtime")
+
+        # diagnostic_state = diffusion_states.DiffusionDiagnosticState(
+        #     hdef_ic=savepoint_diffusion_init.hdef_ic(),
+        #     div_ic=savepoint_diffusion_init.div_ic(),
+        #     dwdx=savepoint_diffusion_init.dwdx(),
+        #     dwdy=savepoint_diffusion_init.dwdy(),
+        # )
+        # prognostic_state = savepoint_diffusion_init.construct_prognostics()
+
+        vertical_config = v_grid.VerticalGridConfig(
+            grid.num_levels,
+            lowest_layer_thickness=lowest_layer_thickness,
+            model_top_height=model_top_height,
+            stretch_factor=stretch_factor,
+            rayleigh_damping_height=damping_height,
+        )
+        vct_a, vct_b = v_grid.get_vct_a_and_vct_b(vertical_config, backend)
+        vertical_params = v_grid.VerticalGrid(
+            config=vertical_config,
+            vct_a=vct_a,
+            vct_b=vct_b,
+        )
+
+        config = construct_diffusion_config(experiment, ndyn_substeps)
+        additional_parameters = diffusion.DiffusionParams(config)
+
+        diffusion_granule = diffusion.Diffusion(
+            grid=grid,
+            config=config,
+            params=additional_parameters,
+            vertical_grid=vertical_params,
+            metric_state=metric_state,
+            interpolation_state=interpolation_state,
+            edge_params=edge_geometry,
+            cell_params=cell_geometry,
+            backend=backend,
+            # orchestration=orchestration,
+        )
+        return diffusion_granule.run
+
+
 @pytest.mark.datatest
 @pytest.mark.embedded_remap_error
 @pytest.mark.parametrize(
@@ -366,8 +503,8 @@ def test_run_diffusion_single_step(
     step_date_init,
     step_date_exit,
     *,
-    savepoint_diffusion_init,
-    savepoint_diffusion_exit,
+    savepoint_diffusion_init: sb.IconDiffusionInitSavepoint,
+    savepoint_diffusion_exit: sb.IconDiffusionExitSavepoint,
     interpolation_state: diffusion_states.DiffusionInterpolationState,
     metric_state: diffusion_states.DiffusionMetricState,
     lowest_layer_thickness,
