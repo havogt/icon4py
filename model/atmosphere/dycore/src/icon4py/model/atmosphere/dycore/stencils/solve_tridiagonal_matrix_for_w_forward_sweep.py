@@ -45,6 +45,30 @@ def tridiagonal_forward_sweep_for_w(
 
 
 @gtx.field_operator
+def prepare_tridiagonal_system_for_w(
+    vwind_impl_wgt: fa.CellField[wpfloat],
+    theta_v_ic: fa.CellKField[wpfloat],
+    ddqz_z_half: fa.CellKField[vpfloat],
+    z_alpha: fa.CellKField[vpfloat],
+    z_beta: fa.CellKField[vpfloat],
+    z_w_expl: fa.CellKField[wpfloat],
+    z_exner_expl: fa.CellKField[wpfloat],
+    dtime: wpfloat,
+    cpd: wpfloat,
+):
+    """Formerly known as _mo_solve_nonhydro_stencil_52."""
+    ddqz_z_half_wp = astype(ddqz_z_half, wpfloat)
+
+    z_gamma_vp = astype(dtime * cpd * vwind_impl_wgt * theta_v_ic / ddqz_z_half_wp, vpfloat)
+    z_a = (vpfloat("0.0") - z_gamma_vp) * z_beta(Koff[-1]) * z_alpha(Koff[-1])
+    z_c = (vpfloat("0.0") - z_gamma_vp) * z_beta * z_alpha(Koff[1])
+    z_b = vpfloat("1.0") + z_gamma_vp * z_alpha * (z_beta(Koff[-1]) + z_beta)
+    z_gamma_wp = astype(z_gamma_vp, wpfloat)
+    w_prep = z_w_expl - z_gamma_wp * (z_exner_expl(Koff[-1]) - z_exner_expl)
+    return z_a, z_b, z_c, w_prep
+
+
+@gtx.field_operator
 def _solve_tridiagonal_matrix_for_w_forward_sweep(
     vwind_impl_wgt: fa.CellField[wpfloat],
     theta_v_ic: fa.CellKField[wpfloat],
@@ -57,14 +81,9 @@ def _solve_tridiagonal_matrix_for_w_forward_sweep(
     cpd: wpfloat,
 ) -> tuple[fa.CellKField[vpfloat], fa.CellKField[wpfloat]]:
     """Formerly known as _mo_solve_nonhydro_stencil_52."""
-    ddqz_z_half_wp = astype(ddqz_z_half, wpfloat)
-
-    z_gamma_vp = astype(dtime * cpd * vwind_impl_wgt * theta_v_ic / ddqz_z_half_wp, vpfloat)
-    z_a = (vpfloat("0.0") - z_gamma_vp) * z_beta(Koff[-1]) * z_alpha(Koff[-1])
-    z_c = (vpfloat("0.0") - z_gamma_vp) * z_beta * z_alpha(Koff[1])
-    z_b = vpfloat("1.0") + z_gamma_vp * z_alpha * (z_beta(Koff[-1]) + z_beta)
-    z_gamma_wp = astype(z_gamma_vp, wpfloat)
-    w_prep = z_w_expl - z_gamma_wp * (z_exner_expl(Koff[-1]) - z_exner_expl)
+    z_a, z_b, z_c, w_prep = prepare_tridiagonal_system_for_w(
+        vwind_impl_wgt, theta_v_ic, ddqz_z_half, z_alpha, z_beta, z_w_expl, z_exner_expl, dtime, cpd
+    )
     z_q_res, w_res = tridiagonal_forward_sweep_for_w(z_a, z_b, z_c, w_prep)
     return z_q_res, w_res
 

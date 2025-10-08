@@ -23,6 +23,7 @@ from icon4py.model.atmosphere.dycore.stencils import (
     compute_cell_diagnostics_for_dycore,
     compute_edge_diagnostics_for_dycore_and_update_vn,
     vertically_implicit_dycore_solver,
+    vertically_implicit_dycore_solver_v2,
 )
 from icon4py.model.atmosphere.dycore.stencils.compute_dwdz_for_divergence_damping import (
     compute_dwdz_for_divergence_damping,
@@ -569,9 +570,46 @@ class SolveNonhydro:
             offset_provider=self._grid.connectivities,
         )
 
+        # self._vertically_implicit_solver_at_predictor_step = setup_program(
+        #     backend=backend,
+        #     program=vertically_implicit_dycore_solver.vertically_implicit_solver_at_predictor_step,
+        #     constant_args={
+        #         "geofac_div": self._interpolation_state.geofac_div,
+        #         "exner_w_explicit_weight_parameter": self._metric_state_nonhydro.exner_w_explicit_weight_parameter,
+        #         "inv_ddqz_z_full": self._metric_state_nonhydro.inv_ddqz_z_full,
+        #         "exner_w_implicit_weight_parameter": self._metric_state_nonhydro.exner_w_implicit_weight_parameter,
+        #         "ddqz_z_half": self._metric_state_nonhydro.ddqz_z_half,
+        #         "reference_exner_at_cells_on_model_levels": self._metric_state_nonhydro.reference_exner_at_cells_on_model_levels,
+        #         "e_bln_c_s": self._interpolation_state.e_bln_c_s,
+        #         "wgtfac_c": self._metric_state_nonhydro.wgtfac_c,
+        #         "wgtfacq_c": self._metric_state_nonhydro.wgtfacq_c,
+        #         "iau_wgt_dyn": self._config.iau_wgt_dyn,
+        #         "is_iau_active": self._config.is_iau_active,
+        #         "rayleigh_type": self._config.rayleigh_type,
+        #         "divdamp_type": self._config.divdamp_type,
+        #     },
+        #     variants={
+        #         "at_first_substep": [False, True],
+        #     },
+        #     horizontal_sizes={
+        #         "start_cell_index_nudging": self._start_cell_nudging,
+        #         "end_cell_index_local": self._end_cell_local,
+        #         "start_cell_index_lateral_lvl3": self._start_cell_lateral_boundary_level_3,
+        #         "end_cell_index_halo_lvl1": self._end_cell_halo,
+        #     },
+        #     vertical_sizes={
+        #         "end_index_of_damping_layer": self._vertical_params.end_index_of_damping_layer,
+        #         "kstart_moist": self._vertical_params.kstart_moist,
+        #         "flat_level_index_plus1": gtx.int32(self._vertical_params.nflatlev + 1),
+        #         "vertical_start_index_model_top": gtx.int32(0),
+        #         "vertical_end_index_model_surface": gtx.int32(self._grid.num_levels + 1),
+        #     },
+        #     offset_provider=self._grid.connectivities,
+        # )
+
         self._vertically_implicit_solver_at_predictor_step = setup_program(
             backend=backend,
-            program=vertically_implicit_dycore_solver.vertically_implicit_solver_at_predictor_step,
+            program=vertically_implicit_dycore_solver_v2.vertically_implicit_solver_at_predictor_step,
             constant_args={
                 "geofac_div": self._interpolation_state.geofac_div,
                 "exner_w_explicit_weight_parameter": self._metric_state_nonhydro.exner_w_explicit_weight_parameter,
@@ -950,6 +988,32 @@ class SolveNonhydro:
         """
         self.intermediate_fields = IntermediateFields.allocate(grid=self._grid, allocator=allocator)
 
+        # Hacking with vertically implicit solver
+        self.rho_explicit_term = data_alloc.zero_field(
+            self._grid, dims.CellDim, dims.KDim, extend={dims.KDim: 1}, allocator=allocator
+        )
+        self.exner_explicit_term = data_alloc.zero_field(
+            self._grid, dims.CellDim, dims.KDim, extend={dims.KDim: 1}, allocator=allocator
+        )
+        self.z_a = data_alloc.zero_field(
+            self._grid, dims.CellDim, dims.KDim, extend={dims.KDim: 1}, allocator=allocator
+        )
+        self.z_b = data_alloc.zero_field(
+            self._grid, dims.CellDim, dims.KDim, extend={dims.KDim: 1}, allocator=allocator
+        )
+        self.z_c = data_alloc.zero_field(
+            self._grid, dims.CellDim, dims.KDim, extend={dims.KDim: 1}, allocator=allocator
+        )
+        self.w_prep = data_alloc.zero_field(
+            self._grid, dims.CellDim, dims.KDim, extend={dims.KDim: 1}, allocator=allocator
+        )
+        self.tridiagonal_alpha_coeff_at_cells_on_half_levels = data_alloc.zero_field(
+            self._grid, dims.CellDim, dims.KDim, extend={dims.KDim: 1}, allocator=allocator
+        )
+        self.tridiagonal_beta_coeff_at_cells_on_model_levels = data_alloc.zero_field(
+            self._grid, dims.CellDim, dims.KDim, extend={dims.KDim: 1}, allocator=allocator
+        )
+
     def _determine_local_domains(self):
         vertex_domain = h_grid.domain(dims.VertexDim)
         cell_domain = h_grid.domain(dims.CellDim)
@@ -1133,7 +1197,7 @@ class SolveNonhydro:
             ddz_of_temporal_extrapolation_of_perturbed_exner_on_model_levels=self.ddz_of_temporal_extrapolation_of_perturbed_exner_on_model_levels,
             d2dz2_of_temporal_extrapolation_of_perturbed_exner_on_model_levels=self.d2dz2_of_temporal_extrapolation_of_perturbed_exner_on_model_levels,
             perturbed_exner_at_cells_on_model_levels=diagnostic_state_nh.perturbed_exner_at_cells_on_model_levels,
-            exner_at_cells_on_half_levels=self.exner_at_cells_on_half_levels,
+            exner_at_cells_on_half_levels=self.exner_at_cells_on_half_levels,  # program local temporary
             perturbed_rho_at_cells_on_model_levels=self.perturbed_rho_at_cells_on_model_levels,
             perturbed_theta_v_at_cells_on_model_levels=self.perturbed_theta_v_at_cells_on_model_levels,
             rho_at_cells_on_half_levels=diagnostic_state_nh.rho_at_cells_on_half_levels,
@@ -1224,6 +1288,14 @@ class SolveNonhydro:
             rayleigh_damping_factor=self.rayleigh_damping_factor,
             dtime=dtime,
             at_first_substep=at_first_substep,
+            rho_explicit_term=self.rho_explicit_term,
+            exner_explicit_term=self.exner_explicit_term,
+            z_a=self.z_a,
+            z_b=self.z_b,
+            z_c=self.z_c,
+            w_prep=self.w_prep,
+            tridiagonal_alpha_coeff_at_cells_on_half_levels=self.tridiagonal_alpha_coeff_at_cells_on_half_levels,
+            tridiagonal_beta_coeff_at_cells_on_model_levels=self.tridiagonal_beta_coeff_at_cells_on_model_levels,
         )
 
         if self._grid.limited_area:
