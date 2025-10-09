@@ -241,11 +241,11 @@ def _solve_tridiagonal_matrix_for_w_back_substitution_scan_with_klemp(
 ) -> tuple[wpfloat, wpfloat, gtx.int32]:
     """Formerly known as _mo_solve_nonhydro_stencil_53_scan."""
     _, w_state, count = state
+    k_index = nlev - 1 - count
 
     non_damped_w = w + w_state * astype(z_q, wpfloat)
 
     if rayleigh_type == rayleigh_damping_options.KLEMP:
-        k_index = nlev - 1 - count
         next_w = (
             rayleigh_damping_factor * non_damped_w
             if (k_index < end_index_of_damping_layer + 1) & (k_index > 0)
