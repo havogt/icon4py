@@ -218,19 +218,70 @@ def solve_w(
 
 
 @gtx.field_operator
-def solve_w2(
+def _apply_rayleigh_damping_mechanism_scalar(
+    z_raylfac: wpfloat,
+    w_1: wpfloat,
+    w: wpfloat,
+) -> wpfloat:
+    """Formerly known as _mo_solve_nonhydro_stencil_54."""
+    # z_raylfac = broadcast(z_raylfac, (dims.CellDim, dims.KDim))
+    w_wp = z_raylfac * w + (wpfloat("1.0") - z_raylfac) * w_1
+    return w_wp
+
+
+@gtx.scan_operator(axis=dims.KDim, forward=False, init=(wpfloat(0.0), wpfloat(0.0), gtx.int32(0)))
+def _solve_tridiagonal_matrix_for_w_back_substitution_scan_with_klemp(
+    state: tuple[wpfloat, wpfloat, gtx.int32],
+    z_q: vpfloat,
+    w: wpfloat,
+    rayleigh_type: gtx.int32,
+    rayleigh_damping_factor: ta.wpfloat,
+    end_index_of_damping_layer: gtx.int32,
+    nlev: gtx.int32,
+) -> tuple[wpfloat, wpfloat, gtx.int32]:
+    """Formerly known as _mo_solve_nonhydro_stencil_53_scan."""
+    _, w_state, count = state
+
+    non_damped_w = w + w_state * astype(z_q, wpfloat)
+
+    if rayleigh_type == rayleigh_damping_options.KLEMP:
+        k_index = nlev - 1 - count
+        next_w = (
+            rayleigh_damping_factor * non_damped_w
+            if (k_index < end_index_of_damping_layer + 1) & (k_index > 0)
+            else non_damped_w
+        )
+    else:
+        next_w = non_damped_w
+
+    return next_w, non_damped_w, count + 1
+
+
+@gtx.field_operator
+# def solve_w2(
+def _vertically_implicit_solver_at_predictor_step_solve(
     z_a: fa.CellKField[vpfloat],
     z_b: fa.CellKField[vpfloat],
     z_c: fa.CellKField[vpfloat],
     w_prep: fa.CellKField[wpfloat],
+    rayleigh_type: gtx.int32,
+    rayleigh_damping_factor: fa.KField[ta.wpfloat],
+    end_index_of_damping_layer: gtx.int32,
+    nlev: gtx.int32,
 ) -> fa.CellKField[wpfloat]:
     tridiagonal_intermediate_result, next_w_intermediate_result = tridiagonal_forward_sweep_for_w(
         z_a, z_b, z_c, w_prep
     )
-    return _solve_tridiagonal_matrix_for_w_back_substitution_scan(
+    next_w = _solve_tridiagonal_matrix_for_w_back_substitution_scan_with_klemp(
         z_q=tridiagonal_intermediate_result,
         w=next_w_intermediate_result,
-    )
+        rayleigh_type=rayleigh_type,
+        rayleigh_damping_factor=rayleigh_damping_factor,
+        end_index_of_damping_layer=end_index_of_damping_layer,
+        nlev=nlev,
+    )[0]
+
+    return next_w
 
 
 @gtx.field_operator
@@ -370,36 +421,29 @@ def _vertically_implicit_solver_at_predictor_step_pre(
     )
 
 
-@gtx.field_operator
-def _vertically_implicit_solver_at_predictor_step_solve(
-    z_a: fa.CellKField[ta.vpfloat],
-    z_b: fa.CellKField[ta.vpfloat],
-    z_c: fa.CellKField[ta.vpfloat],
-    w_prep: fa.CellKField[ta.wpfloat],
-    rayleigh_damping_factor: fa.KField[ta.wpfloat],
-    rayleigh_type: gtx.int32,
-    end_index_of_damping_layer: gtx.int32,
-) -> fa.CellKField[ta.wpfloat]:
-    next_w = solve_w2(
-        z_a=z_a,
-        z_b=z_b,
-        z_c=z_c,
-        w_prep=w_prep,
-    )
+# @gtx.field_operator
+# def _vertically_implicit_solver_at_predictor_step_solve(
+#     z_a: fa.CellKField[ta.vpfloat],
+#     z_b: fa.CellKField[ta.vpfloat],
+#     z_c: fa.CellKField[ta.vpfloat],
+#     w_prep: fa.CellKField[ta.wpfloat],
+#     rayleigh_damping_factor: fa.KField[ta.wpfloat],
+#     rayleigh_type: gtx.int32,
+#     end_index_of_damping_layer: gtx.int32,
+#     nlev: gtx.int32,
+# ) -> fa.CellKField[ta.wpfloat]:
+#     next_w = solve_w2(
+#         z_a=z_a,
+#         z_b=z_b,
+#         z_c=z_c,
+#         w_prep=w_prep,
+#         rayleigh_type=rayleigh_type,
+#         rayleigh_damping_factor=rayleigh_damping_factor,
+#         end_index_of_damping_layer=end_index_of_damping_layer,
+#         nlev=nlev,
+#     )
 
-    # TODO absorb in scan
-    w_1 = broadcast(wpfloat("0.0"), (dims.CellDim,))
-    if rayleigh_type == rayleigh_damping_options.KLEMP:
-        next_w = concat_where(
-            (dims.KDim > 0) & (dims.KDim < end_index_of_damping_layer + 1),
-            _apply_rayleigh_damping_mechanism(
-                z_raylfac=rayleigh_damping_factor,
-                w_1=w_1,
-                w=next_w,
-            ),
-            next_w,
-        )
-    return next_w
+#     return next_w
 
 
 @gtx.field_operator
@@ -608,6 +652,7 @@ def vertically_implicit_solver_at_predictor_step(
         rayleigh_damping_factor=rayleigh_damping_factor,
         rayleigh_type=rayleigh_type,
         end_index_of_damping_layer=end_index_of_damping_layer,
+        nlev=vertical_end_index_model_surface - 1,
         out=next_w,
         domain={
             dims.CellDim: (start_cell_index_nudging, end_cell_index_local),
