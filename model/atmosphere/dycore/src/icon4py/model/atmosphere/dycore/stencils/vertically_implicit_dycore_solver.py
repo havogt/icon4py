@@ -215,10 +215,35 @@ def solve_w(
     return next_w
 
 
+@gtx.scan_operator(axis=dims.KDim, forward=False, init=(wpfloat(0.0), wpfloat(0.0), gtx.int32(0)))
+def _solve_tridiagonal_matrix_for_w_back_substitution_scan_with_klemp(
+    state: tuple[wpfloat, wpfloat, gtx.int32],
+    z_q: vpfloat,
+    w: wpfloat,
+    rayleigh_type: gtx.int32,
+    rayleigh_damping_factor: ta.wpfloat,
+    end_index_of_damping_layer: gtx.int32,
+    nlev: gtx.int32,
+) -> tuple[wpfloat, wpfloat, gtx.int32]:
+    """Formerly known as _mo_solve_nonhydro_stencil_53_scan."""
+    _, w_state, count = state
+    non_damped_w = w + w_state * astype(z_q, wpfloat)
+    if rayleigh_type == rayleigh_damping_options.KLEMP:
+        k_index = nlev - 1 - count
+        next_w = (
+            rayleigh_damping_factor * non_damped_w
+            if (k_index < end_index_of_damping_layer + 1) & (k_index > 0)
+            else non_damped_w
+        )
+    else:
+        next_w = non_damped_w
+
+    return next_w, non_damped_w, count + 1
+
+
 @gtx.field_operator
 def solve_w_pred(
     last_inner_level: gtx.int32,
-    # next_w: fa.CellKField[wpfloat],
     contravariant_correction_at_cells_on_half_levels: fa.CellKField[ta.vpfloat],
     vwind_impl_wgt: fa.CellField[wpfloat],
     theta_v_ic: fa.CellKField[wpfloat],
@@ -229,6 +254,9 @@ def solve_w_pred(
     z_exner_expl: fa.CellKField[wpfloat],
     dtime: wpfloat,
     cpd: wpfloat,
+    rayleigh_type: gtx.int32,
+    rayleigh_damping_factor: fa.KField[ta.wpfloat],
+    end_index_of_damping_layer: gtx.int32,
 ) -> fa.CellKField[wpfloat]:
     (
         tridiagonal_intermediate_result,
@@ -250,10 +278,14 @@ def solve_w_pred(
     )
     next_w = concat_where(
         dims.KDim < last_inner_level,
-        _solve_tridiagonal_matrix_for_w_back_substitution_scan(
+        _solve_tridiagonal_matrix_for_w_back_substitution_scan_with_klemp(
             z_q=tridiagonal_intermediate_result,
             w=next_w_intermediate_result,
-        ),
+            rayleigh_type=rayleigh_type,
+            rayleigh_damping_factor=rayleigh_damping_factor,
+            end_index_of_damping_layer=end_index_of_damping_layer,
+            nlev=last_inner_level,
+        )[0],
         contravariant_correction_at_cells_on_half_levels,
     )
     return next_w
@@ -261,9 +293,6 @@ def solve_w_pred(
 
 @gtx.field_operator
 def _vertically_implicit_solver_at_predictor_step(
-    # next_w: fa.CellKField[
-    #     ta.wpfloat
-    # ],  # necessary input because the last vertical level is set outside this field operator
     geofac_div: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], ta.wpfloat],
     mass_flux_at_edges_on_model_levels: fa.EdgeKField[ta.wpfloat],
     theta_v_flux_at_edges_on_model_levels: fa.EdgeKField[ta.wpfloat],
@@ -375,7 +404,6 @@ def _vertically_implicit_solver_at_predictor_step(
 
     next_w = solve_w_pred(
         last_inner_level=n_lev,
-        # next_w=next_w,  # n_lev value is set by _set_surface_boundary_condtion_for_computation_of_w
         contravariant_correction_at_cells_on_half_levels=contravariant_correction_at_cells_on_half_levels,
         vwind_impl_wgt=exner_w_implicit_weight_parameter,
         theta_v_ic=theta_v_at_cells_on_half_levels,
@@ -386,25 +414,22 @@ def _vertically_implicit_solver_at_predictor_step(
         z_exner_expl=exner_explicit_term,
         dtime=dtime,
         cpd=dycore_consts.cpd,
+        rayleigh_type=rayleigh_type,
+        rayleigh_damping_factor=rayleigh_damping_factor,
+        end_index_of_damping_layer=end_index_of_damping_layer,
     )
 
-    w_1 = broadcast(wpfloat("0.0"), (dims.CellDim,))
-    if rayleigh_type == rayleigh_damping_options.KLEMP:
-        next_w = concat_where(
-            (dims.KDim > 0) & (dims.KDim < end_index_of_damping_layer + 1),
-            _apply_rayleigh_damping_mechanism(
-                z_raylfac=rayleigh_damping_factor,
-                w_1=w_1,
-                w=next_w,
-            ),
-            next_w,
-        )
-
-    # next_w = concat_where(
-    #     dims.KDim < n_lev,
-    #     next_w,
-    #     contravariant_correction_at_cells_on_half_levels,
-    # )
+    # w_1 = broadcast(wpfloat("0.0"), (dims.CellDim,))
+    # if rayleigh_type == rayleigh_damping_options.KLEMP:
+    #     next_w = concat_where(
+    #         (dims.KDim > 0) & (dims.KDim < end_index_of_damping_layer + 1),
+    #         _apply_rayleigh_damping_mechanism(
+    #             z_raylfac=rayleigh_damping_factor,
+    #             w_1=w_1,
+    #             w=next_w,
+    #         ),
+    #         next_w,
+    #     )
 
     next_rho, next_exner, next_theta_v = _compute_results_for_thermodynamic_variables(
         z_rho_expl=rho_explicit_term,
@@ -517,16 +542,7 @@ def vertically_implicit_solver_at_predictor_step(
             dims.KDim: (flat_level_index_plus1, vertical_end_index_model_surface),
         },
     )
-    # _set_surface_boundary_condition_for_computation_of_w(
-    #     contravariant_correction_at_cells_on_half_levels=contravariant_correction_at_cells_on_half_levels,
-    #     out=next_w,
-    #     domain={
-    #         dims.CellDim: (start_cell_index_nudging, end_cell_index_local),
-    #         dims.KDim: (vertical_end_index_model_surface - 1, vertical_end_index_model_surface),
-    #     },
-    # )
     _vertically_implicit_solver_at_predictor_step(
-        # next_w=next_w,
         geofac_div=geofac_div,
         mass_flux_at_edges_on_model_levels=mass_flux_at_edges_on_model_levels,
         theta_v_flux_at_edges_on_model_levels=theta_v_flux_at_edges_on_model_levels,
