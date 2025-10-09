@@ -216,10 +216,54 @@ def solve_w(
 
 
 @gtx.field_operator
+def solve_w_pred(
+    last_inner_level: gtx.int32,
+    # next_w: fa.CellKField[wpfloat],
+    contravariant_correction_at_cells_on_half_levels: fa.CellKField[ta.vpfloat],
+    vwind_impl_wgt: fa.CellField[wpfloat],
+    theta_v_ic: fa.CellKField[wpfloat],
+    ddqz_z_half: fa.CellKField[vpfloat],
+    z_alpha: fa.CellKField[vpfloat],
+    z_beta: fa.CellKField[vpfloat],
+    z_w_expl: fa.CellKField[wpfloat],
+    z_exner_expl: fa.CellKField[wpfloat],
+    dtime: wpfloat,
+    cpd: wpfloat,
+) -> fa.CellKField[wpfloat]:
+    (
+        tridiagonal_intermediate_result,
+        next_w_intermediate_result,
+    ) = concat_where(
+        dims.KDim > 0,
+        _solve_tridiagonal_matrix_for_w_forward_sweep(
+            vwind_impl_wgt=vwind_impl_wgt,
+            theta_v_ic=theta_v_ic,
+            ddqz_z_half=ddqz_z_half,
+            z_alpha=z_alpha,
+            z_beta=z_beta,
+            z_w_expl=z_w_expl,
+            z_exner_expl=z_exner_expl,
+            dtime=dtime,
+            cpd=cpd,
+        ),
+        (broadcast(vpfloat("0.0"), (dims.CellDim,)), broadcast(wpfloat("0.0"), (dims.CellDim,))),
+    )
+    next_w = concat_where(
+        dims.KDim < last_inner_level,
+        _solve_tridiagonal_matrix_for_w_back_substitution_scan(
+            z_q=tridiagonal_intermediate_result,
+            w=next_w_intermediate_result,
+        ),
+        contravariant_correction_at_cells_on_half_levels,
+    )
+    return next_w
+
+
+@gtx.field_operator
 def _vertically_implicit_solver_at_predictor_step(
-    next_w: fa.CellKField[
-        ta.wpfloat
-    ],  # necessary input because the last vertical level is set outside this field operator
+    # next_w: fa.CellKField[
+    #     ta.wpfloat
+    # ],  # necessary input because the last vertical level is set outside this field operator
     geofac_div: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], ta.wpfloat],
     mass_flux_at_edges_on_model_levels: fa.EdgeKField[ta.wpfloat],
     theta_v_flux_at_edges_on_model_levels: fa.EdgeKField[ta.wpfloat],
@@ -329,9 +373,10 @@ def _vertically_implicit_solver_at_predictor_step(
             iau_wgt_dyn=iau_wgt_dyn,
         )
 
-    next_w = solve_w(
+    next_w = solve_w_pred(
         last_inner_level=n_lev,
-        next_w=next_w,  # n_lev value is set by _set_surface_boundary_condtion_for_computation_of_w
+        # next_w=next_w,  # n_lev value is set by _set_surface_boundary_condtion_for_computation_of_w
+        contravariant_correction_at_cells_on_half_levels=contravariant_correction_at_cells_on_half_levels,
         vwind_impl_wgt=exner_w_implicit_weight_parameter,
         theta_v_ic=theta_v_at_cells_on_half_levels,
         ddqz_z_half=ddqz_z_half,
@@ -355,11 +400,11 @@ def _vertically_implicit_solver_at_predictor_step(
             next_w,
         )
 
-    next_w = concat_where(
-        dims.KDim < n_lev,
-        next_w,
-        contravariant_correction_at_cells_on_half_levels,
-    )
+    # next_w = concat_where(
+    #     dims.KDim < n_lev,
+    #     next_w,
+    #     contravariant_correction_at_cells_on_half_levels,
+    # )
 
     next_rho, next_exner, next_theta_v = _compute_results_for_thermodynamic_variables(
         z_rho_expl=rho_explicit_term,
@@ -481,7 +526,7 @@ def vertically_implicit_solver_at_predictor_step(
     #     },
     # )
     _vertically_implicit_solver_at_predictor_step(
-        next_w=next_w,
+        # next_w=next_w,
         geofac_div=geofac_div,
         mass_flux_at_edges_on_model_levels=mass_flux_at_edges_on_model_levels,
         theta_v_flux_at_edges_on_model_levels=theta_v_flux_at_edges_on_model_levels,
