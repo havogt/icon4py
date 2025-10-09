@@ -355,6 +355,12 @@ def _vertically_implicit_solver_at_predictor_step(
             next_w,
         )
 
+    next_w = concat_where(
+        dims.KDim < n_lev,
+        next_w,
+        contravariant_correction_at_cells_on_half_levels,
+    )
+
     next_rho, next_exner, next_theta_v = _compute_results_for_thermodynamic_variables(
         z_rho_expl=rho_explicit_term,
         vwind_impl_wgt=exner_w_implicit_weight_parameter,
@@ -466,14 +472,14 @@ def vertically_implicit_solver_at_predictor_step(
             dims.KDim: (flat_level_index_plus1, vertical_end_index_model_surface),
         },
     )
-    _set_surface_boundary_condition_for_computation_of_w(
-        contravariant_correction_at_cells_on_half_levels=contravariant_correction_at_cells_on_half_levels,
-        out=next_w,
-        domain={
-            dims.CellDim: (start_cell_index_nudging, end_cell_index_local),
-            dims.KDim: (vertical_end_index_model_surface - 1, vertical_end_index_model_surface),
-        },
-    )
+    # _set_surface_boundary_condition_for_computation_of_w(
+    #     contravariant_correction_at_cells_on_half_levels=contravariant_correction_at_cells_on_half_levels,
+    #     out=next_w,
+    #     domain={
+    #         dims.CellDim: (start_cell_index_nudging, end_cell_index_local),
+    #         dims.KDim: (vertical_end_index_model_surface - 1, vertical_end_index_model_surface),
+    #     },
+    # )
     _vertically_implicit_solver_at_predictor_step(
         next_w=next_w,
         geofac_div=geofac_div,
