@@ -286,7 +286,7 @@ def solve_w_pred(
             end_index_of_damping_layer=end_index_of_damping_layer,
             nlev=last_inner_level,
         )[0],
-        contravariant_correction_at_cells_on_half_levels,
+        contravariant_correction_at_cells_on_half_levels,  # TODO absorb in scan
     )
     return next_w
 
@@ -374,11 +374,11 @@ def _vertically_implicit_solver_at_predictor_step(
         rho_at_cells_on_half_levels=rho_at_cells_on_half_levels,
         dtime=dtime,
     )
-    tridiagonal_alpha_coeff_at_cells_on_half_levels = concat_where(
-        dims.KDim < n_lev,
-        tridiagonal_alpha_coeff_at_cells_on_half_levels,
-        broadcast(vpfloat("0.0"), (dims.CellDim,)),
-    )
+    # tridiagonal_alpha_coeff_at_cells_on_half_levels = concat_where(
+    #     dims.KDim < n_lev,
+    #     tridiagonal_alpha_coeff_at_cells_on_half_levels,
+    #     broadcast(vpfloat("0.0"), (dims.CellDim,)),
+    # )
 
     (rho_explicit_term, exner_explicit_term) = _compute_explicit_part_for_rho_and_exner(
         rho_nnow=current_rho,
