@@ -43,7 +43,7 @@ def write_file(string: str, outdir: pathlib.Path, fname: str) -> None:
         f.write(string)
 
 
-def setup_logger(name: str, log_level: int = logging.INFO) -> logging.Logger:
+def setup_logger(name: str, log_level: int = logging.CRITICAL) -> logging.Logger:
     """Set up a logger with a given name and log level."""
     logger = logging.getLogger(name)
     logger.setLevel(log_level)
