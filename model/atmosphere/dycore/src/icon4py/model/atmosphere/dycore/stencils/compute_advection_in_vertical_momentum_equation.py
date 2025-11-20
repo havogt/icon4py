@@ -475,6 +475,7 @@ def _compute_contravariant_correction_and_advection_in_vertical_momentum_equatio
     fa.CellKField[ta.vpfloat],
     fa.CellKField[ta.vpfloat],
     fa.CellKField[ta.vpfloat],
+    fa.CellKField[bool],
 ]:
     contravariant_correction_at_cells_on_half_levels = (
         _interpolate_contravariant_correction_to_cells_on_half_levels(
@@ -529,6 +530,7 @@ def _compute_contravariant_correction_and_advection_in_vertical_momentum_equatio
         vertical_wind_advective_tendency,
         contravariant_corrected_w_at_cells_on_model_levels,
         vertical_cfl,
+        cfl_clipping,
     )
 
 
@@ -549,6 +551,7 @@ def compute_contravariant_correction_and_advection_in_vertical_momentum_equation
     area: fa.CellField[ta.wpfloat],
     geofac_n2s: gtx.Field[gtx.Dims[dims.CellDim, dims.C2E2CODim], ta.wpfloat],
     owner_mask: fa.CellField[bool],
+    cfl_clipping: fa.CellKField[bool],
     scalfac_exdiff: ta.wpfloat,
     cfl_w_limit: ta.vpfloat,
     dtime: ta.wpfloat,
@@ -622,6 +625,7 @@ def compute_contravariant_correction_and_advection_in_vertical_momentum_equation
             vertical_wind_advective_tendency,
             contravariant_corrected_w_at_cells_on_model_levels,
             vertical_cfl,
+            cfl_clipping,
         ),
         domain={
             dims.CellDim: (horizontal_start, horizontal_end),

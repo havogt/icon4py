@@ -540,12 +540,16 @@ def model_top_height(experiment: definitions.Experiment) -> float:
         return 23000.0
     elif experiment == definitions.Experiments.EXCLAIM_APE:
         return 75000.0
+    elif experiment == definitions.Experiments.UNCOUPLED_R02B05:
+        return 85000.0
     else:
         return 23500.0
 
 
 @pytest.fixture
-def flat_height() -> float:
+def flat_height(experiment: definitions.Experiment) -> float:
+    if experiment == definitions.Experiments.UNCOUPLED_R02B05:
+        return 25000.0
     return 16000.0
 
 
@@ -553,7 +557,10 @@ def flat_height() -> float:
 def stretch_factor(experiment: definitions.Experiment) -> float:
     if experiment == definitions.Experiments.MCH_CH_R04B09:
         return 0.65
-    elif experiment == definitions.Experiments.EXCLAIM_APE:
+    elif experiment in (
+        definitions.Experiments.EXCLAIM_APE,
+        definitions.Experiments.UNCOUPLED_R02B05,
+    ):
         return 0.9
     else:
         return 1.0
@@ -565,6 +572,8 @@ def damping_height(experiment: definitions.Experiment) -> float:
         return 12500.0
     elif experiment == definitions.Experiments.EXCLAIM_APE:
         return 50000.0
+    elif experiment == definitions.Experiments.UNCOUPLED_R02B05:
+        return 30000.0
     else:
         return 45000.0
 
@@ -589,10 +598,10 @@ def rayleigh_coeff(experiment: definitions.Experiment) -> float:
 
 @pytest.fixture
 def exner_expol(experiment: definitions.Experiment) -> float:
-    if experiment == definitions.Experiments.EXCLAIM_APE:
-        return 0.3333333333333
-    else:
-        return 0.333
+    # if experiment == definitions.Experiments.EXCLAIM_APE:
+    return 0.3333333333333
+    # else:
+    # return 0.333
 
 
 @pytest.fixture

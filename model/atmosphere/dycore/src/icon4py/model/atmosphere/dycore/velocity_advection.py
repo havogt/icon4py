@@ -243,6 +243,7 @@ class VelocityAdvection:
         tangential_wind_on_half_levels: fa.EdgeKField[ta.vpfloat],
         dtime: ta.wpfloat,
         cell_areas: fa.CellField[ta.wpfloat],
+        cfl_clipping: fa.CellKField[bool],
     ):
         """
         Compute some diagnostic variables that are used in the predictor step
@@ -282,6 +283,7 @@ class VelocityAdvection:
             w=prognostic_state.w,
             horizontal_advection_of_w_at_edges_on_half_levels=self._horizontal_advection_of_w_at_edges_on_half_levels,
             contravariant_correction_at_edges_on_model_levels=contravariant_correction_at_edges_on_model_levels,
+            cfl_clipping=cfl_clipping,
             area=cell_areas,
             scalfac_exdiff=scalfac_exdiff,
             cfl_w_limit=cfl_w_limit,
@@ -318,7 +320,8 @@ class VelocityAdvection:
 
     def _scale_factors_by_dtime(self, dtime):
         scaled_cfl_w_limit = self.cfl_w_limit / dtime
-        scalfac_exdiff = self.scalfac_exdiff / (dtime * (0.85 - scaled_cfl_w_limit * dtime))
+        scalfac_exdiff = self.scalfac_exdiff / (dtime * 0.2)
+        # scalfac_exdiff = np.float64(0.25) / dtime
         return scaled_cfl_w_limit, scalfac_exdiff
 
     def run_corrector_step(

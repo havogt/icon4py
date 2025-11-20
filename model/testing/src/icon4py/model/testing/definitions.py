@@ -189,6 +189,13 @@ class Experiments:
         num_levels=64,
         partitioned_data={1: "https://polybox.ethz.ch/index.php/s/ByLnyii7MMRHJbK/download"},
     )
+    UNCOUPLED_R02B05: Final = Experiment(
+        name="uncoupled_r02b05",
+        description="",
+        grid=None,
+        num_levels=120,
+        partitioned_data={1: None},
+    )
 
 
 # TODO(havogt): the following configs should be part of the serialized experiment
