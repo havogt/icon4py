@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ICON Grid Zone Ranges Visualization</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --card-bg: #16213e;
+    --text: #e0e0e0;
+    --text-muted: #8899aa;
+    --accent: #0f3460;
+    --border: #2a2a4a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+    line-height: 1.5;
+  }
+  h1 { text-align: center; font-size: 1.6rem; margin-bottom: 8px; }
+  .subtitle { text-align: center; color: var(--text-muted); margin-bottom: 24px; font-size: 0.9rem; }
+
+  /* Tab navigation */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    justify-content: center;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+  .tab-btn {
+    padding: 10px 20px;
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 8px 8px 0 0;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+  }
+  .tab-btn:hover { background: var(--accent); color: var(--text); }
+  .tab-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-bottom-color: var(--accent);
+    font-weight: 600;
+  }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* Case layout */
+  .case-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 24px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  .case-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .case-card h2 {
+    font-size: 1.1rem;
+    margin-bottom: 4px;
+  }
+  .case-card .description {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    margin-bottom: 16px;
+  }
+
+  /* Dimension section */
+  .dim-section {
+    margin-bottom: 18px;
+  }
+  .dim-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: #aabbcc;
+  }
+
+  /* Bar visualization */
+  .bar-container {
+    position: relative;
+    height: 36px;
+    border-radius: 6px;
+    overflow: hidden;
+    display: flex;
+    background: #111;
+  }
+  .bar-segment {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: #fff;
+    position: relative;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    transition: opacity 0.2s;
+    cursor: default;
+  }
+  .bar-segment:hover {
+    opacity: 0.85;
+  }
+  .bar-segment .seg-label {
+    padding: 0 4px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  }
+
+  /* Index labels below bar */
+  .index-labels {
+    position: relative;
+    height: 18px;
+    margin-top: 2px;
+    font-size: 0.65rem;
+    color: var(--text-muted);
+  }
+  .index-label {
+    position: absolute;
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+
+  /* Tooltip */
+  .tooltip {
+    display: none;
+    position: fixed;
+    background: #222;
+    border: 1px solid #555;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 0.78rem;
+    color: #eee;
+    z-index: 1000;
+    pointer-events: none;
+    max-width: 260px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .tooltip .tt-zone { font-weight: 700; margin-bottom: 2px; }
+  .tooltip .tt-range { color: #aaa; }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    margin: 20px auto;
+    max-width: 1000px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+  }
+  .legend-swatch {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  /* LOCAL bracket */
+  .local-bracket {
+    margin-top: 4px;
+    position: relative;
+    height: 14px;
+  }
+  .local-bracket-line {
+    position: absolute;
+    border: 1px solid #6688aa;
+    border-top: none;
+    height: 8px;
+    top: 0;
+  }
+  .local-bracket-label {
+    position: absolute;
+    font-size: 0.65rem;
+    color: #6688aa;
+    transform: translateX(-50%);
+    top: 0px;
+  }
+
+  /* Notes */
+  .notes {
+    max-width: 1200px;
+    margin: 24px auto 0;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+  }
+  .notes h3 { color: var(--text); margin-bottom: 8px; font-size: 0.95rem; }
+  .notes ul { margin-left: 20px; margin-top: 4px; }
+  .notes li { margin-bottom: 4px; }
+  .notes code { background: #0a0a1a; padding: 1px 5px; border-radius: 3px; font-size: 0.8rem; }
+
+  /* Rank labels for multi-rank */
+  .rank-group {
+    margin-bottom: 12px;
+  }
+  .rank-label {
+    font-size: 0.75rem;
+    color: #7799bb;
+    margin-bottom: 3px;
+  }
+</style>
+</head>
+<body>
+
+<h1>ICON Grid Domain Zone Ranges</h1>
+<p class="subtitle">Index-space layout of horizontal grid zones for Cells, Edges, and Vertices</p>
+
+<div class="legend" id="legend"></div>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="tab-overview">Overview (All 4)</button>
+  <button class="tab-btn" data-tab="tab-global-single">Global / Single Rank</button>
+  <button class="tab-btn" data-tab="tab-global-multi">Global / Multi Rank</button>
+  <button class="tab-btn" data-tab="tab-regional-single">Regional / Single Rank</button>
+  <button class="tab-btn" data-tab="tab-regional-multi">Regional / Multi Rank</button>
+</div>
+
+<div id="tab-overview" class="tab-content active"></div>
+<div id="tab-global-single" class="tab-content"></div>
+<div id="tab-global-multi" class="tab-content"></div>
+<div id="tab-regional-single" class="tab-content"></div>
+<div id="tab-regional-multi" class="tab-content"></div>
+
+<div class="tooltip" id="tooltip">
+  <div class="tt-zone"></div>
+  <div class="tt-range"></div>
+</div>
+
+<div class="notes">
+  <h3>Notes</h3>
+  <ul>
+    <li><strong>Global grid</strong>: No lateral boundary or nudging zones. All grid points are interior. Based on <code>R02B04_GLOBAL</code> (20480 cells, 30720 edges, 10242 vertices).</li>
+    <li><strong>Regional grid (LAM)</strong>: Limited Area Model with lateral boundary rows, nudging zone, and interior. Based on <code>MCH_OPR_R04B07_DOMAIN01</code> (10700 cells, 16209 edges, 5510 vertices).</li>
+    <li><strong>Single rank</strong>: No domain decomposition. <code>HALO</code> zones are empty (start = end = total size). <code>LOCAL</code> spans the entire index range <code>[0, END)</code>.</li>
+    <li><strong>Multi rank</strong>: Domain decomposed across MPI ranks. Each rank owns a subset of grid points plus halo regions for communication. <code>LOCAL</code> spans <code>[0, END)</code>, then <code>HALO</code> and <code>HALO_LEVEL_2</code> extend beyond.</li>
+    <li>Edges have more lateral boundary levels (up to 8) than cells/vertices (up to 4) due to the staggered grid structure.</li>
+    <li><code>LOCAL = [0, END)</code> always. In single-rank, <code>END = total grid size</code>. In multi-rank, <code>END = owned count on this rank</code>.</li>
+    <li>Zone ordering in index space: <code>LATERAL_BOUNDARY &rarr; NUDGING &rarr; INTERIOR &rarr; END &rarr; HALO &rarr; HALO_LEVEL_2</code>.</li>
+  </ul>
+</div>
+
+<script>
+// ── Color palette ──
+const COLORS = {
+  'LATERAL_BOUNDARY':         '#c0392b',
+  'LATERAL_BOUNDARY_LEVEL_2': '#e74c3c',
+  'LATERAL_BOUNDARY_LEVEL_3': '#d35400',
+  'LATERAL_BOUNDARY_LEVEL_4': '#e67e22',
+  'LATERAL_BOUNDARY_LEVEL_5': '#f39c12',
+  'LATERAL_BOUNDARY_LEVEL_6': '#f1c40f',
+  'LATERAL_BOUNDARY_LEVEL_7': '#d4ac0d',
+  'LATERAL_BOUNDARY_LEVEL_8': '#b7950b',
+  'NUDGING':                  '#27ae60',
+  'NUDGING_LEVEL_2':          '#2ecc71',
+  'INTERIOR':                 '#2980b9',
+  'HALO':                     '#8e44ad',
+  'HALO_LEVEL_2':             '#9b59b6',
+};
+
+const SHORT = {
+  'LATERAL_BOUNDARY':         'LB1',
+  'LATERAL_BOUNDARY_LEVEL_2': 'LB2',
+  'LATERAL_BOUNDARY_LEVEL_3': 'LB3',
+  'LATERAL_BOUNDARY_LEVEL_4': 'LB4',
+  'LATERAL_BOUNDARY_LEVEL_5': 'LB5',
+  'LATERAL_BOUNDARY_LEVEL_6': 'LB6',
+  'LATERAL_BOUNDARY_LEVEL_7': 'LB7',
+  'LATERAL_BOUNDARY_LEVEL_8': 'LB8',
+  'NUDGING':                  'NUD',
+  'NUDGING_LEVEL_2':          'NUD2',
+  'INTERIOR':                 'INT',
+  'HALO':                     'HALO',
+  'HALO_LEVEL_2':             'HALO2',
+};
+
+// ── Data definitions ──
+// Each case: { title, description, dims: { Cells: [ {zone, start, end}, ... ], Edges: [...], Vertices: [...] } }
+// For multi-rank, dims is an array of per-rank data.
+
+// Case 1: Global / Single Rank (R02B04_GLOBAL)
+const globalSingle = {
+  title: 'Global Grid — Single Rank',
+  description: 'No lateral boundary, no nudging, no halo. The entire grid is INTERIOR = LOCAL.',
+  dims: {
+    Cells: [
+      { zone: 'INTERIOR', start: 0, end: 20480 },
+    ],
+    Edges: [
+      { zone: 'INTERIOR', start: 0, end: 30720 },
+    ],
+    Vertices: [
+      { zone: 'INTERIOR', start: 0, end: 10242 },
+    ],
+  },
+  local: { Cells: [0, 20480], Edges: [0, 30720], Vertices: [0, 10242] },
+};
+
+// Case 2: Global / Multi Rank (R02B04_GLOBAL, 4 ranks, approximate proportions)
+// Total: 20480 cells. Each rank ~5120 owned + ~200 halo
+const globalMulti = {
+  title: 'Global Grid — Multi Rank (4 ranks)',
+  description: 'No lateral boundary or nudging. Each rank owns ~1/4 of grid points plus halo regions for neighbor communication.',
+  ranks: [
+    {
+      label: 'Rank 0',
+      dims: {
+        Cells:    [{ zone: 'INTERIOR', start: 0, end: 5120 }, { zone: 'HALO', start: 5120, end: 5220 }, { zone: 'HALO_LEVEL_2', start: 5220, end: 5330 }],
+        Edges:    [{ zone: 'INTERIOR', start: 0, end: 7680 }, { zone: 'HALO', start: 7680, end: 7820 }, { zone: 'HALO_LEVEL_2', start: 7820, end: 7990 }],
+        Vertices: [{ zone: 'INTERIOR', start: 0, end: 2562 }, { zone: 'HALO', start: 2562, end: 2630 }, { zone: 'HALO_LEVEL_2', start: 2630, end: 2720 }],
+      },
+      local: { Cells: [0, 5120], Edges: [0, 7680], Vertices: [0, 2562] },
+    },
+    {
+      label: 'Rank 1',
+      dims: {
+        Cells:    [{ zone: 'INTERIOR', start: 0, end: 5120 }, { zone: 'HALO', start: 5120, end: 5215 }, { zone: 'HALO_LEVEL_2', start: 5215, end: 5322 }],
+        Edges:    [{ zone: 'INTERIOR', start: 0, end: 7680 }, { zone: 'HALO', start: 7680, end: 7810 }, { zone: 'HALO_LEVEL_2', start: 7810, end: 7975 }],
+        Vertices: [{ zone: 'INTERIOR', start: 0, end: 2560 }, { zone: 'HALO', start: 2560, end: 2625 }, { zone: 'HALO_LEVEL_2', start: 2625, end: 2712 }],
+      },
+      local: { Cells: [0, 5120], Edges: [0, 7680], Vertices: [0, 2560] },
+    },
+    {
+      label: 'Rank 2',
+      dims: {
+        Cells:    [{ zone: 'INTERIOR', start: 0, end: 5120 }, { zone: 'HALO', start: 5120, end: 5218 }, { zone: 'HALO_LEVEL_2', start: 5218, end: 5328 }],
+        Edges:    [{ zone: 'INTERIOR', start: 0, end: 7680 }, { zone: 'HALO', start: 7680, end: 7680 }, { zone: 'HALO_LEVEL_2', start: 7680, end: 7880 }],
+        Vertices: [{ zone: 'INTERIOR', start: 0, end: 2560 }, { zone: 'HALO', start: 2560, end: 2560 }, { zone: 'HALO_LEVEL_2', start: 2560, end: 2710 }],
+      },
+      local: { Cells: [0, 5120], Edges: [0, 7680], Vertices: [0, 2560] },
+    },
+    {
+      label: 'Rank 3',
+      dims: {
+        Cells:    [{ zone: 'INTERIOR', start: 0, end: 5120 }, { zone: 'HALO', start: 5120, end: 5216 }, { zone: 'HALO_LEVEL_2', start: 5216, end: 5325 }],
+        Edges:    [{ zone: 'INTERIOR', start: 0, end: 7680 }, { zone: 'HALO', start: 7680, end: 7815 }, { zone: 'HALO_LEVEL_2', start: 7815, end: 7980 }],
+        Vertices: [{ zone: 'INTERIOR', start: 0, end: 2560 }, { zone: 'HALO', start: 2560, end: 2622 }, { zone: 'HALO_LEVEL_2', start: 2622, end: 2710 }],
+      },
+      local: { Cells: [0, 5120], Edges: [0, 7680], Vertices: [0, 2560] },
+    },
+  ],
+};
+
+// Case 3: Regional / Single Rank (MCH_OPR_R04B07_DOMAIN01 — actual data)
+const regionalSingle = {
+  title: 'Regional Grid (LAM) — Single Rank',
+  description: 'Limited Area Model with lateral boundary rows, nudging zone, and interior. No halo in single-rank. Based on MCH_OPR_R04B07_DOMAIN01.',
+  dims: {
+    Cells: [
+      { zone: 'LATERAL_BOUNDARY',         start: 0,    end: 629 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_2', start: 629,  end: 1244 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_3', start: 1244, end: 1843 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_4', start: 1843, end: 2424 },
+      { zone: 'NUDGING',                  start: 2424, end: 2989 },
+      { zone: 'INTERIOR',                 start: 2989, end: 10700 },
+    ],
+    Edges: [
+      { zone: 'LATERAL_BOUNDARY',         start: 0,    end: 318 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_2', start: 318,  end: 947 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_3', start: 947,  end: 1258 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_4', start: 1258, end: 1873 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_5', start: 1873, end: 2177 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_6', start: 2177, end: 2776 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_7', start: 2776, end: 3071 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_8', start: 3071, end: 3652 },
+      { zone: 'NUDGING',                  start: 3652, end: 3938 },
+      { zone: 'NUDGING_LEVEL_2',          start: 3938, end: 4503 },
+      { zone: 'INTERIOR',                 start: 4503, end: 16209 },
+    ],
+    Vertices: [
+      { zone: 'LATERAL_BOUNDARY',         start: 0,    end: 318 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_2', start: 318,  end: 629 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_3', start: 629,  end: 933 },
+      { zone: 'LATERAL_BOUNDARY_LEVEL_4', start: 933,  end: 1228 },
+      { zone: 'NUDGING',                  start: 1228, end: 1514 },
+      { zone: 'INTERIOR',                 start: 1514, end: 5510 },
+    ],
+  },
+  local: { Cells: [0, 10700], Edges: [0, 16209], Vertices: [0, 5510] },
+};
+
+// Case 4: Regional / Multi Rank (MCH_OPR_R04B07_DOMAIN01, 4 ranks)
+// Based on actual test data from test_parallel_icon.py:
+//   Each rank gets ~1/4 of the cells. The lateral boundary / nudging structure is the same
+//   but proportionally distributed. Halo appears at the end.
+// Using approximate proportions based on actual 4-rank data:
+//   Rank 0: 5238 owned cells, halo at 5340/5446
+// The LAM zones remain the same relative order but each rank gets a fraction.
+// In practice, each rank has the FULL set of lateral boundary points (they are replicated)
+// plus a fraction of the interior, plus halo.
+
+function makeRegionalMultiRank(label, ownedCells, haloCells, halo2Cells,
+                                       ownedEdges, haloEdges, halo2Edges,
+                                       ownedVerts, haloVerts, halo2Verts) {
+  // Regional multi-rank: lateral boundary and nudging exist on EACH rank (replicated),
+  // then interior is split, then halo appended.
+  // Approximate: LB zones ~23% of cells, nudging ~5%, interior = rest of owned
+  const cLB1 = 629, cLB2 = 1244, cLB3 = 1843, cLB4 = 2424, cNud = 2989;
+  // Interior on this rank: ownedCells - cNud
+  const cIntEnd = ownedCells;
+
+  const eLB1=318, eLB2=947, eLB3=1258, eLB4=1873, eLB5=2177, eLB6=2776, eLB7=3071, eLB8=3652;
+  const eNud=3938, eNud2=4503;
+  const eIntEnd = ownedEdges;
+
+  const vLB1=318, vLB2=629, vLB3=933, vLB4=1228, vNud=1514;
+  const vIntEnd = ownedVerts;
+
+  return {
+    label,
+    dims: {
+      Cells: [
+        { zone: 'LATERAL_BOUNDARY',         start: 0,     end: cLB1 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_2', start: cLB1,  end: cLB2 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_3', start: cLB2,  end: cLB3 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_4', start: cLB3,  end: cLB4 },
+        { zone: 'NUDGING',                  start: cLB4,  end: cNud },
+        { zone: 'INTERIOR',                 start: cNud,  end: cIntEnd },
+        { zone: 'HALO',                     start: cIntEnd, end: haloCells },
+        { zone: 'HALO_LEVEL_2',             start: haloCells, end: halo2Cells },
+      ],
+      Edges: [
+        { zone: 'LATERAL_BOUNDARY',         start: 0,     end: eLB1 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_2', start: eLB1,  end: eLB2 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_3', start: eLB2,  end: eLB3 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_4', start: eLB3,  end: eLB4 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_5', start: eLB4,  end: eLB5 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_6', start: eLB5,  end: eLB6 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_7', start: eLB6,  end: eLB7 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_8', start: eLB7,  end: eLB8 },
+        { zone: 'NUDGING',                  start: eLB8,  end: eNud },
+        { zone: 'NUDGING_LEVEL_2',          start: eNud,  end: eNud2 },
+        { zone: 'INTERIOR',                 start: eNud2, end: eIntEnd },
+        { zone: 'HALO',                     start: eIntEnd, end: haloEdges },
+        { zone: 'HALO_LEVEL_2',             start: haloEdges, end: halo2Edges },
+      ],
+      Vertices: [
+        { zone: 'LATERAL_BOUNDARY',         start: 0,    end: vLB1 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_2', start: vLB1, end: vLB2 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_3', start: vLB2, end: vLB3 },
+        { zone: 'LATERAL_BOUNDARY_LEVEL_4', start: vLB3, end: vLB4 },
+        { zone: 'NUDGING',                  start: vLB4, end: vNud },
+        { zone: 'INTERIOR',                 start: vNud, end: vIntEnd },
+        { zone: 'HALO',                     start: vIntEnd, end: haloVerts },
+        { zone: 'HALO_LEVEL_2',             start: haloVerts, end: halo2Verts },
+      ],
+    },
+    local: { Cells: [0, ownedCells], Edges: [0, ownedEdges], Vertices: [0, ownedVerts] },
+  };
+}
+
+const regionalMulti = {
+  title: 'Regional Grid (LAM) — Multi Rank (4 ranks)',
+  description: 'Each rank has all lateral boundary + nudging points (replicated), a fraction of interior points, plus halo. Based on MCH_OPR_R04B07_DOMAIN01 with 4-rank decomposition.',
+  ranks: [
+    makeRegionalMultiRank('Rank 0', 5238, 5340, 5446,  7929, 7966, 8173,  2688, 2727, 2834),
+    makeRegionalMultiRank('Rank 1', 5222, 5325, 5433,  7838, 7940, 8150,  2612, 2717, 2825),
+    makeRegionalMultiRank('Rank 2', 5231, 5334, 5442,  7955, 7955, 8165,  2723, 2723, 2832),
+    makeRegionalMultiRank('Rank 3', 5230, 5334, 5444,  7889, 7954, 8167,  2656, 2723, 2832),
+  ],
+};
+
+// ── Rendering ──
+const tooltip = document.getElementById('tooltip');
+
+function renderBar(container, segments, totalEnd, localRange) {
+  if (totalEnd === 0) return;
+
+  const barWrap = document.createElement('div');
+
+  const barEl = document.createElement('div');
+  barEl.className = 'bar-container';
+
+  const indexLabels = document.createElement('div');
+  indexLabels.className = 'index-labels';
+
+  const addedLabels = new Set();
+
+  segments.forEach(seg => {
+    const width = seg.end - seg.start;
+    if (width <= 0) return;
+    const pct = (width / totalEnd) * 100;
+
+    const el = document.createElement('div');
+    el.className = 'bar-segment';
+    el.style.width = pct + '%';
+    el.style.background = COLORS[seg.zone] || '#555';
+
+    const label = document.createElement('span');
+    label.className = 'seg-label';
+    label.textContent = pct > 4 ? SHORT[seg.zone] : (pct > 2 ? SHORT[seg.zone].substring(0,2) : '');
+    el.appendChild(label);
+
+    el.addEventListener('mouseenter', (e) => {
+      tooltip.style.display = 'block';
+      tooltip.querySelector('.tt-zone').textContent = seg.zone;
+      tooltip.querySelector('.tt-range').textContent = `Index range: [${seg.start}, ${seg.end})  —  ${width} entries (${pct.toFixed(1)}%)`;
+    });
+    el.addEventListener('mousemove', (e) => {
+      tooltip.style.left = (e.clientX + 12) + 'px';
+      tooltip.style.top = (e.clientY - 30) + 'px';
+    });
+    el.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+    barEl.appendChild(el);
+
+    // Index labels at boundaries
+    [seg.start, seg.end].forEach(idx => {
+      if (!addedLabels.has(idx)) {
+        addedLabels.add(idx);
+        const lbl = document.createElement('span');
+        lbl.className = 'index-label';
+        lbl.style.left = ((idx / totalEnd) * 100) + '%';
+        lbl.textContent = idx;
+        indexLabels.appendChild(lbl);
+      }
+    });
+  });
+
+  barWrap.appendChild(barEl);
+  barWrap.appendChild(indexLabels);
+
+  // LOCAL bracket
+  if (localRange) {
+    const bracketEl = document.createElement('div');
+    bracketEl.className = 'local-bracket';
+    const line = document.createElement('div');
+    line.className = 'local-bracket-line';
+    const leftPct = (localRange[0] / totalEnd) * 100;
+    const rightPct = (localRange[1] / totalEnd) * 100;
+    line.style.left = leftPct + '%';
+    line.style.width = (rightPct - leftPct) + '%';
+    bracketEl.appendChild(line);
+
+    const lbl = document.createElement('span');
+    lbl.className = 'local-bracket-label';
+    lbl.style.left = ((leftPct + rightPct) / 2) + '%';
+    lbl.textContent = `LOCAL [${localRange[0]}, ${localRange[1]})`;
+    bracketEl.appendChild(lbl);
+    barWrap.appendChild(bracketEl);
+  }
+
+  container.appendChild(barWrap);
+}
+
+function renderSingleRankCase(target, data) {
+  const card = document.createElement('div');
+  card.className = 'case-card';
+  card.innerHTML = `<h2>${data.title}</h2><p class="description">${data.description}</p>`;
+
+  for (const [dimName, segments] of Object.entries(data.dims)) {
+    const sec = document.createElement('div');
+    sec.className = 'dim-section';
+    sec.innerHTML = `<div class="dim-label">${dimName}</div>`;
+    const totalEnd = segments[segments.length - 1].end;
+    renderBar(sec, segments, totalEnd, data.local[dimName]);
+    card.appendChild(sec);
+  }
+  target.appendChild(card);
+}
+
+function renderMultiRankCase(target, data) {
+  const card = document.createElement('div');
+  card.className = 'case-card';
+  card.innerHTML = `<h2>${data.title}</h2><p class="description">${data.description}</p>`;
+
+  for (const [dimName] of Object.entries(data.ranks[0].dims)) {
+    const sec = document.createElement('div');
+    sec.className = 'dim-section';
+    sec.innerHTML = `<div class="dim-label">${dimName}</div>`;
+
+    data.ranks.forEach(rank => {
+      const rg = document.createElement('div');
+      rg.className = 'rank-group';
+      rg.innerHTML = `<div class="rank-label">${rank.label}</div>`;
+      const segments = rank.dims[dimName];
+      const totalEnd = segments[segments.length - 1].end;
+      renderBar(rg, segments, totalEnd, rank.local[dimName]);
+      sec.appendChild(rg);
+    });
+
+    card.appendChild(sec);
+  }
+  target.appendChild(card);
+}
+
+// ── Build legend ──
+function buildLegend() {
+  const legendEl = document.getElementById('legend');
+  const zones = [
+    'LATERAL_BOUNDARY', 'LATERAL_BOUNDARY_LEVEL_2', 'LATERAL_BOUNDARY_LEVEL_3',
+    'LATERAL_BOUNDARY_LEVEL_4', 'LATERAL_BOUNDARY_LEVEL_5', 'LATERAL_BOUNDARY_LEVEL_6',
+    'LATERAL_BOUNDARY_LEVEL_7', 'LATERAL_BOUNDARY_LEVEL_8',
+    'NUDGING', 'NUDGING_LEVEL_2', 'INTERIOR', 'HALO', 'HALO_LEVEL_2',
+  ];
+  zones.forEach(z => {
+    const item = document.createElement('div');
+    item.className = 'legend-item';
+    item.innerHTML = `<div class="legend-swatch" style="background:${COLORS[z]}"></div><span>${SHORT[z]} — ${z.replace(/_/g, ' ')}</span>`;
+    legendEl.appendChild(item);
+  });
+}
+buildLegend();
+
+// ── Render Overview tab (all 4) ──
+const overview = document.getElementById('tab-overview');
+renderSingleRankCase(overview, globalSingle);
+renderMultiRankCase(overview, globalMulti);
+renderSingleRankCase(overview, regionalSingle);
+renderMultiRankCase(overview, regionalMulti);
+
+// ── Render individual tabs ──
+renderSingleRankCase(document.getElementById('tab-global-single'), globalSingle);
+renderMultiRankCase(document.getElementById('tab-global-multi'), globalMulti);
+renderSingleRankCase(document.getElementById('tab-regional-single'), regionalSingle);
+renderMultiRankCase(document.getElementById('tab-regional-multi'), regionalMulti);
+
+// ── Tab switching ──
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+  });
+});
+</script>
+
+</body>
+</html>
