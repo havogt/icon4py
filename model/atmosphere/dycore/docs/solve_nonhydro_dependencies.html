@@ -3,960 +3,832 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SolveNonhydro Field Dependencies — Horizontal Domain Analysis</title>
+<title>SolveNonhydro — Field Timeline Dependencies</title>
 <style>
-  :root {
-    --bg: #1a1a2e;
-    --surface: #16213e;
-    --surface2: #0f3460;
-    --text: #e0e0e0;
-    --text-dim: #8888aa;
-    --accent: #e94560;
-    --accent2: #00b4d8;
-    --accent3: #06d6a0;
-    --accent4: #ffd166;
-    --accent5: #ef476f;
-    --border: #333355;
-    --predictor: #1b4332;
-    --corrector: #3c1642;
-    --postproc: #1b3a4b;
-  }
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --text: #c9d1d9;
+  --text-dim: #6e7681;
+  --border: #30363d;
+  --red: #f85149;
+  --blue: #58a6ff;
+  --yellow: #d29922;
+  --green: #3fb950;
+  --purple: #bc8cff;
+  --orange: #f0883e;
+  --pred-bg: #0b1e0b;
+  --corr-bg: #1e0b1e;
+  --post-bg: #0b1a1e;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  background: var(--bg); color: var(--text);
+  padding: 16px 24px; line-height: 1.4;
+}
+h1 { color: var(--red); font-size: 1.3em; margin-bottom: 2px; }
+.subtitle { color: var(--text-dim); font-size: 0.82em; margin-bottom: 16px; }
+h2 { color: var(--blue); font-size: 1.05em; margin: 24px 0 8px; }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+/* Controls */
+.controls {
+  background: var(--surface); padding: 10px 14px; border-radius: 6px;
+  margin-bottom: 12px; display: flex; flex-wrap: wrap; gap: 14px;
+  align-items: center; border: 1px solid var(--border); font-size: 0.8em;
+}
+.controls label { cursor: pointer; display: flex; align-items: center; gap: 5px; }
+.controls input[type="checkbox"] { accent-color: var(--red); }
+.controls .sep { color: var(--border); }
 
-  body {
-    font-family: 'Segoe UI', 'Roboto', monospace;
-    background: var(--bg);
-    color: var(--text);
-    padding: 20px;
-    line-height: 1.4;
-  }
+/* Legend */
+.legend {
+  background: var(--surface); padding: 8px 14px; border-radius: 6px;
+  margin-bottom: 16px; border: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; gap: 14px; font-size: 0.78em;
+}
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-swatch { width: 14px; height: 14px; border-radius: 2px; flex-shrink: 0; }
 
-  h1 { color: var(--accent); margin-bottom: 4px; font-size: 1.5em; }
-  h2 { color: var(--accent2); margin: 20px 0 10px; font-size: 1.2em; }
-  .subtitle { color: var(--text-dim); margin-bottom: 20px; font-size: 0.9em; }
+/* Field card */
+.field-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  margin-bottom: 12px; overflow: hidden;
+}
+.field-card.hidden { display: none; }
+.field-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+  cursor: pointer; user-select: none;
+}
+.field-header:hover { background: var(--surface2); }
+.field-name { font-weight: 700; font-size: 0.92em; }
+.field-dim { font-size: 0.75em; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+.dim-edge { background: #d29922; color: #000; }
+.dim-cell { background: #3fb950; color: #000; }
+.field-icon { color: var(--text-dim); font-size: 0.75em; }
+.field-desc { color: var(--text-dim); font-size: 0.78em; flex: 1; }
+.field-body { padding: 0; }
+.field-body.collapsed { display: none; }
 
-  .controls {
-    background: var(--surface);
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 16px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
-    align-items: center;
-    border: 1px solid var(--border);
-  }
-  .controls label {
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.85em;
-  }
-  .controls input[type="checkbox"] { accent-color: var(--accent); }
+/* Timeline row */
+.tl-row {
+  display: flex; align-items: stretch; min-height: 28px;
+  border-bottom: 1px solid rgba(48,54,61,0.5);
+}
+.tl-row:last-child { border-bottom: none; }
+.tl-row.phase-pred { background: var(--pred-bg); }
+.tl-row.phase-corr { background: var(--corr-bg); }
+.tl-row.phase-post { background: var(--post-bg); }
+.tl-row.exchange-row { background: rgba(255,255,255,0.02); }
+.tl-row.cond-hidden { display: none; }
 
-  .legend {
-    background: var(--surface);
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 16px;
-    border: 1px solid var(--border);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
-    font-size: 0.8em;
-  }
-  .legend-item { display: flex; align-items: center; gap: 6px; }
-  .legend-swatch {
-    width: 16px; height: 16px; border-radius: 3px;
-    display: inline-block; flex-shrink: 0;
-  }
+.tl-step {
+  width: 44px; flex-shrink: 0; display: flex; align-items: center;
+  justify-content: center; font-weight: 700; font-size: 0.72em;
+  color: var(--text-dim); border-right: 1px solid var(--border);
+}
+.tl-label {
+  width: 260px; flex-shrink: 0; display: flex; align-items: center;
+  padding: 0 8px; font-size: 0.72em; color: var(--text);
+  border-right: 1px solid var(--border); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.tl-label .cond { color: var(--orange); font-size: 0.85em; margin-left: 4px; }
+.tl-bar-area {
+  flex: 1; display: flex; align-items: center; padding: 3px 8px;
+  position: relative; min-width: 0;
+}
 
-  .phase-label {
-    font-weight: bold;
-    font-size: 0.95em;
-    padding: 8px 12px;
-    border-radius: 6px 6px 0 0;
-    margin-top: 16px;
-  }
-  .phase-predictor { background: var(--predictor); color: #06d6a0; }
-  .phase-corrector { background: var(--corrector); color: #ef476f; }
-  .phase-postproc { background: var(--postproc); color: #00b4d8; }
+/* Zone bar container */
+.zone-bar-container {
+  display: flex; width: 100%; height: 20px; border-radius: 3px;
+  overflow: hidden; background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(48,54,61,0.6);
+}
+.zone-segment {
+  height: 100%; position: relative; transition: opacity 0.15s;
+  border-right: 1px solid rgba(48,54,61,0.4);
+}
+.zone-segment:last-child { border-right: none; }
+.zone-segment.inactive { opacity: 0.15; }
+.zone-segment.write { background: var(--red); opacity: 0.85; }
+.zone-segment.read { background: var(--blue); opacity: 0.7; }
+.zone-segment.readwrite { background: var(--yellow); opacity: 0.85; }
+.zone-segment.exchange { background: repeating-linear-gradient(90deg, #484f58, #484f58 3px, transparent 3px, transparent 6px); opacity: 0.6; }
+.zone-segment.write-sub { background: repeating-linear-gradient(45deg, var(--red), var(--red) 2px, #a03030 2px, #a03030 4px); opacity: 0.8; }
 
-  .swim-lane-container {
-    overflow-x: auto;
-    margin-bottom: 4px;
-  }
+/* Zone header bar */
+.zone-header-bar {
+  display: flex; width: 100%; height: 18px; border-radius: 3px;
+  overflow: hidden; margin-bottom: 2px;
+}
+.zone-header-seg {
+  height: 100%; display: flex; align-items: center; justify-content: center;
+  font-size: 0.6em; font-weight: 600; color: rgba(255,255,255,0.7);
+  border-right: 1px solid var(--border); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; padding: 0 1px;
+}
 
-  table.swim-lane {
-    border-collapse: collapse;
-    width: 100%;
-    min-width: 1200px;
-    font-size: 0.78em;
-  }
+/* Tooltip */
+.tooltip {
+  display: none; position: fixed; background: #1c2333; color: var(--text);
+  padding: 10px 14px; border-radius: 8px; border: 1px solid var(--blue);
+  font-size: 0.78em; max-width: 480px; z-index: 1000;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6); pointer-events: none;
+  white-space: pre-wrap; line-height: 1.5;
+}
+.tooltip .tt-title { color: var(--red); font-weight: 700; margin-bottom: 4px; }
+.tooltip .tt-write { color: var(--red); }
+.tooltip .tt-read { color: var(--blue); }
+.tooltip .tt-zone { color: var(--yellow); }
+.tooltip .tt-dim { color: var(--green); }
 
-  table.swim-lane th {
-    background: var(--surface2);
-    color: var(--text);
-    padding: 6px 4px;
-    text-align: center;
-    border: 1px solid var(--border);
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    font-size: 0.85em;
-    white-space: nowrap;
-  }
+/* Filter */
+.filter-bar {
+  background: var(--surface); padding: 8px 14px; border-radius: 6px;
+  margin-bottom: 12px; border: 1px solid var(--border);
+  display: flex; gap: 12px; align-items: center; font-size: 0.8em;
+}
+.filter-bar input {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 5px 10px; border-radius: 4px; width: 280px; font-size: 0.9em;
+  font-family: inherit;
+}
+.filter-bar input::placeholder { color: var(--text-dim); }
+.filter-bar .btn {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); padding: 4px 10px; border-radius: 4px;
+  cursor: pointer; font-size: 0.9em; font-family: inherit;
+}
+.filter-bar .btn:hover { background: var(--border); }
+.filter-bar .btn.active { background: var(--red); color: #fff; border-color: var(--red); }
 
-  table.swim-lane td {
-    border: 1px solid var(--border);
-    padding: 2px;
-    vertical-align: middle;
-    text-align: center;
-    height: 32px;
-  }
-
-  .stencil-name {
-    text-align: left !important;
-    padding-left: 8px !important;
-    white-space: nowrap;
-    font-weight: 600;
-    min-width: 280px;
-    max-width: 340px;
-  }
-  .stencil-name .cond-badge {
-    display: inline-block;
-    font-size: 0.75em;
-    background: var(--accent5);
-    color: white;
-    padding: 1px 5px;
-    border-radius: 3px;
-    margin-left: 4px;
-    font-weight: normal;
-  }
-
-  .dim-col {
-    width: 50px;
-    font-weight: bold;
-  }
-  .dim-edge { color: var(--accent4); }
-  .dim-cell { color: var(--accent3); }
-  .dim-vertex { color: var(--accent2); }
-
-  /* Horizontal zone bars */
-  .zone-bar {
-    height: 22px;
-    border-radius: 3px;
-    position: relative;
-    cursor: pointer;
-    transition: opacity 0.15s;
-  }
-  .zone-bar:hover { opacity: 0.85; filter: brightness(1.3); }
-
-  .bar-write { background: linear-gradient(135deg, #e94560, #c73550); }
-  .bar-read { background: linear-gradient(135deg, #00b4d8, #0090aa); }
-  .bar-readwrite { background: linear-gradient(135deg, #ffd166, #ccaa44); }
-  .bar-write-sub { background: repeating-linear-gradient(45deg, #e94560, #e94560 3px, #c73550 3px, #c73550 6px); }
-  .bar-read-sub { background: repeating-linear-gradient(45deg, #00b4d8, #00b4d8 3px, #0090aa 3px, #0090aa 6px); }
-
-  /* Tooltip */
-  .tooltip {
-    display: none;
-    position: fixed;
-    background: #222244;
-    color: var(--text);
-    padding: 12px 16px;
-    border-radius: 8px;
-    border: 1px solid var(--accent);
-    font-size: 0.82em;
-    max-width: 500px;
-    z-index: 1000;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-    pointer-events: none;
-  }
-  .tooltip h4 { color: var(--accent); margin-bottom: 6px; }
-  .tooltip .field-list { margin: 4px 0; }
-  .tooltip .field-list span.write { color: #e94560; }
-  .tooltip .field-list span.read { color: #00b4d8; }
-  .tooltip .domain-info { color: var(--accent4); margin-top: 6px; }
-  .tooltip .sub-domain { color: var(--accent3); font-size: 0.9em; margin-top: 4px; }
-
-  .row-hidden { display: none; }
-
-  .exchange-row td {
-    background: rgba(255,255,255,0.04);
-    font-style: italic;
-    color: var(--text-dim);
-    font-size: 0.9em;
-  }
-  .exchange-bar {
-    height: 22px; border-radius: 3px;
-    background: repeating-linear-gradient(90deg, #555577, #555577 4px, transparent 4px, transparent 8px);
-  }
-
-  .field-filter {
-    background: var(--surface);
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 16px;
-    border: 1px solid var(--border);
-  }
-  .field-filter input {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 12px;
-    border-radius: 4px;
-    width: 300px;
-    font-size: 0.85em;
-  }
-  .field-filter input::placeholder { color: var(--text-dim); }
-
-  .highlight-row { background: rgba(233, 69, 96, 0.1) !important; }
-  .highlight-row td { background: inherit !important; }
+/* Phase separator */
+.phase-sep {
+  display: flex; align-items: center; padding: 2px 8px;
+  font-size: 0.65em; font-weight: 700; letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+.phase-sep.pred { color: var(--green); background: var(--pred-bg); }
+.phase-sep.corr { color: var(--purple); background: var(--corr-bg); }
+.phase-sep.post { color: var(--blue); background: var(--post-bg); }
 </style>
 </head>
 <body>
 
-<h1>SolveNonhydro — Horizontal Domain Dependency Map</h1>
-<p class="subtitle">Interactive visualization of field read/write patterns across horizontal zones in the dynamical core timestep.
-Hover over bars for details. Toggle conditional paths with checkboxes.</p>
+<h1>SolveNonhydro — Field Timeline Dependencies</h1>
+<p class="subtitle">Each field shows its horizontal zone bar evolving through the timestep. Zones light up when a stencil reads (blue) or writes (red) that field in that zone.</p>
 
 <div class="controls">
-  <strong style="color:var(--accent)">Conditional paths:</strong>
-  <label><input type="checkbox" id="toggle-limited-area" checked> limited_area</label>
-  <label><input type="checkbox" id="toggle-divdamp3" checked> divdamp_type ≥ 3</label>
-  <label><input type="checkbox" id="toggle-iau" checked> IAU active</label>
-  <label><input type="checkbox" id="toggle-lprep-adv" checked> lprep_adv</label>
-  <label><input type="checkbox" id="toggle-first-substep" checked> at_first_substep</label>
+  <strong style="color:var(--red)">Conditional paths:</strong>
+  <label><input type="checkbox" id="tog-la" checked> limited_area</label>
+  <label><input type="checkbox" id="tog-dd3" checked> divdamp≥3</label>
+  <label><input type="checkbox" id="tog-iau" checked> IAU</label>
+  <label><input type="checkbox" id="tog-lpa" checked> lprep_adv</label>
+  <label><input type="checkbox" id="tog-fs" checked> first_substep</label>
+  <span class="sep">|</span>
+  <label><input type="checkbox" id="tog-reads" checked> Show reads</label>
+  <label><input type="checkbox" id="tog-skip-inactive" > Hide untouched steps</label>
 </div>
 
-<div class="field-filter">
-  <label style="font-size:0.85em"><strong>Highlight field:</strong>
-    <input type="text" id="field-search" placeholder="Type field name to highlight (e.g. vn, rho, theta_v)...">
-  </label>
+<div class="filter-bar">
+  <span>Filter fields:</span>
+  <input type="text" id="field-filter" placeholder="Type to filter (e.g. vn, rho, theta)...">
+  <button class="btn" onclick="showAll()">Show all</button>
+  <button class="btn" id="btn-prog" onclick="showPrognostic()">Prognostic only</button>
+  <button class="btn" id="btn-inter" onclick="showIntermediate()">Intermediate only</button>
 </div>
 
 <div class="legend">
-  <div class="legend-item"><span class="legend-swatch bar-write"></span> Write</div>
-  <div class="legend-item"><span class="legend-swatch bar-read"></span> Read</div>
-  <div class="legend-item"><span class="legend-swatch bar-readwrite"></span> Read+Write</div>
-  <div class="legend-item"><span class="legend-swatch exchange-bar" style="width:16px;height:16px"></span> Halo exchange</div>
-  <div class="legend-item"><span class="legend-swatch bar-write-sub" style="width:16px;height:16px"></span> Sub-region write</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--red)"></span> Write</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--blue)"></span> Read</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--yellow)"></span> Read+Write</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:repeating-linear-gradient(45deg,var(--red),var(--red) 2px,#a03030 2px,#a03030 4px)"></span> Sub-region write</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:repeating-linear-gradient(90deg,#484f58,#484f58 3px,transparent 3px,transparent 6px)"></span> Halo exchange</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--pred-bg);border:1px solid var(--green)"></span> Predictor</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--corr-bg);border:1px solid var(--purple)"></span> Corrector</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--post-bg);border:1px solid var(--blue)"></span> Post</div>
 </div>
 
-<div id="diagram"></div>
+<div id="cards"></div>
 <div class="tooltip" id="tooltip"></div>
 
 <script>
-// ── Zone definitions (from example bounds) ─────────────────────────────
+// ── Zone definitions with sqrt-compressed widths ───────────────────────
 
-const edgeZones = [
-  { id: "E_LB",   label: "LAT_BDY",      start: 0,    end: 318  },
-  { id: "E_LB2",  label: "LAT_BDY_2",    start: 318,  end: 947  },
-  { id: "E_LB3",  label: "LAT_BDY_3",    start: 947,  end: 1258 },
-  { id: "E_LB4",  label: "LAT_BDY_4",    start: 1258, end: 1873 },
-  { id: "E_LB5",  label: "LAT_BDY_5",    start: 1873, end: 2177 },
-  { id: "E_LB6",  label: "LAT_BDY_6",    start: 2177, end: 2776 },
-  { id: "E_LB7",  label: "LAT_BDY_7",    start: 2776, end: 3071 },
-  { id: "E_LB8",  label: "LAT_BDY_8",    start: 3071, end: 3652 },
-  { id: "E_NDG",  label: "NUDGING",       start: 3652, end: 3938 },
-  { id: "E_NDG2", label: "NUDGING_2",     start: 3938, end: 4503 },
-  { id: "E_INT",  label: "INTERIOR",      start: 4503, end: 16209 },
+const edgeZoneDefs = [
+  { id: "LB1",  label: "LB1",   frac: 0.020 },
+  { id: "LB2",  label: "LB2",   frac: 0.039 },
+  { id: "LB3",  label: "LB3",   frac: 0.019 },
+  { id: "LB4",  label: "LB4",   frac: 0.038 },
+  { id: "LB5",  label: "LB5",   frac: 0.019 },
+  { id: "LB6",  label: "LB6",   frac: 0.037 },
+  { id: "LB7",  label: "LB7",   frac: 0.018 },
+  { id: "LB8",  label: "LB8",   frac: 0.036 },
+  { id: "NDG",  label: "NDG",   frac: 0.018 },
+  { id: "NDG2", label: "NDG2",  frac: 0.035 },
+  { id: "INT",  label: "INTERIOR", frac: 0.722 },
+  { id: "HALO", label: "HALO",  frac: 0.005 },
+  { id: "HALO2",label: "HALO2", frac: 0.026 },
 ];
 
-const cellZones = [
-  { id: "C_LB",   label: "LAT_BDY",      start: 0,    end: 629  },
-  { id: "C_LB2",  label: "LAT_BDY_2",    start: 629,  end: 1244 },
-  { id: "C_LB3",  label: "LAT_BDY_3",    start: 1244, end: 1843 },
-  { id: "C_LB4",  label: "LAT_BDY_4",    start: 1843, end: 2424 },
-  { id: "C_NDG",  label: "NUDGING",       start: 2424, end: 2989 },
-  { id: "C_INT",  label: "INTERIOR",      start: 2989, end: 10700 },
+const cellZoneDefs = [
+  { id: "LB1",  label: "LB1",   frac: 0.059 },
+  { id: "LB2",  label: "LB2",   frac: 0.057 },
+  { id: "LB3",  label: "LB3",   frac: 0.056 },
+  { id: "LB4",  label: "LB4",   frac: 0.054 },
+  { id: "NDG",  label: "NDG",   frac: 0.053 },
+  { id: "INT",  label: "INTERIOR", frac: 0.721 },
+  { id: "HALO", label: "HALO",  frac: 0.019 },
+  { id: "HALO2",label: "HALO2", frac: 0.020 },
 ];
 
-// For the table we use a unified column set. Edge has 11 zones, Cell has 6.
-// We show both dimension types in the same table using a "dimension" indicator.
-
-// ── Stencil data ───────────────────────────────────────────────────────
-// Each entry: { id, name, phase, dim, condition, zones: [{zoneStart, zoneEnd, type, fields, subdomain?}], tooltip }
-// zoneStart/End are zone INDEX (0-based into the zone arrays above)
-// type: "write", "read", "readwrite", "write-sub", "exchange"
-
-const stencils = [
-  // ═══════════ PREDICTOR STEP ═══════════
-  {
-    id: "P1a", name: "compute_diagnostics_from_normal_wind", phase: "predictor",
-    dim: "Edge", condition: "first_substep",
-    zones: [
-      { zoneStart: 4, zoneEnd: 10, type: "write",
-        fields: "tangential_wind, vt_ie, vn_ie, kin_hor_e, w_concorr_me, horiz_adv_w" }
-    ],
-    reads: ["current.vn", "current.w"],
-    writes: ["tangential_wind", "tangential_wind_on_half_levels", "vn_on_half_levels",
-             "kin_hor_e", "contravariant_correction_me", "horiz_adv_w"],
-    tooltip: "Reconstructs tangential wind (RBF), interpolates vn/w to half-levels, computes kinetic energy and contravariant correction on edges. Domain: Edge[LAT_BDY_5 → HALO_LEVEL_2]"
-  },
-  {
-    id: "P1b", name: "compute_advection_predictor_vert_momentum", phase: "predictor",
-    dim: "Cell", condition: "first_substep",
-    zones: [
-      { zoneStart: 3, zoneEnd: 5, type: "write",
-        fields: "w_concorr_c, ddt_w_adv.predictor, cfl" }
-    ],
-    reads: ["current.w", "horiz_adv_w_at_edges", "contravariant_correction_me"],
-    writes: ["contravariant_correction_at_cells", "ddt_w_adv.predictor", "cfl"],
-    tooltip: "Vertical momentum advection (predictor): interpolates contravariant correction to cells, computes CFL, vertical w-advection. Domain: Cell[LAT_BDY_4 → HALO]"
-  },
-  {
-    id: "P1c", name: "compute_advection_horiz_momentum", phase: "predictor",
-    dim: "Edge", condition: "first_substep",
-    zones: [
-      { zoneStart: 9, zoneEnd: 10, type: "write",
-        fields: "ddt_vn_adv.predictor" }
-    ],
-    reads: ["current.vn", "kin_hor_e", "tangential_wind", "contravariant_corrected_w_cells", "vn_on_half_levels"],
-    writes: ["ddt_vn_adv.predictor"],
-    tooltip: "Horizontal momentum advection: Lamb rotation + kinetic energy gradient + metric correction. Domain: Edge[NUDGING_2 → LOCAL]"
-  },
-
-  // P2: perturbed quantities
-  {
-    id: "P2", name: "compute_perturbed_quantities_and_interpolation", phase: "predictor",
-    dim: "Cell", condition: null,
-    zones: [
-      { zoneStart: 2, zoneEnd: 5, type: "write",
-        fields: "z_exner_ex_pr, perturbed_exner, exner_ic, z_rth_pr, rho_ic, theta_v_ic, z_theta_v_pr_ic, z_th_ddz_exner_c, dexner_dz_c" },
-    ],
-    reads: ["current.rho", "current.theta_v", "current.exner"],
-    writes: ["temporal_extrap_perturbed_exner", "perturbed_exner", "exner_at_half_levels",
-             "perturbed_rho", "perturbed_theta_v", "rho_at_half_levels",
-             "perturbed_theta_v_half", "theta_v_at_half_levels", "nonhydro_buoy",
-             "ddz_exner", "d2dz2_exner"],
-    tooltip: "Extrapolates exner in time, computes perturbation quantities (rho', theta_v'), interpolates to half-levels, computes nonhydrostatic buoyancy and vertical exner derivatives.\n\nSub-domains:\n• Main: Cell[LAT_BDY_3 → HALO] (model levels + surface)\n• Extended halo rho'/theta_v': Cell[HALO_2 → HALO_2] (if needed for gradp)"
-  },
-
-  // P3: hydrostatic correction
-  {
-    id: "P3", name: "compute_hydrostatic_correction_term", phase: "predictor",
-    dim: "Edge", condition: null,
-    zones: [
-      { zoneStart: 9, zoneEnd: 10, type: "write",
-        fields: "z_hydro_corr" }
-    ],
-    reads: ["current.theta_v", "theta_v_at_half_levels"],
-    writes: ["hydrostatic_correction_lowest_level"],
-    tooltip: "Computes hydrostatic correction for pressure gradient over steep slopes. Only at lowest model level (nlev-1). Domain: Edge[NUDGING_2 → LOCAL]"
-  },
-
-  // P4: rho/theta at edges + pressure gradient + vn update
-  {
-    id: "P4", name: "compute_rho_theta_pgrad_and_update_vn", phase: "predictor",
-    dim: "Edge", condition: null,
-    zones: [
-      { zoneStart: 0, zoneEnd: 5, type: "write-sub",
-        fields: "z_rho_e (LB7→HALO), z_theta_v_e (LB7→HALO)" },
-      { zoneStart: 0, zoneEnd: 10, type: "write",
-        fields: "z_gradh_exner (0→HALO2)" },
-      { zoneStart: 9, zoneEnd: 10, type: "readwrite",
-        fields: "next.vn (NUDGING_2→HALO2, tendency update)" },
-    ],
-    reads: ["current.vn", "tangential_wind", "perturbed_rho", "perturbed_theta_v",
-            "temporal_extrap_perturbed_exner", "ddz_exner", "d2dz2_exner",
-            "hydro_corr", "ddt_vn_adv.predictor", "ddt_vn_phys", "vn_iau_incr(IAU)", "grf_tend_vn(LA)"],
-    writes: ["z_rho_e", "z_theta_v_e", "z_gradh_exner", "next.vn"],
-    tooltip: "Multi-region stencil:\n\n1) Interpolate rho/theta_v to edges via horizontal advection scheme\n   → Edge[LAT_BDY_7 → HALO] (zeros outside)\n\n2) Compute horizontal pressure gradient (Taylor-hydrostatic)\n   → Edge[0 → HALO_2]\n   • 3 vertical sub-regions: flat levels / transition / below nflat_gradp\n\n3) Update vn with tendencies\n   → Edge[NUDGING_2 → HALO_2]\n\n4) (limited_area) Lateral boundary tendency\n   → Edge[LAT_BDY → NUDGING]"
-  },
-
-  // Exchange after P4
-  {
-    id: "EX1", name: "exchange(next.vn, z_rho_e)", phase: "predictor",
-    dim: "Edge", condition: null, exchange: true,
-    zones: [ { zoneStart: 0, zoneEnd: 10, type: "exchange" } ],
-    tooltip: "Halo exchange of next.vn and z_rho_e on edges"
-  },
-
-  // P5: velocity quantities and fluxes
-  {
-    id: "P5", name: "compute_horiz_velocity_quantities_and_fluxes", phase: "predictor",
-    dim: "Edge", condition: null,
-    zones: [
-      { zoneStart: 4, zoneEnd: 10, type: "write",
-        fields: "z_vn_avg, z_graddiv_vn, tangential_wind, mass_flx_me, z_theta_v_fl_e, vn_ie, vt_ie, kin_hor_e, w_concorr_me" }
-    ],
-    reads: ["next.vn", "z_rho_e", "z_theta_v_e"],
-    writes: ["z_vn_avg", "z_graddiv_vn", "tangential_wind", "mass_flx_me",
-             "theta_v_flux_e", "vn_on_half_levels", "vt_ie", "kin_hor_e", "contravariant_correction_me"],
-    tooltip: "Recomputes tangential wind, vn on half-levels, kinetic energy, contravariant correction for corrector step. Computes grad-div of vn, mass flux, theta_v flux, and spatially averaged vn.\nDomain: Edge[LAT_BDY_5 → HALO_2]"
-  },
-
-  // P6: vertically implicit solver (predictor)
-  {
-    id: "P6", name: "vertically_implicit_solver (predictor)", phase: "predictor",
-    dim: "Cell", condition: null,
-    zones: [
-      { zoneStart: 2, zoneEnd: 5, type: "write-sub",
-        fields: "w_concorr_c (LB3→HALO, nflatlev+1:nlev+1)" },
-      { zoneStart: 4, zoneEnd: 5, type: "write",
-        fields: "next.w, next.rho, next.exner, next.theta_v, z_dwdz_dd" },
-    ],
-    reads: ["mass_flx_me", "theta_v_flux_e", "ddt_w_adv.predictor", "nonhydro_buoy",
-            "rho_at_half_levels", "contravariant_correction_me",
-            "current.exner", "current.rho", "current.theta_v", "current.w",
-            "theta_v_at_half_levels", "perturbed_exner", "ddt_exner_phys",
-            "rho_iau_incr(IAU)", "exner_iau_incr(IAU)", "rayleigh_factor"],
-    writes: ["contravariant_correction_at_cells", "next.w", "next.rho", "next.exner", "next.theta_v",
-             "z_dwdz_dd(divdamp3)", "exner_dyn_incr(first_substep)"],
-    tooltip: "Tridiagonal solver for w, then update rho/exner/theta_v.\n\nSub-domains:\n• Contravariant correction interpolation: Cell[LAT_BDY_3 → HALO]\n• Surface w boundary: Cell[NUDGING → LOCAL]\n• Main solver + updates: Cell[NUDGING → LOCAL]\n• z_dwdz_dd: computed when divdamp_type≥3\n• exner_dyn_incr: initialized at first substep"
-  },
-
-  // P7: limited area boundary update
-  {
-    id: "P7", name: "stencils_61_62 (boundary update)", phase: "predictor",
-    dim: "Cell", condition: "limited_area",
-    zones: [
-      { zoneStart: 0, zoneEnd: 3, type: "write",
-        fields: "next.rho, next.exner, next.w" }
-    ],
-    reads: ["current.rho", "current.theta_v", "current.w", "grf_tend_rho", "grf_tend_thv", "grf_tend_w"],
-    writes: ["next.rho", "next.exner", "next.w"],
-    tooltip: "Limited-area boundary update: applies grid refinement tendencies to rho, exner, w in the lateral boundary zone.\nDomain: Cell[LAT_BDY → LAT_BDY_4]"
-  },
-
-  // P8: dwdz for divdamp
-  {
-    id: "P8", name: "compute_dwdz_for_divergence_damping", phase: "predictor",
-    dim: "Cell", condition: "limited_area+divdamp3",
-    zones: [
-      { zoneStart: 0, zoneEnd: 3, type: "write",
-        fields: "z_dwdz_dd" }
-    ],
-    reads: ["next.w", "contravariant_correction_at_cells"],
-    writes: ["z_dwdz_dd"],
-    tooltip: "Computes dw/dz for 3D divergence damping in limited-area lateral boundary.\nDomain: Cell[LAT_BDY → LAT_BDY_4]\nCondition: limited_area AND divdamp_type ≥ 3"
-  },
-
-  // Exchange after predictor
-  {
-    id: "EX2", name: "exchange(next.w [, z_dwdz_dd])", phase: "predictor",
-    dim: "Cell", condition: null, exchange: true,
-    zones: [ { zoneStart: 0, zoneEnd: 5, type: "exchange" } ],
-    tooltip: "Halo exchange of next.w (and z_dwdz_dd if divdamp_type≥3) on cells"
-  },
-
-  // ═══════════ CORRECTOR STEP ═══════════
-  {
-    id: "C1a", name: "compute_advection_corrector_vert_momentum", phase: "corrector",
-    dim: "Cell", condition: null,
-    zones: [
-      { zoneStart: 3, zoneEnd: 5, type: "write",
-        fields: "ddt_w_adv.corrector, cfl" }
-    ],
-    reads: ["next.w", "vt_ie", "vn_on_half_levels", "contravariant_correction_at_cells", "cell_areas"],
-    writes: ["ddt_w_adv.corrector", "contravariant_corrected_w_cells", "cfl"],
-    tooltip: "Vertical momentum advection (corrector): uses updated w from predictor.\nDomain: Cell[LAT_BDY_4 → HALO]"
-  },
-  {
-    id: "C1b", name: "compute_advection_horiz_momentum (corrector)", phase: "corrector",
-    dim: "Edge", condition: null,
-    zones: [
-      { zoneStart: 9, zoneEnd: 10, type: "write",
-        fields: "ddt_vn_adv.corrector" }
-    ],
-    reads: ["next.vn", "kin_hor_e", "tangential_wind", "contravariant_corrected_w_cells", "vn_on_half_levels"],
-    writes: ["ddt_vn_adv.corrector"],
-    tooltip: "Horizontal momentum advection (corrector): uses updated vn from predictor.\nDomain: Edge[NUDGING_2 → LOCAL]"
-  },
-
-  // C2: interpolation + buoyancy
-  {
-    id: "C2", name: "compute_interpolation_and_nonhydro_buoy", phase: "corrector",
-    dim: "Cell", condition: null,
-    zones: [
-      { zoneStart: 2, zoneEnd: 5, type: "write",
-        fields: "rho_ic, z_theta_v_pr_ic, theta_v_ic, z_th_ddz_exner_c" }
-    ],
-    reads: ["next.w", "contravariant_correction_at_cells",
-            "current.rho", "next.rho", "current.theta_v", "next.theta_v", "perturbed_exner"],
-    writes: ["rho_at_half_levels", "perturbed_theta_v_half", "theta_v_at_half_levels", "nonhydro_buoy"],
-    tooltip: "Re-interpolates rho/theta_v to half-levels using average of current+next, recomputes nonhydro buoyancy for corrector.\nDomain: Cell[LAT_BDY_3 → LOCAL]"
-  },
-
-  // C3: divergence damping + vn update
-  {
-    id: "C3", name: "apply_divergence_damping_and_update_vn", phase: "corrector",
-    dim: "Edge", condition: null,
-    zones: [
-      { zoneStart: 9, zoneEnd: 10, type: "readwrite",
-        fields: "next.vn (update with averaged tendencies + divdamp)" }
-    ],
-    reads: ["z_graddiv_vn", "current.vn", "z_dwdz_dd",
-            "ddt_vn_adv.predictor", "ddt_vn_adv.corrector",
-            "ddt_vn_phys", "vn_iau_incr(IAU)",
-            "z_theta_v_e", "z_gradh_exner", "enh_divdamp_fac"],
-    writes: ["next.vn"],
-    tooltip: "Final vn update: weighted average of predictor+corrector tendencies, pressure gradient, 2nd+4th order divergence damping, nudging.\nDomain: Edge[NUDGING_2 → LOCAL]\n\nBranches:\n• 2nd-order divdamp: if COMBINED and factor > 1e-6\n• 4th-order divdamp: if FOURTH_ORDER or (COMBINED and factor ratio)"
-  },
-
-  // Exchange after C3
-  {
-    id: "EX3", name: "exchange(next.vn)", phase: "corrector",
-    dim: "Edge", condition: null, exchange: true,
-    zones: [ { zoneStart: 0, zoneEnd: 10, type: "exchange" } ],
-    tooltip: "Halo exchange of next.vn on edges"
-  },
-
-  // C4: averaged vn + fluxes
-  {
-    id: "C4", name: "compute_averaged_vn_and_fluxes", phase: "corrector",
-    dim: "Edge", condition: null,
-    zones: [
-      { zoneStart: 4, zoneEnd: 10, type: "write",
-        fields: "z_vn_avg, mass_flx_me, z_theta_v_fl_e [, vn_traj, mass_flx_me_adv]" }
-    ],
-    reads: ["next.vn", "z_rho_e", "z_theta_v_e", "vn_traj(prev)", "mass_flx_me(prev)"],
-    writes: ["z_vn_avg", "mass_flx_me", "theta_v_flux_e", "vn_traj(lprep_adv)", "mass_flx_me_adv(lprep_adv)"],
-    tooltip: "Recomputes spatially averaged vn, mass flux, theta_v flux for corrector.\nIf lprep_adv: accumulates substep-averaged vn_traj and mass_flx_me.\nDomain: Edge[LAT_BDY_5 → HALO_2]"
-  },
-
-  // C5: vertically implicit solver (corrector)
-  {
-    id: "C5", name: "vertically_implicit_solver (corrector)", phase: "corrector",
-    dim: "Cell", condition: null,
-    zones: [
-      { zoneStart: 4, zoneEnd: 5, type: "write",
-        fields: "next.w, next.rho, next.exner, next.theta_v [, dyn_mass_flx, dyn_vol_flx, exner_dyn_incr]" }
-    ],
-    reads: ["mass_flx_me", "theta_v_flux_e",
-            "ddt_w_adv.predictor", "ddt_w_adv.corrector", "nonhydro_buoy",
-            "rho_at_half_levels", "contravariant_correction_at_cells",
-            "current.exner", "current.rho", "current.theta_v", "current.w",
-            "theta_v_at_half_levels", "perturbed_exner", "ddt_exner_phys",
-            "rho_iau_incr(IAU)", "exner_iau_incr(IAU)", "rayleigh_factor",
-            "exner_dyn_incr", "geofac_div"],
-    writes: ["next.w", "next.rho", "next.exner", "next.theta_v",
-             "dyn_vert_mass_flx(lprep_adv)", "dyn_vert_vol_flx(lprep_adv)", "exner_dyn_incr(last_substep)"],
-    tooltip: "Tridiagonal solver (corrector): uses weighted average of predictor+corrector w-advection tendencies.\n\nDomain: Cell[NUDGING → LOCAL]\n\nConditional outputs:\n• dyn_vert_mass_flx/vol_flx: if lprep_adv\n• exner_dyn_incr: at last substep"
-  },
-
-  // C6: init mass flux
-  {
-    id: "C6", name: "init_cell_kdim_field_with_zero_wp", phase: "corrector",
-    dim: "Cell", condition: "lprep_adv+first_substep",
-    zones: [
-      { zoneStart: 0, zoneEnd: 3, type: "write",
-        fields: "dyn_vert_mass_flx := 0" }
-    ],
-    reads: [],
-    writes: ["dyn_vert_mass_flx"],
-    tooltip: "Initializes dynamical vertical mass flux to zero in lateral boundary.\nDomain: Cell[LAT_BDY → LAT_BDY_4]\nCondition: lprep_adv AND at_first_substep"
-  },
-
-  // C7: update mass flux
-  {
-    id: "C7", name: "update_mass_flux_weighted", phase: "corrector",
-    dim: "Cell", condition: "lprep_adv",
-    zones: [
-      { zoneStart: 0, zoneEnd: 3, type: "readwrite",
-        fields: "dyn_vert_mass_flx" }
-    ],
-    reads: ["rho_at_half_levels", "current.w", "next.w", "contravariant_correction_at_cells"],
-    writes: ["dyn_vert_mass_flx"],
-    tooltip: "Updates dynamical vertical mass flux in lateral boundary for advection prep.\nDomain: Cell[LAT_BDY → LAT_BDY_4]\nCondition: lprep_adv"
-  },
-
-  // Exchange after corrector
-  {
-    id: "EX4", name: "exchange(next.rho, next.exner, next.w)", phase: "corrector",
-    dim: "Cell", condition: "lprep_adv", exchange: true,
-    zones: [ { zoneStart: 0, zoneEnd: 5, type: "exchange" } ],
-    tooltip: "Halo exchange of next.rho, next.exner, next.w on cells (when lprep_adv)"
-  },
-
-  // ═══════════ POST-PROCESSING ═══════════
-  {
-    id: "T1", name: "compute_theta_and_exner", phase: "postproc",
-    dim: "Cell", condition: "limited_area",
-    zones: [
-      { zoneStart: 5, zoneEnd: 5, type: "write",
-        fields: "next.theta_v, next.exner" }
-    ],
-    reads: ["next.rho", "next.theta_v(input)", "next.exner(input=rho*theta_v)"],
-    writes: ["next.theta_v", "next.exner"],
-    tooltip: "Recovers theta_v and exner from rho*theta_v product in boundary halo cells (bdy_halo_c mask).\nDomain: Cell[LOCAL → END]"
-  },
-  {
-    id: "T2", name: "compute_exner_from_rhotheta", phase: "postproc",
-    dim: "Cell", condition: "limited_area",
-    zones: [
-      { zoneStart: 0, zoneEnd: 3, type: "write",
-        fields: "next.theta_v, next.exner" }
-    ],
-    reads: ["next.rho", "next.exner(input=rho*theta_v)"],
-    writes: ["next.theta_v", "next.exner"],
-    tooltip: "Computes exner from rho*theta_v in lateral boundary.\nDomain: Cell[LAT_BDY → LAT_BDY_4]"
-  },
-  {
-    id: "T3", name: "update_theta_v", phase: "postproc",
-    dim: "Cell", condition: null,
-    zones: [
-      { zoneStart: 5, zoneEnd: 5, type: "write",
-        fields: "next.theta_v (where mask_prog_halo_c)" }
-    ],
-    reads: ["current.rho", "current.theta_v", "next.exner", "current.exner", "next.rho"],
-    writes: ["next.theta_v"],
-    tooltip: "Updates theta_v from rho and exner where mask_prog_halo_c is true.\nDomain: Cell[HALO → END]"
-  },
-];
-
-// ── Rendering ──────────────────────────────────────────────────────────
-
-function getZonesForDim(dim) {
-  return dim === "Edge" ? edgeZones : cellZones;
+function sqrtScale(zones) {
+  const s = zones.map(z => ({ ...z, sw: Math.sqrt(z.frac) }));
+  const total = s.reduce((a, b) => a + b.sw, 0);
+  return s.map(z => ({ ...z, pct: (z.sw / total) * 100 }));
 }
 
-function conditionMatches(cond) {
-  if (!cond) return true;
-  const la = document.getElementById("toggle-limited-area").checked;
-  const dd3 = document.getElementById("toggle-divdamp3").checked;
-  const iau = document.getElementById("toggle-iau").checked;
-  const lpa = document.getElementById("toggle-lprep-adv").checked;
-  const fs = document.getElementById("toggle-first-substep").checked;
+const edgeZones = sqrtScale(edgeZoneDefs);
+const cellZones = sqrtScale(cellZoneDefs);
 
-  if (cond === "limited_area") return la;
-  if (cond === "limited_area+divdamp3") return la && dd3;
-  if (cond === "first_substep") return fs;
-  if (cond === "lprep_adv") return lpa;
-  if (cond === "lprep_adv+first_substep") return lpa && fs;
+// ── Execution steps (unified across all fields) ─────────────────────────
+// Each step references which fields it touches and how
+
+const STEPS = [
+  // PREDICTOR
+  { id:"P1a", name:"compute_diagnostics_from_normal_wind", phase:"pred", dim:"Edge", cond:"fs",
+    desc:"RBF tangential wind reconstruction, interpolate vn/w to half-levels, kinetic energy, contravariant correction on edges" },
+  { id:"P1b", name:"compute_advection_predictor_vert_mom", phase:"pred", dim:"Cell", cond:"fs",
+    desc:"Vertical momentum advection (predictor): contravariant correction to cells, CFL, w-advection tendency" },
+  { id:"P1c", name:"compute_advection_horiz_momentum", phase:"pred", dim:"Edge", cond:"fs",
+    desc:"Horizontal momentum advection: Lamb rotation + KE gradient + metric correction" },
+  { id:"P2",  name:"compute_perturbed_qty_and_interp", phase:"pred", dim:"Cell", cond:null,
+    desc:"Time-extrapolate exner, compute perturbation quantities, interpolate to half-levels, nonhydro buoyancy" },
+  { id:"P3",  name:"compute_hydrostatic_correction", phase:"pred", dim:"Edge", cond:null,
+    desc:"Hydrostatic correction for pressure gradient over steep slopes (lowest level only)" },
+  { id:"P4",  name:"compute_rho_theta_pgrad_update_vn", phase:"pred", dim:"Edge", cond:null,
+    desc:"Interpolate rho/theta_v to edges, compute horizontal pressure gradient (Taylor-hydrostatic), update vn with tendencies" },
+  { id:"EX1", name:"exchange(vn, z_rho_e)", phase:"pred", dim:"Edge", cond:null, exchange:true,
+    desc:"Halo exchange of next.vn and z_rho_e" },
+  { id:"P5",  name:"compute_horiz_vel_qty_and_fluxes", phase:"pred", dim:"Edge", cond:null,
+    desc:"Recompute tangential wind, vn half-levels, KE, contravariant correction; compute grad-div vn, mass flux, theta_v flux" },
+  { id:"P6",  name:"vert_implicit_solver (predictor)", phase:"pred", dim:"Cell", cond:null,
+    desc:"Tridiagonal solver for w, update rho/exner/theta_v. Contravariant correction interp at LB3→HALO, main solver at NUDGING→LOCAL" },
+  { id:"P7",  name:"stencils_61_62 (LA boundary)", phase:"pred", dim:"Cell", cond:"la",
+    desc:"Limited-area: apply grid refinement tendencies to rho, exner, w in lateral boundary" },
+  { id:"P8",  name:"compute_dwdz_for_divdamp", phase:"pred", dim:"Cell", cond:"la+dd3",
+    desc:"dw/dz for 3D divergence damping in limited-area lateral boundary" },
+  { id:"EX2", name:"exchange(w [, z_dwdz_dd])", phase:"pred", dim:"Cell", cond:null, exchange:true,
+    desc:"Halo exchange of next.w (and z_dwdz_dd if divdamp≥3)" },
+
+  // CORRECTOR
+  { id:"C1a", name:"compute_advection_corrector_vert_mom", phase:"corr", dim:"Cell", cond:null,
+    desc:"Vertical momentum advection (corrector) using updated w" },
+  { id:"C1b", name:"compute_advection_horiz_momentum (corr)", phase:"corr", dim:"Edge", cond:null,
+    desc:"Horizontal momentum advection (corrector) using updated vn" },
+  { id:"C2",  name:"compute_interp_and_nonhydro_buoy", phase:"corr", dim:"Cell", cond:null,
+    desc:"Re-interpolate rho/theta_v to half-levels (avg current+next), recompute nonhydro buoyancy" },
+  { id:"C3",  name:"apply_divdamp_and_update_vn", phase:"corr", dim:"Edge", cond:null,
+    desc:"Final vn update: weighted predictor+corrector tendencies, pressure gradient, 2nd+4th order divergence damping" },
+  { id:"EX3", name:"exchange(vn)", phase:"corr", dim:"Edge", cond:null, exchange:true,
+    desc:"Halo exchange of next.vn" },
+  { id:"C4",  name:"compute_averaged_vn_and_fluxes", phase:"corr", dim:"Edge", cond:null,
+    desc:"Recompute averaged vn, mass flux, theta_v flux; accumulate vn_traj/mass_flx if lprep_adv" },
+  { id:"C5",  name:"vert_implicit_solver (corrector)", phase:"corr", dim:"Cell", cond:null,
+    desc:"Tridiagonal solver (corrector): weighted avg predictor+corrector w-advection" },
+  { id:"C6",  name:"init_dyn_mass_flx = 0", phase:"corr", dim:"Cell", cond:"lpa+fs",
+    desc:"Initialize dynamical vertical mass flux to zero in lateral boundary" },
+  { id:"C7",  name:"update_mass_flux_weighted", phase:"corr", dim:"Cell", cond:"lpa",
+    desc:"Update dynamical vertical mass flux in lateral boundary for advection prep" },
+  { id:"EX4", name:"exchange(rho, exner, w)", phase:"corr", dim:"Cell", cond:"lpa", exchange:true,
+    desc:"Halo exchange of next.rho, next.exner, next.w" },
+
+  // POST
+  { id:"T1",  name:"compute_theta_and_exner", phase:"post", dim:"Cell", cond:"la",
+    desc:"Recover theta_v and exner from rho*theta_v in boundary halo (bdy_halo_c mask)" },
+  { id:"T2",  name:"compute_exner_from_rhotheta", phase:"post", dim:"Cell", cond:"la",
+    desc:"Compute exner from rho*theta_v in lateral boundary" },
+  { id:"T3",  name:"update_theta_v", phase:"post", dim:"Cell", cond:null,
+    desc:"Update theta_v from rho and exner where mask_prog_halo_c" },
+];
+
+// ── Field definitions ──────────────────────────────────────────────────
+// For each field: which steps touch it, on which zones (by zone id), read/write/readwrite
+
+// Helper: zone index ranges by id
+function zoneRange(dim, startId, endId) {
+  const zones = dim === "Edge" ? edgeZones : cellZones;
+  const si = zones.findIndex(z => z.id === startId);
+  const ei = zones.findIndex(z => z.id === endId);
+  return { start: si, end: ei };
+}
+
+const FIELDS = [
+  // ─── Prognostic ───
+  { name: "next.vn", dim: "Edge", group: "prognostic", icon: "→",
+    desc: "Normal wind component at edges (prognostic)",
+    steps: [
+      { stepId:"P4",  ...zoneRange("Edge","LB1","NDG"), type:"write-sub", note:"LA boundary tendency (limited_area)", cond:"la" },
+      { stepId:"P4",  ...zoneRange("Edge","NDG2","HALO2"), type:"write", note:"Tendency update: vn += dtime*(ddt_vn_adv + gradh_exner + phys)" },
+      { stepId:"EX1", ...zoneRange("Edge","LB1","HALO2"), type:"exchange", note:"Halo exchange" },
+      { stepId:"C3",  ...zoneRange("Edge","NDG2","INT"), type:"write", note:"Corrector: weighted avg tendencies + divdamp" },
+      { stepId:"EX3", ...zoneRange("Edge","LB1","HALO2"), type:"exchange", note:"Halo exchange" },
+    ]},
+  { name: "next.w", dim: "Cell", group: "prognostic", icon: "↑",
+    desc: "Vertical wind component at cells on half-levels (prognostic)",
+    steps: [
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Predictor tridiagonal solve" },
+      { stepId:"P7",  ...zoneRange("Cell","LB1","LB4"), type:"write", note:"LA boundary update", cond:"la" },
+      { stepId:"EX2", ...zoneRange("Cell","LB1","HALO2"), type:"exchange", note:"Halo exchange" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Corrector tridiagonal solve" },
+    ]},
+  { name: "next.rho", dim: "Cell", group: "prognostic", icon: "ρ",
+    desc: "Air density at cells on model levels (prognostic)",
+    steps: [
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Predictor: rho update from divergence" },
+      { stepId:"P7",  ...zoneRange("Cell","LB1","LB4"), type:"write", note:"LA boundary update", cond:"la" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Corrector: rho update from divergence" },
+    ]},
+  { name: "next.theta_v", dim: "Cell", group: "prognostic", icon: "θ",
+    desc: "Virtual potential temperature at cells (prognostic)",
+    steps: [
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Predictor: theta_v from exner" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Corrector: theta_v from exner" },
+      { stepId:"T1",  ...zoneRange("Cell","INT","INT"), type:"write", note:"Recover from rho*theta_v (bdy_halo_c), actually LOCAL→END", cond:"la" },
+      { stepId:"T2",  ...zoneRange("Cell","LB1","LB4"), type:"write", note:"Recover from rho*theta_v in lateral boundary", cond:"la" },
+      { stepId:"T3",  ...zoneRange("Cell","HALO","HALO2"), type:"write", note:"Update where mask_prog_halo_c (HALO→END)" },
+    ]},
+  { name: "next.exner", dim: "Cell", group: "prognostic", icon: "π",
+    desc: "Exner pressure at cells on model levels (prognostic)",
+    steps: [
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Predictor: exner from tridiag solve" },
+      { stepId:"P7",  ...zoneRange("Cell","LB1","LB4"), type:"write", note:"LA boundary update", cond:"la" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Corrector: exner from tridiag solve" },
+      { stepId:"T1",  ...zoneRange("Cell","INT","INT"), type:"write", note:"Recover from rho*theta_v (LOCAL→END)", cond:"la" },
+      { stepId:"T2",  ...zoneRange("Cell","LB1","LB4"), type:"write", note:"Compute from rho*theta_v", cond:"la" },
+    ]},
+  { name: "current.vn", dim: "Edge", group: "prognostic", icon: "→",
+    desc: "Normal wind (current timestep, read-only in this step)",
+    steps: [
+      { stepId:"P1a", ...zoneRange("Edge","LB5","HALO2"), type:"read", note:"Input for velocity diagnostics" },
+      { stepId:"P1c", ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Input for horiz momentum advection" },
+      { stepId:"P4",  ...zoneRange("Edge","NDG2","HALO2"), type:"read", note:"Base for vn tendency update" },
+      { stepId:"C3",  ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Base for corrector vn update" },
+    ]},
+  { name: "current.w", dim: "Cell", group: "prognostic", icon: "↑",
+    desc: "Vertical wind (current timestep, read-only)",
+    steps: [
+      { stepId:"P1a", ...zoneRange("Cell","LB3","HALO"), type:"read", note:"Interpolated to edges for vel diagnostics (via E2C)" },
+      { stepId:"P1b", ...zoneRange("Cell","LB4","HALO"), type:"read", note:"Input for vertical w-advection" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Input for predictor solver" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Input for corrector solver" },
+      { stepId:"C7",  ...zoneRange("Cell","LB1","LB4"), type:"read", note:"Mass flux weighting", cond:"lpa" },
+    ]},
+  { name: "current.rho", dim: "Cell", group: "prognostic", icon: "ρ",
+    desc: "Air density (current timestep, read-only)",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"read", note:"Compute perturbation rho" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Input for predictor solver" },
+      { stepId:"C2",  ...zoneRange("Cell","LB3","INT"), type:"read", note:"Interpolate to half-levels" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Input for corrector solver" },
+      { stepId:"T3",  ...zoneRange("Cell","HALO","HALO2"), type:"read", note:"theta_v recovery" },
+    ]},
+  { name: "current.theta_v", dim: "Cell", group: "prognostic", icon: "θ",
+    desc: "Virtual potential temperature (current timestep, read-only)",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"read", note:"Compute perturbation theta_v" },
+      { stepId:"P3",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Hydrostatic correction (via E2C at edges)" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Input for predictor solver" },
+      { stepId:"C2",  ...zoneRange("Cell","LB3","INT"), type:"read", note:"Interpolate to half-levels" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Input for corrector solver" },
+      { stepId:"T3",  ...zoneRange("Cell","HALO","HALO2"), type:"read", note:"theta_v recovery" },
+    ]},
+  { name: "current.exner", dim: "Cell", group: "prognostic", icon: "π",
+    desc: "Exner pressure (current timestep, read-only)",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"read", note:"Time extrapolation of exner" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Input for predictor solver" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Input for corrector solver" },
+      { stepId:"T3",  ...zoneRange("Cell","HALO","HALO2"), type:"read", note:"theta_v recovery" },
+    ]},
+
+  // ─── Intermediate: edge fields ───
+  { name: "z_rho_e", dim: "Edge", group: "intermediate", icon: "ρₑ",
+    desc: "rho interpolated to edges (z_rho_e in ICON). Bridges predictor→corrector.",
+    steps: [
+      { stepId:"P4",  ...zoneRange("Edge","LB7","HALO"), type:"write", note:"Horizontal advection interp (LB7→HALO), zero outside" },
+      { stepId:"EX1", ...zoneRange("Edge","LB1","HALO2"), type:"exchange", note:"Halo exchange" },
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"read", note:"Mass flux computation" },
+      { stepId:"C4",  ...zoneRange("Edge","LB5","HALO2"), type:"read", note:"Corrector flux computation" },
+    ]},
+  { name: "z_theta_v_e", dim: "Edge", group: "intermediate", icon: "θₑ",
+    desc: "theta_v interpolated to edges (z_theta_v_e in ICON). Bridges predictor→corrector.",
+    steps: [
+      { stepId:"P4",  ...zoneRange("Edge","LB7","HALO"), type:"write", note:"Horizontal advection interp (LB7→HALO), zero outside" },
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"read", note:"Theta_v flux computation" },
+      { stepId:"C3",  ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Divergence damping (nudging coefficient)" },
+      { stepId:"C4",  ...zoneRange("Edge","LB5","HALO2"), type:"read", note:"Corrector flux computation" },
+    ]},
+  { name: "z_gradh_exner", dim: "Edge", group: "intermediate", icon: "∇π",
+    desc: "Horizontal pressure gradient (z_gradh_exner in ICON). Computed in predictor, used in corrector.",
+    steps: [
+      { stepId:"P4",  ...zoneRange("Edge","LB1","HALO2"), type:"write", note:"Full domain: 3 vertical sub-regions (flat/transition/below)" },
+      { stepId:"C3",  ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Pressure gradient term in vn update" },
+    ]},
+  { name: "z_graddiv_vn", dim: "Edge", group: "intermediate", icon: "∇²v",
+    desc: "Gradient of divergence of vn. For divergence damping.",
+    steps: [
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Computed from updated vn" },
+      { stepId:"C3",  ...zoneRange("Edge","NDG2","INT"), type:"read", note:"4th-order divergence damping" },
+    ]},
+  { name: "mass_flx_me", dim: "Edge", group: "intermediate", icon: "ṁ",
+    desc: "Mass flux at edges (mass_flx_me in ICON).",
+    steps: [
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Predictor mass flux = z_vn_avg * z_rho_e * ddqz" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Predictor solver divergence (via E2C at cells)" },
+      { stepId:"C4",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Corrector mass flux" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Corrector solver divergence (via E2C at cells)" },
+    ]},
+  { name: "theta_v_flux_e", dim: "Edge", group: "intermediate", icon: "θ·ṁ",
+    desc: "Theta_v flux at edges (z_theta_v_fl_e in ICON).",
+    steps: [
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Predictor theta_v flux" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Predictor solver (via E2C)" },
+      { stepId:"C4",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Corrector theta_v flux" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Corrector solver (via E2C)" },
+    ]},
+  { name: "tangential_wind", dim: "Edge", group: "intermediate", icon: "vt",
+    desc: "Tangential wind at edges (diagnostic).",
+    steps: [
+      { stepId:"P1a", ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"RBF reconstruction" },
+      { stepId:"P1c", ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Lamb rotation in horiz advection" },
+      { stepId:"P4",  ...zoneRange("Edge","LB7","HALO"), type:"read", note:"Used in horizontal advection of rho/theta" },
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Recomputed from updated vn" },
+      { stepId:"C1b", ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Corrector horiz advection" },
+    ]},
+  { name: "vn_on_half_levels", dim: "Edge", group: "intermediate", icon: "vn½",
+    desc: "Normal wind interpolated to half-levels (vn_ie in ICON).",
+    steps: [
+      { stepId:"P1a", ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Interpolated from vn using wgtfac_e" },
+      { stepId:"P1c", ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Metric correction in horiz advection" },
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Recomputed from updated vn" },
+      { stepId:"C1a", ...zoneRange("Cell","LB4","HALO"), type:"read", note:"Corrector vert advection (via E2C)" },
+      { stepId:"C1b", ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Corrector horiz advection" },
+    ]},
+  { name: "kin_hor_e", dim: "Edge", group: "intermediate", icon: "KE",
+    desc: "Horizontal kinetic energy at edges (z_kin_hor_e in ICON). Bridges predictor→corrector.",
+    steps: [
+      { stepId:"P1a", ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"0.5*(vn² + vt²)" },
+      { stepId:"P1c", ...zoneRange("Edge","NDG2","INT"), type:"read", note:"KE gradient in horiz advection" },
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Recomputed from updated vn" },
+      { stepId:"C1b", ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Corrector horiz advection" },
+    ]},
+  { name: "vt_ie (tangential half-levels)", dim: "Edge", group: "intermediate", icon: "vt½",
+    desc: "Tangential wind on half-levels (z_vt_ie in ICON). Bridges predictor→corrector.",
+    steps: [
+      { stepId:"P1a", ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Interpolated from tangential_wind" },
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Recomputed from updated vn" },
+      { stepId:"C1a", ...zoneRange("Cell","LB4","HALO"), type:"read", note:"Corrector vert advection (horizontal w-advection)" },
+    ]},
+  { name: "contravariant_corr_me", dim: "Edge", group: "intermediate", icon: "cc_e",
+    desc: "Contravariant correction at edges (z_w_concorr_me). vn·dz/dn + vt·dz/dt.",
+    steps: [
+      { stepId:"P1a", ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Below nflatlev: zero; above: metric corr" },
+      { stepId:"P1b", ...zoneRange("Cell","LB4","HALO"), type:"read", note:"Interpolated to cells (via E2C)" },
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Recomputed from updated vn" },
+      { stepId:"P6",  ...zoneRange("Cell","LB3","HALO"), type:"read", note:"Interpolated to cells for solver (via E2C)" },
+    ]},
+
+  // ─── Intermediate: cell fields ───
+  { name: "nonhydro_buoy", dim: "Cell", group: "intermediate", icon: "B",
+    desc: "Nonhydrostatic buoyancy (z_th_ddz_exner_c). theta'·dπ₀/dz + theta·(1-η)·dπ'/dz.",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"write", note:"From perturbed quantities" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"w explicit term in predictor solver" },
+      { stepId:"C2",  ...zoneRange("Cell","LB3","INT"), type:"write", note:"Recomputed with averaged rho/theta_v" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"w explicit term in corrector solver" },
+    ]},
+  { name: "rho_at_half_levels", dim: "Cell", group: "intermediate", icon: "ρ½",
+    desc: "Rho interpolated to half-levels (rho_ic in ICON).",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"write", note:"From current rho" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Predictor solver" },
+      { stepId:"C2",  ...zoneRange("Cell","LB3","INT"), type:"write", note:"From avg current+next rho" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Corrector solver" },
+      { stepId:"C7",  ...zoneRange("Cell","LB1","LB4"), type:"read", note:"Mass flux weighting", cond:"lpa" },
+    ]},
+  { name: "theta_v_at_half_levels", dim: "Cell", group: "intermediate", icon: "θ½",
+    desc: "Theta_v interpolated to half-levels (theta_v_ic in ICON).",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"write", note:"From current theta_v" },
+      { stepId:"P3",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Hydrostatic correction (via E2C at edges)" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Predictor solver" },
+      { stepId:"C2",  ...zoneRange("Cell","LB3","INT"), type:"write", note:"From avg current+next theta_v" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Corrector solver" },
+    ]},
+  { name: "perturbed_exner", dim: "Cell", group: "intermediate", icon: "π'",
+    desc: "Perturbed exner at cells (perturbed_exner_at_cells_on_model_levels).",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"write", note:"exner - exner_ref" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Predictor solver (exner tendency)" },
+      { stepId:"C2",  ...zoneRange("Cell","LB3","INT"), type:"read", note:"Nonhydro buoyancy computation" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Corrector solver" },
+    ]},
+  { name: "perturbed_rho", dim: "Cell", group: "intermediate", icon: "ρ'",
+    desc: "Perturbed rho at cells (z_rth_pr_1). rho - rho_ref.",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"write", note:"Perturbation from reference" },
+      { stepId:"P4",  ...zoneRange("Edge","LB7","HALO"), type:"read", note:"Interpolated to edges for rho advection (via E2C)" },
+    ]},
+  { name: "perturbed_theta_v", dim: "Cell", group: "intermediate", icon: "θ'",
+    desc: "Perturbed theta_v at cells (z_rth_pr_2). theta_v - theta_v_ref.",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"write", note:"Perturbation from reference" },
+      { stepId:"P4",  ...zoneRange("Edge","LB7","HALO"), type:"read", note:"Interpolated to edges for theta advection (via E2C)" },
+    ]},
+  { name: "temporal_extrap_exner", dim: "Cell", group: "intermediate", icon: "π̃",
+    desc: "Time-extrapolated perturbed exner (z_exner_ex_pr). For pressure gradient computation.",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"write", note:"Temporal extrapolation" },
+      { stepId:"P4",  ...zoneRange("Edge","LB1","HALO2"), type:"read", note:"Pressure gradient computation (via E2C)" },
+    ]},
+  { name: "ddz_exner / d2dz2_exner", dim: "Cell", group: "intermediate", icon: "∂π/∂z",
+    desc: "Vertical derivatives of time-extrapolated perturbed exner for Taylor expansion in pressure gradient.",
+    steps: [
+      { stepId:"P2",  ...zoneRange("Cell","LB3","HALO"), type:"write", note:"1st and 2nd vertical derivatives" },
+      { stepId:"P4",  ...zoneRange("Edge","LB1","HALO2"), type:"read", note:"Taylor expansion in pressure gradient (via E2C)" },
+    ]},
+  { name: "contravariant_corr_cells", dim: "Cell", group: "intermediate", icon: "cc_c",
+    desc: "Contravariant correction at cells on half-levels (w_concorr_c). Surface boundary condition for w.",
+    steps: [
+      { stepId:"P1b", ...zoneRange("Cell","LB4","HALO"), type:"write", note:"Interpolated from edges" },
+      { stepId:"P6",  ...zoneRange("Cell","LB3","HALO"), type:"readwrite", note:"Read for solver, written for nflatlev+1→nlev+1" },
+      { stepId:"P8",  ...zoneRange("Cell","LB1","LB4"), type:"read", note:"dwdz computation", cond:"la+dd3" },
+      { stepId:"C1a", ...zoneRange("Cell","LB4","HALO"), type:"read", note:"Corrector vert advection" },
+      { stepId:"C2",  ...zoneRange("Cell","LB3","INT"), type:"read", note:"w boundary condition" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Corrector solver" },
+      { stepId:"C7",  ...zoneRange("Cell","LB1","LB4"), type:"read", note:"Mass flux weighting", cond:"lpa" },
+    ]},
+  { name: "z_dwdz_dd", dim: "Cell", group: "intermediate", icon: "∂w/∂z",
+    desc: "dw/dz for 3D divergence damping (z_dwdz_dd). Only used when divdamp_type ≥ 3.",
+    steps: [
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Computed inside predictor solver (divdamp≥3)", cond:"dd3" },
+      { stepId:"P8",  ...zoneRange("Cell","LB1","LB4"), type:"write", note:"Lateral boundary (LA + divdamp≥3)", cond:"la+dd3" },
+      { stepId:"EX2", ...zoneRange("Cell","LB1","HALO2"), type:"exchange", note:"Halo exchange (divdamp≥3)", cond:"dd3" },
+      { stepId:"C3",  ...zoneRange("Edge","NDG2","INT"), type:"read", note:"3D divergence damping in vn update" },
+    ]},
+  { name: "ddt_vn_adv.predictor", dim: "Edge", group: "intermediate", icon: "v̇ₚ",
+    desc: "Normal wind advective tendency (predictor). Horizontal momentum advection result.",
+    steps: [
+      { stepId:"P1c", ...zoneRange("Edge","NDG2","INT"), type:"write", note:"Lamb rotation + KE grad + metric" },
+      { stepId:"P4",  ...zoneRange("Edge","NDG2","HALO2"), type:"read", note:"vn tendency update" },
+      { stepId:"C3",  ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Weighted avg with corrector tendency" },
+    ]},
+  { name: "ddt_vn_adv.corrector", dim: "Edge", group: "intermediate", icon: "v̇c",
+    desc: "Normal wind advective tendency (corrector).",
+    steps: [
+      { stepId:"C1b", ...zoneRange("Edge","NDG2","INT"), type:"write", note:"Corrector horiz advection" },
+      { stepId:"C3",  ...zoneRange("Edge","NDG2","INT"), type:"read", note:"Weighted avg with predictor tendency" },
+    ]},
+  { name: "ddt_w_adv.predictor", dim: "Cell", group: "intermediate", icon: "ẇₚ",
+    desc: "Vertical wind advective tendency (predictor).",
+    steps: [
+      { stepId:"P1b", ...zoneRange("Cell","LB4","HALO"), type:"write", note:"Vertical w-advection" },
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"w explicit term in predictor solver" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Weighted avg in corrector solver" },
+    ]},
+  { name: "ddt_w_adv.corrector", dim: "Cell", group: "intermediate", icon: "ẇc",
+    desc: "Vertical wind advective tendency (corrector).",
+    steps: [
+      { stepId:"C1a", ...zoneRange("Cell","LB4","HALO"), type:"write", note:"Corrector vertical w-advection" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"read", note:"Weighted avg in corrector solver" },
+    ]},
+  { name: "exner_dyn_incr", dim: "Cell", group: "intermediate", icon: "Δπ",
+    desc: "Exner dynamical increment (exner_dynamical_increment). Tracks exner change for physics coupling.",
+    steps: [
+      { stepId:"P6",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"Initialized at first substep", cond:"fs" },
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"readwrite", note:"Updated at last substep" },
+    ]},
+  { name: "hydro_corr", dim: "Edge", group: "intermediate", icon: "Δh",
+    desc: "Hydrostatic correction on lowest level (z_hydro_corr). For steep slope pressure gradient.",
+    steps: [
+      { stepId:"P3",  ...zoneRange("Edge","NDG2","INT"), type:"write", note:"Lowest model level only" },
+      { stepId:"P4",  ...zoneRange("Edge","NDG2","HALO2"), type:"read", note:"Added to pressure gradient" },
+    ]},
+  { name: "z_vn_avg", dim: "Edge", group: "intermediate", icon: "v̄n",
+    desc: "Spatially averaged vn for flux computation.",
+    steps: [
+      { stepId:"P5",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Predictor: e_flx_avg weighted average" },
+      { stepId:"C4",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Corrector: recomputed" },
+    ]},
+
+  // ─── Advection prep ───
+  { name: "vn_traj", dim: "Edge", group: "intermediate", icon: "vₜ",
+    desc: "Substep-averaged vn for tracer advection (prep_adv.vn_traj).",
+    steps: [
+      { stepId:"C4",  ...zoneRange("Edge","LB5","HALO2"), type:"write", note:"Accumulated: r_nsubsteps * z_vn_avg", cond:"lpa" },
+    ]},
+  { name: "dyn_vert_mass_flx", dim: "Cell", group: "intermediate", icon: "ṁᵥ",
+    desc: "Dynamical vertical mass flux at cells on half-levels for advection.",
+    steps: [
+      { stepId:"C5",  ...zoneRange("Cell","NDG","INT"), type:"write", note:"From corrector solver", cond:"lpa" },
+      { stepId:"C6",  ...zoneRange("Cell","LB1","LB4"), type:"write", note:"Set to zero (first substep)", cond:"lpa+fs" },
+      { stepId:"C7",  ...zoneRange("Cell","LB1","LB4"), type:"readwrite", note:"Accumulate mass flux", cond:"lpa" },
+    ]},
+];
+
+// ── Condition checking ─────────────────────────────────────────────────
+function condVisible(cond) {
+  if (!cond) return true;
+  const la = document.getElementById("tog-la").checked;
+  const dd3 = document.getElementById("tog-dd3").checked;
+  const iau = document.getElementById("tog-iau").checked;
+  const lpa = document.getElementById("tog-lpa").checked;
+  const fs = document.getElementById("tog-fs").checked;
+  if (cond === "la") return la;
+  if (cond === "dd3") return dd3;
+  if (cond === "la+dd3") return la && dd3;
+  if (cond === "iau") return iau;
+  if (cond === "lpa") return lpa;
+  if (cond === "lpa+fs") return lpa && fs;
+  if (cond === "fs") return fs;
   return true;
 }
 
+// ── Render ──────────────────────────────────────────────────────────────
 function render() {
-  const container = document.getElementById("diagram");
-
-  // Group stencils by phase
-  const phases = [
-    { id: "predictor", label: "PREDICTOR STEP", cssClass: "phase-predictor" },
-    { id: "corrector", label: "CORRECTOR STEP", cssClass: "phase-corrector" },
-    { id: "postproc", label: "POST-PROCESSING", cssClass: "phase-postproc" },
-  ];
+  const container = document.getElementById("cards");
+  const showReads = document.getElementById("tog-reads").checked;
+  const skipInactive = document.getElementById("tog-skip-inactive").checked;
+  const filterText = document.getElementById("field-filter").value.toLowerCase().trim();
 
   let html = "";
 
-  for (const phase of phases) {
-    const phaseStencils = stencils.filter(s => s.phase === phase.id);
-    if (phaseStencils.length === 0) continue;
-
-    html += `<div class="phase-label ${phase.cssClass}">${phase.label}</div>`;
-    html += `<div class="swim-lane-container">`;
-
-    // We need separate tables for Edge and Cell, or a combined approach.
-    // Let's create a combined table with a dim column and zone columns that adapt.
-    // For simplicity, show Edge zones (11 cols) and Cell zones (6 cols) side by side,
-    // but only fill the relevant ones per row.
-
-    // Actually, let's use the maximum zone count and label headers generically.
-    const maxCols = 11; // Edge has 11 zones
-
-    html += `<table class="swim-lane">`;
-    html += `<thead><tr>`;
-    html += `<th style="min-width:44px">ID</th>`;
-    html += `<th class="stencil-name">Stencil</th>`;
-    html += `<th style="width:50px">Dim</th>`;
-
-    // Edge zone headers
-    for (const z of edgeZones) {
-      html += `<th title="Edge: ${z.label}\n[${z.start}, ${z.end})">${z.label}</th>`;
-    }
-    html += `</tr></thead><tbody>`;
-
-    for (const s of phaseStencils) {
-      const visible = conditionMatches(s.condition);
-      const isExchange = s.exchange;
-      const rowClass = (visible ? "" : "row-hidden") + (isExchange ? " exchange-row" : "");
-      const dimClass = s.dim === "Edge" ? "dim-edge" : (s.dim === "Cell" ? "dim-cell" : "dim-vertex");
-
-      const condBadge = s.condition ? `<span class="cond-badge">${s.condition}</span>` : "";
-
-      html += `<tr class="${rowClass}" data-id="${s.id}" data-writes="${(s.writes||[]).join(",")}" data-reads="${(s.reads||[]).join(",")}">`;
-      html += `<td style="font-weight:bold;color:var(--accent)">${s.id}</td>`;
-      html += `<td class="stencil-name">${s.name}${condBadge}</td>`;
-      html += `<td class="dim-col ${dimClass}">${s.dim}</td>`;
-
-      const zones = getZonesForDim(s.dim);
-
-      for (let i = 0; i < maxCols; i++) {
-        if (s.dim === "Cell") {
-          // Map cell zones to edge zone columns based on approximate position
-          // Cell zones map roughly: LB→col0, LB2→col1-2, LB3→col3, LB4→col4-5, NDG→col6-8, INT→col9-10
-          const cellToEdgeCols = [
-            [0],        // C_LB → E_LB
-            [1, 2],     // C_LB2 → E_LB2+LB3
-            [3, 4],     // C_LB3 → E_LB4+LB5
-            [5, 6],     // C_LB4 → E_LB6+LB7
-            [7, 8],     // C_NDG → E_LB8+NDG
-            [9, 10],    // C_INT → E_NDG2+INT
-          ];
-
-          let cellZoneIdx = -1;
-          for (let cz = 0; cz < cellToEdgeCols.length; cz++) {
-            if (cellToEdgeCols[cz].includes(i)) { cellZoneIdx = cz; break; }
-          }
-
-          if (cellZoneIdx === -1) {
-            html += `<td></td>`;
-            continue;
-          }
-
-          // Check if this cell zone is covered by any bar
-          let barType = null;
-          let barFields = "";
-          for (const z of s.zones) {
-            if (cellZoneIdx >= z.zoneStart && cellZoneIdx <= z.zoneEnd) {
-              barType = z.type;
-              barFields = z.fields || "";
-            }
-          }
-
-          // Only render the bar on the first column of a multi-column cell zone
-          const isFirstCol = cellToEdgeCols[cellZoneIdx][0] === i;
-          const colSpan = cellToEdgeCols[cellZoneIdx].length;
-
-          if (!isFirstCol) continue; // skip, will be covered by colspan
-
-          if (barType) {
-            const barClass = barType === "exchange" ? "exchange-bar" : `bar-${barType}`;
-            html += `<td colspan="${colSpan}"><div class="zone-bar ${barClass}" data-tooltip-id="${s.id}" data-fields="${barFields}"></div></td>`;
-          } else {
-            html += `<td colspan="${colSpan}"></td>`;
-          }
-        } else {
-          // Edge dimension - direct mapping
-          let barType = null;
-          let barFields = "";
-          for (const z of s.zones) {
-            if (i >= z.zoneStart && i <= z.zoneEnd) {
-              barType = z.type;
-              barFields = z.fields || "";
-            }
-          }
-
-          if (barType) {
-            const barClass = barType === "exchange" ? "exchange-bar" : `bar-${barType}`;
-            html += `<td><div class="zone-bar ${barClass}" data-tooltip-id="${s.id}" data-fields="${barFields}"></div></td>`;
-          } else {
-            html += `<td></td>`;
-          }
-        }
-      }
-
-      html += `</tr>`;
+  for (const field of FIELDS) {
+    // Filter
+    if (filterText && !field.name.toLowerCase().includes(filterText) &&
+        !field.desc.toLowerCase().includes(filterText) &&
+        !field.icon.toLowerCase().includes(filterText)) {
+      html += `<div class="field-card hidden"></div>`;
+      continue;
     }
 
-    html += `</tbody></table></div>`;
-  }
+    const zones = field.dim === "Edge" ? edgeZones : cellZones;
+    const dimClass = field.dim === "Edge" ? "dim-edge" : "dim-cell";
 
-  // Add a second diagram showing per-field where they are written/read across the timestep
-  html += `<h2>Per-Field Domain Coverage</h2>`;
-  html += `<p class="subtitle">Shows which stencil writes/reads each prognostic and key intermediate field, and on which horizontal domain.</p>`;
+    html += `<div class="field-card" data-group="${field.group}">`;
+    html += `<div class="field-header" onclick="toggleCard(this)">`;
+    html += `<span class="field-icon">▼</span>`;
+    html += `<span class="field-name">${field.icon} ${field.name}</span>`;
+    html += `<span class="field-dim ${dimClass}">${field.dim}</span>`;
+    html += `<span class="field-desc">${field.desc}</span>`;
+    html += `</div>`;
 
-  const fieldSummary = [
-    { name: "next.vn", dim: "Edge", operations: [
-      { stencil: "P4", type: "write", startZ: 0, endZ: 8, label: "LAT_BDY→NUDGING (LA boundary)" },
-      { stencil: "P4", type: "write", startZ: 9, endZ: 10, label: "NUDGING_2→HALO_2 (tendency)" },
-      { stencil: "C3", type: "write", startZ: 9, endZ: 10, label: "NUDGING_2→LOCAL (corrector)" },
-    ]},
-    { name: "next.w", dim: "Cell", operations: [
-      { stencil: "P6", type: "write", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (predictor)" },
-      { stencil: "P7", type: "write", startZ: 0, endZ: 3, label: "LAT_BDY→LAT_BDY_4 (LA)" },
-      { stencil: "C5", type: "write", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (corrector)" },
-    ]},
-    { name: "next.rho", dim: "Cell", operations: [
-      { stencil: "P6", type: "write", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (predictor)" },
-      { stencil: "P7", type: "write", startZ: 0, endZ: 3, label: "LAT_BDY→LAT_BDY_4 (LA)" },
-      { stencil: "C5", type: "write", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (corrector)" },
-    ]},
-    { name: "next.exner", dim: "Cell", operations: [
-      { stencil: "P6", type: "write", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (predictor)" },
-      { stencil: "P7", type: "write", startZ: 0, endZ: 3, label: "LAT_BDY→LAT_BDY_4 (LA)" },
-      { stencil: "C5", type: "write", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (corrector)" },
-      { stencil: "T1", type: "write", startZ: 5, endZ: 5, label: "LOCAL→END (LA)" },
-      { stencil: "T2", type: "write", startZ: 0, endZ: 3, label: "LAT_BDY→LAT_BDY_4 (LA)" },
-    ]},
-    { name: "next.theta_v", dim: "Cell", operations: [
-      { stencil: "P6", type: "write", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (predictor)" },
-      { stencil: "C5", type: "write", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (corrector)" },
-      { stencil: "T1", type: "write", startZ: 5, endZ: 5, label: "LOCAL→END (LA)" },
-      { stencil: "T2", type: "write", startZ: 0, endZ: 3, label: "LAT_BDY→LAT_BDY_4 (LA)" },
-      { stencil: "T3", type: "write", startZ: 5, endZ: 5, label: "HALO→END (always, masked)" },
-    ]},
-    { name: "z_rho_e (rho at edges)", dim: "Edge", operations: [
-      { stencil: "P4", type: "write", startZ: 6, endZ: 10, label: "LAT_BDY_7→HALO" },
-      { stencil: "P5", type: "read", startZ: 4, endZ: 10, label: "LAT_BDY_5→HALO_2" },
-      { stencil: "C4", type: "read", startZ: 4, endZ: 10, label: "LAT_BDY_5→HALO_2" },
-    ]},
-    { name: "z_theta_v_e (theta_v at edges)", dim: "Edge", operations: [
-      { stencil: "P4", type: "write", startZ: 6, endZ: 10, label: "LAT_BDY_7→HALO" },
-      { stencil: "P5", type: "read", startZ: 4, endZ: 10, label: "LAT_BDY_5→HALO_2" },
-      { stencil: "C3", type: "read", startZ: 9, endZ: 10, label: "NUDGING_2→LOCAL" },
-      { stencil: "C4", type: "read", startZ: 4, endZ: 10, label: "LAT_BDY_5→HALO_2" },
-    ]},
-    { name: "z_gradh_exner (pressure gradient)", dim: "Edge", operations: [
-      { stencil: "P4", type: "write", startZ: 0, endZ: 10, label: "0→HALO_2" },
-      { stencil: "C3", type: "read", startZ: 9, endZ: 10, label: "NUDGING_2→LOCAL" },
-    ]},
-    { name: "z_graddiv_vn (grad-div of vn)", dim: "Edge", operations: [
-      { stencil: "P5", type: "write", startZ: 4, endZ: 10, label: "LAT_BDY_5→HALO_2" },
-      { stencil: "C3", type: "read", startZ: 9, endZ: 10, label: "NUDGING_2→LOCAL" },
-    ]},
-    { name: "mass_flx_me", dim: "Edge", operations: [
-      { stencil: "P5", type: "write", startZ: 4, endZ: 10, label: "LAT_BDY_5→HALO_2 (predictor)" },
-      { stencil: "P6", type: "read", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (predictor solver)" },
-      { stencil: "C4", type: "write", startZ: 4, endZ: 10, label: "LAT_BDY_5→HALO_2 (corrector)" },
-      { stencil: "C5", type: "read", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (corrector solver)" },
-    ]},
-    { name: "nonhydro_buoy", dim: "Cell", operations: [
-      { stencil: "P2", type: "write", startZ: 2, endZ: 5, label: "LAT_BDY_3→HALO (predictor)" },
-      { stencil: "P6", type: "read", startZ: 4, endZ: 5, label: "NUDGING→LOCAL" },
-      { stencil: "C2", type: "write", startZ: 2, endZ: 5, label: "LAT_BDY_3→LOCAL (corrector)" },
-      { stencil: "C5", type: "read", startZ: 4, endZ: 5, label: "NUDGING→LOCAL" },
-    ]},
-    { name: "z_dwdz_dd", dim: "Cell", operations: [
-      { stencil: "P6", type: "write", startZ: 4, endZ: 5, label: "NUDGING→LOCAL (divdamp≥3)" },
-      { stencil: "P8", type: "write", startZ: 0, endZ: 3, label: "LAT_BDY→LAT_BDY_4 (LA+divdamp≥3)" },
-      { stencil: "C3", type: "read", startZ: 9, endZ: 10, label: "NUDGING_2→LOCAL (edge dim!)" },
-    ]},
-  ];
+    html += `<div class="field-body">`;
 
-  html += `<div class="swim-lane-container"><table class="swim-lane">`;
-  html += `<thead><tr><th>Field</th><th>Stencil</th><th>R/W</th><th style="width:50px">Dim</th>`;
-  for (const z of edgeZones) {
-    html += `<th>${z.label}</th>`;
-  }
-  html += `</tr></thead><tbody>`;
-
-  for (const f of fieldSummary) {
-    for (let oi = 0; oi < f.operations.length; oi++) {
-      const op = f.operations[oi];
-      const dimClass = f.dim === "Edge" ? "dim-edge" : "dim-cell";
-
-      html += `<tr data-field="${f.name}">`;
-      if (oi === 0) {
-        html += `<td rowspan="${f.operations.length}" style="font-weight:bold;text-align:left;padding-left:8px;border-right:2px solid var(--border)">${f.name}</td>`;
-      }
-      html += `<td style="color:var(--accent);font-weight:bold">${op.stencil}</td>`;
-      html += `<td style="color:${op.type === 'write' ? '#e94560' : '#00b4d8'}">${op.type.toUpperCase()}</td>`;
-      html += `<td class="${dimClass}">${f.dim}</td>`;
-
-      if (f.dim === "Cell") {
-        const cellToEdgeCols = [[0], [1,2], [3,4], [5,6], [7,8], [9,10]];
-        for (let cz = 0; cz < cellToEdgeCols.length; cz++) {
-          const isFirst = cellToEdgeCols[cz][0];
-          const colSpan = cellToEdgeCols[cz].length;
-          const inRange = cz >= op.startZ && cz <= op.endZ;
-          if (inRange) {
-            const cls = op.type === "write" ? "bar-write" : "bar-read";
-            html += `<td colspan="${colSpan}"><div class="zone-bar ${cls}" title="${op.label}" style="height:16px"></div></td>`;
-          } else {
-            html += `<td colspan="${colSpan}"></td>`;
-          }
-        }
-      } else {
-        for (let i = 0; i < edgeZones.length; i++) {
-          const inRange = i >= op.startZ && i <= op.endZ;
-          if (inRange) {
-            const cls = op.type === "write" ? "bar-write" : "bar-read";
-            html += `<td><div class="zone-bar ${cls}" title="${op.label}" style="height:16px"></div></td>`;
-          } else {
-            html += `<td></td>`;
-          }
-        }
-      }
-      html += `</tr>`;
+    // Zone header bar
+    html += `<div style="padding:4px 8px 0 312px"><div class="zone-header-bar">`;
+    for (const z of zones) {
+      const bg = z.id.startsWith("LB") ? "rgba(255,255,255,0.06)" :
+                 z.id.startsWith("NDG") ? "rgba(255,200,0,0.08)" :
+                 z.id === "INT" ? "rgba(0,180,255,0.06)" :
+                 "rgba(180,140,255,0.06)";
+      html += `<div class="zone-header-seg" style="width:${z.pct}%;background:${bg}" title="${z.id}: ${(z.frac*100).toFixed(1)}%">${z.label}</div>`;
     }
+    html += `</div></div>`;
+
+    // Timeline rows
+    let lastPhase = "";
+    for (const step of STEPS) {
+      // Find if this step touches this field
+      const touches = field.steps.filter(s => s.stepId === step.id);
+      const hasVisible = touches.some(t => condVisible(t.cond));
+
+      if (skipInactive && touches.length === 0) continue;
+      if (!showReads && touches.length > 0 && touches.every(t => t.type === "read")) continue;
+
+      // Step-level condition
+      if (!condVisible(step.cond)) continue;
+
+      // Phase separator
+      if (step.phase !== lastPhase) {
+        const pLabel = step.phase === "pred" ? "PREDICTOR" : step.phase === "corr" ? "CORRECTOR" : "POST-PROCESSING";
+        html += `<div class="phase-sep ${step.phase}">${pLabel}</div>`;
+        lastPhase = step.phase;
+      }
+
+      const phaseClass = `phase-${step.phase}`;
+      const exchangeClass = step.exchange ? " exchange-row" : "";
+
+      html += `<div class="tl-row ${phaseClass}${exchangeClass}">`;
+      html += `<div class="tl-step">${step.id}</div>`;
+
+      // Label with condition
+      const condLabel = step.cond ? `<span class="cond">[${step.cond}]</span>` : "";
+      html += `<div class="tl-label" title="${step.desc}">${step.name}${condLabel}</div>`;
+
+      // Zone bar
+      html += `<div class="tl-bar-area">`;
+      html += `<div class="zone-bar-container">`;
+
+      for (let zi = 0; zi < zones.length; zi++) {
+        const z = zones[zi];
+        // Determine what type this zone segment has for this step
+        let segType = "inactive";
+        let segNote = "";
+
+        for (const t of touches) {
+          if (!condVisible(t.cond)) continue;
+          if (zi >= t.start && zi <= t.end) {
+            if (!showReads && t.type === "read") continue;
+            segType = t.type;
+            segNote = t.note || "";
+          }
+        }
+
+        const tooltipData = `data-tt-step="${step.id}" data-tt-name="${step.name}" data-tt-desc="${step.desc}" data-tt-field="${field.name}" data-tt-type="${segType}" data-tt-note="${segNote}" data-tt-zone="${z.id}" data-tt-dim="${step.dim}"`;
+
+        html += `<div class="zone-segment ${segType}" style="width:${z.pct}%" ${tooltipData}></div>`;
+      }
+
+      html += `</div></div></div>`;
+    }
+
+    html += `</div></div>`;
   }
-  html += `</tbody></table></div>`;
 
   container.innerHTML = html;
-
-  // Re-attach tooltip handlers
-  attachTooltipHandlers();
+  attachTooltips();
 }
 
-function attachTooltipHandlers() {
-  const tooltip = document.getElementById("tooltip");
+function toggleCard(header) {
+  const body = header.nextElementSibling;
+  const icon = header.querySelector(".field-icon");
+  body.classList.toggle("collapsed");
+  icon.textContent = body.classList.contains("collapsed") ? "▶" : "▼";
+}
 
-  document.querySelectorAll(".zone-bar").forEach(bar => {
-    bar.addEventListener("mouseenter", (e) => {
-      const stencilId = bar.dataset.tooltipId;
-      const s = stencils.find(st => st.id === stencilId);
-
-      if (s) {
-        let content = `<h4>${s.id}: ${s.name}</h4>`;
-        content += `<div class="domain-info">Dimension: ${s.dim}</div>`;
-        if (s.reads && s.reads.length) {
-          content += `<div class="field-list"><span class="read">READS:</span> ${s.reads.join(", ")}</div>`;
-        }
-        if (s.writes && s.writes.length) {
-          content += `<div class="field-list"><span class="write">WRITES:</span> ${s.writes.join(", ")}</div>`;
-        }
-        if (s.tooltip) {
-          content += `<div class="sub-domain" style="white-space:pre-wrap;margin-top:8px">${s.tooltip}</div>`;
-        }
-        tooltip.innerHTML = content;
-      } else {
-        // Per-field table bar
-        tooltip.innerHTML = `<div>${bar.title || bar.dataset.fields || ""}</div>`;
-      }
-
-      tooltip.style.display = "block";
-      positionTooltip(e);
-    });
-
-    bar.addEventListener("mousemove", positionTooltip);
-    bar.addEventListener("mouseleave", () => {
-      tooltip.style.display = "none";
-    });
+function showAll() {
+  document.getElementById("field-filter").value = "";
+  document.querySelectorAll(".field-card").forEach(c => c.classList.remove("hidden"));
+  render();
+}
+function showPrognostic() {
+  document.getElementById("field-filter").value = "";
+  render();
+  document.querySelectorAll(".field-card").forEach(c => {
+    if (c.dataset.group && c.dataset.group !== "prognostic") c.classList.add("hidden");
+  });
+}
+function showIntermediate() {
+  document.getElementById("field-filter").value = "";
+  render();
+  document.querySelectorAll(".field-card").forEach(c => {
+    if (c.dataset.group && c.dataset.group !== "intermediate") c.classList.add("hidden");
   });
 }
 
-function positionTooltip(e) {
-  const tooltip = document.getElementById("tooltip");
-  let x = e.clientX + 16;
-  let y = e.clientY + 16;
-
-  if (x + 500 > window.innerWidth) x = e.clientX - 420;
-  if (y + 300 > window.innerHeight) y = e.clientY - 200;
-
-  tooltip.style.left = x + "px";
-  tooltip.style.top = y + "px";
+// ── Tooltips ───────────────────────────────────────────────────────────
+function attachTooltips() {
+  const tt = document.getElementById("tooltip");
+  document.querySelectorAll(".zone-segment:not(.inactive)").forEach(seg => {
+    seg.addEventListener("mouseenter", (e) => {
+      const d = seg.dataset;
+      let content = `<div class="tt-title">${d.ttStep}: ${d.ttName}</div>`;
+      content += `<span class="tt-dim">${d.ttDim}</span> → <span class="tt-zone">Zone: ${d.ttZone}</span>\n`;
+      content += `Field: <b>${d.ttField}</b>\n`;
+      const typeLabel = d.ttType === "write" ? '<span class="tt-write">WRITE</span>' :
+                        d.ttType === "read" ? '<span class="tt-read">READ</span>' :
+                        d.ttType === "readwrite" ? '<span class="tt-write">READ</span>+<span class="tt-write">WRITE</span>' :
+                        d.ttType === "write-sub" ? '<span class="tt-write">WRITE (sub-region)</span>' :
+                        d.ttType === "exchange" ? 'EXCHANGE' : d.ttType;
+      content += `Operation: ${typeLabel}\n`;
+      if (d.ttNote) content += `\n${d.ttNote}`;
+      content += `\n\n<i style="color:var(--text-dim)">${d.ttDesc}</i>`;
+      tt.innerHTML = content;
+      tt.style.display = "block";
+      posTooltip(e);
+    });
+    seg.addEventListener("mousemove", posTooltip);
+    seg.addEventListener("mouseleave", () => { tt.style.display = "none"; });
+  });
 }
 
-// ── Field search highlighting ──────────────────────────────────────────
+function posTooltip(e) {
+  const tt = document.getElementById("tooltip");
+  let x = e.clientX + 14, y = e.clientY + 14;
+  if (x + 480 > window.innerWidth) x = e.clientX - 400;
+  if (y + 250 > window.innerHeight) y = e.clientY - 200;
+  tt.style.left = x + "px"; tt.style.top = y + "px";
+}
 
-document.getElementById("field-search").addEventListener("input", (e) => {
-  const query = e.target.value.toLowerCase().trim();
-  document.querySelectorAll("tr[data-id], tr[data-field]").forEach(row => {
-    row.classList.remove("highlight-row");
-    if (!query) return;
+// ── Event bindings ─────────────────────────────────────────────────────
+document.querySelectorAll(".controls input").forEach(cb => cb.addEventListener("change", render));
+document.getElementById("field-filter").addEventListener("input", render);
 
-    const writes = (row.dataset.writes || "").toLowerCase();
-    const reads = (row.dataset.reads || "").toLowerCase();
-    const field = (row.dataset.field || "").toLowerCase();
-
-    if (writes.includes(query) || reads.includes(query) || field.includes(query)) {
-      row.classList.add("highlight-row");
-    }
-  });
-});
-
-// ── Toggle controls ────────────────────────────────────────────────────
-
-document.querySelectorAll(".controls input").forEach(cb => {
-  cb.addEventListener("change", render);
-});
-
-// Initial render
 render();
 </script>
 </body>
