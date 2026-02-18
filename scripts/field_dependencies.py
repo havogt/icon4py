@@ -87,9 +87,7 @@ def _resolve_constant_value(node: ast.expr, known: dict[str, str]) -> str | None
     return None
 
 
-def _build_lookups() -> (
-    tuple[dict[str, str], dict[str, str], dict[str, str]]
-):
+def _build_lookups() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """Build lookup tables from all attrs modules.
 
     Returns:
@@ -362,9 +360,9 @@ def _analyze_factory(
                 _process_assignment(stmt)
             elif isinstance(stmt, ast.Expr):
                 _process_expr(stmt)
-            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                _process_stmts(stmt.body)
-            elif isinstance(stmt, ast.ClassDef):
+            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) or isinstance(
+                stmt, ast.ClassDef
+            ):
                 _process_stmts(stmt.body)
             elif isinstance(stmt, (ast.If, ast.With)):
                 _process_stmts(stmt.body)
@@ -531,8 +529,14 @@ def _print_dag(
             typer.echo(f"{child_indent}{conn}[param] {item}")
         else:
             _print_dag(
-                item, graph, value_to_name, params_map,
-                child_indent, _expanded, is_last_item, _is_root=False,
+                item,
+                graph,
+                value_to_name,
+                params_map,
+                child_indent,
+                _expanded,
+                is_last_item,
+                _is_root=False,
             )
 
 
@@ -558,9 +562,9 @@ def _generate_dot(
     """
     lines = [
         "digraph field_deps {",
-        '    rankdir=BT;',
+        "    rankdir=LR;",
         '    node [shape=box, style=filled, fillcolor=lightskyblue, fontname="Helvetica"];',
-        '    edge [color=gray40];',
+        "    edge [color=gray40];",
     ]
 
     # Determine which fields to include
@@ -603,9 +607,7 @@ def _generate_dot(
     for f in sorted(fields):
         for dep in sorted(graph.get(f, set())):
             if dep in fields:
-                lines.append(
-                    f'    "{_sanitize_dot_id(f)}" -> "{_sanitize_dot_id(dep)}";'
-                )
+                lines.append(f'    "{_sanitize_dot_id(f)}" -> "{_sanitize_dot_id(dep)}";')
         for p in sorted(params_map.get(f, set())):
             lines.append(
                 f'    "{_sanitize_dot_id(f)}" -> "param:{_sanitize_dot_id(p)}" [style=dashed, color=goldenrod];'
