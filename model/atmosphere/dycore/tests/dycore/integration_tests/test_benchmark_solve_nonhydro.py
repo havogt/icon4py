@@ -340,8 +340,11 @@ def test_benchmark_solve_nonhydro(
         lprep_adv=lprep_adv,
     )
 
-    benchmark(
-        solve_nonhydro_timestep_variants,
-        at_first_substep=at_first_substep,
-        at_last_substep=at_last_substep,
-    )
+    from gt4py.next.instrumentation import gpu_profiler
+
+    with gpu_profiler.profile_calls():
+        benchmark(
+            solve_nonhydro_timestep_variants,
+            at_first_substep=at_first_substep,
+            at_last_substep=at_last_substep,
+        )
