@@ -172,7 +172,10 @@ def test_diffusion_benchmark(
         orchestration=False,
     )
 
+    diffusion_granule.run(diagnostic_state, prognostic_state, dtime)
+    cp.cuda.runtime.deviceSynchronize()
     cp.cuda.profiler.start()
     with gpu_profiler.profile_calls():
         diffusion_granule.run(diagnostic_state, prognostic_state, dtime)
+        cp.cuda.runtime.deviceSynchronize()
     cp.cuda.profiler.stop()
