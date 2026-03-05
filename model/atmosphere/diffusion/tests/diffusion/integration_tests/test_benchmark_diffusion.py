@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import cupy as cp
 import pytest
+from gt4py.next.instrumentation import gpu_profiler
 
 import icon4py.model.common.dimension as dims
 import icon4py.model.common.grid.states as grid_states
@@ -170,4 +172,7 @@ def test_diffusion_benchmark(
         orchestration=False,
     )
 
-    benchmark(diffusion_granule.run, diagnostic_state, prognostic_state, dtime)
+    cp.cuda.profiler.start()
+    with gpu_profiler.profile_calls():
+        diffusion_granule.run(diagnostic_state, prognostic_state, dtime)
+    cp.cuda.profiler.stop()
