@@ -1,0 +1,2 @@
+cpu,,graupel_run.cpp
+cuda,,graupel_run_cuda.cu
