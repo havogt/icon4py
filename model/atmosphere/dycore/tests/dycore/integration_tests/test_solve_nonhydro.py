@@ -1549,8 +1549,8 @@ def test_compute_rho_theta_pgrad_and_update_vn(
         start_edge_nudging_level_2=start_edge_nudging_level_2,
         end_edge_nudging=end_edge_nudging,
         end_edge_halo=end_edge_halo,
-        horizontal_start=gtx.int32(0),
-        horizontal_end=gtx.int32(end_edge_halo_level_2),
+        end_edge_halo_level_2=end_edge_halo_level_2,
+        end_edge_local=end_edge_local,
         vertical_start=gtx.int32(0),
         vertical_end=gtx.int32(icon_grid.num_levels),
         offset_provider={

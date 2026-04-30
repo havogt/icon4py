@@ -166,7 +166,6 @@ def _compute_rho_theta_pgrad_and_update_vn(
     limited_area: bool,
     nflatlev: gtx.int32,
     nflat_gradp: gtx.int32,
-    start_edge_lateral_boundary: gtx.int32,
     start_edge_lateral_boundary_level_7: gtx.int32,
     start_edge_nudging_level_2: gtx.int32,
     end_edge_nudging: gtx.int32,
@@ -177,10 +176,10 @@ def _compute_rho_theta_pgrad_and_update_vn(
     fa.EdgeKField[ta.wpfloat],
     fa.EdgeKField[ta.wpfloat],
 ]:
-    # TODO(havogt): it would be nice if we could shrink the start of the compute domain to `start_edge_lateral_boundary_level_7 <= dims.EdgeDim`,
-    # but that would require to put the correct lateral boundary condition where this is consumed.
-    # TODO(havogt): most likely it is possible to remove the `end_edge_halo` bound here (and shrink the compute domain), the corresponding
-    # Fortran code states "Initialize halo edges with zero in order to avoid access of uninitialized array elements".
+    # `rho_at_edges_on_model_levels` and `theta_v_at_edges_on_model_levels` are zeroed outside
+    # `(start_edge_lateral_boundary_level_7, end_edge_halo)`. Fortran initializes halo edges with
+    # zero "to avoid access of uninitialized array elements"; we mirror that with an explicit
+    # `concat_where` since the output buffers may carry non-zero values from a previous step.
     (rho_at_edges_on_model_levels, theta_v_at_edges_on_model_levels) = concat_where(
         ((start_edge_lateral_boundary_level_7 <= dims.EdgeDim) & (dims.EdgeDim < end_edge_halo)),
         _compute_horizontal_advection_of_rho_and_theta(
@@ -206,9 +205,6 @@ def _compute_rho_theta_pgrad_and_update_vn(
         ),
     )
 
-    # Note: we overcompute `horizontal_pressure_gradient`, which is only needed
-    # from start_edge_nudging_level_2 <= dims.EdgeDim < end_edge_local
-    # TODO(havogt): with multiple output domains this should be fixed.
     horizontal_pressure_gradient = _compute_horizontal_pressure_gradient(
         temporal_extrapolation_of_perturbed_exner=temporal_extrapolation_of_perturbed_exner,
         ddz_of_temporal_extrapolation_of_perturbed_exner_on_model_levels=ddz_of_temporal_extrapolation_of_perturbed_exner_on_model_levels,
@@ -224,9 +220,11 @@ def _compute_rho_theta_pgrad_and_update_vn(
         nflat_gradp=nflat_gradp,
     )
 
-    # Note: we overcompute `next_vn`, which is only needed
-    # up to dims.EdgeDim < end_edge_local
-    # TODO(havogt): with multiple output domains this should be fixed.
+    # next_vn output domain is `(start_edge_lateral_boundary, end_edge_local)`. Within it, two
+    # disjoint sub-regions get distinct formulas:
+    #   - `(start_edge_nudging_level_2, end_edge_local)`: temporal tendencies (+ optional IAU)
+    #   - `(start_edge_lateral_boundary, end_edge_nudging)`: lateral boundary condition (limited_area only)
+    # Outside those, the input value is preserved (passthrough through the concat_wheres).
     next_vn = concat_where(
         start_edge_nudging_level_2 <= dims.EdgeDim,
         _add_temporal_tendencies_to_vn(
@@ -241,7 +239,6 @@ def _compute_rho_theta_pgrad_and_update_vn(
     )
 
     if is_iau_active:
-        # Note: we overcompute `next_vn`, see above.
         next_vn = concat_where(
             start_edge_nudging_level_2 <= dims.EdgeDim,
             _add_analysis_increments_to_vn(
@@ -252,7 +249,7 @@ def _compute_rho_theta_pgrad_and_update_vn(
 
     if limited_area:
         next_vn = concat_where(
-            (start_edge_lateral_boundary <= dims.EdgeDim) & (dims.EdgeDim < end_edge_nudging),
+            dims.EdgeDim < end_edge_nudging,
             _compute_vn_on_lateral_boundary(
                 vn_now=current_vn,
                 grf_tend_vn=grf_tend_vn,
@@ -413,11 +410,11 @@ def compute_rho_theta_pgrad_and_update_vn(
     start_edge_nudging_level_2: gtx.int32,
     end_edge_nudging: gtx.int32,
     end_edge_halo: gtx.int32,
-    horizontal_start: gtx.int32,
-    horizontal_end: gtx.int32,
+    end_edge_halo_level_2: gtx.int32,
+    end_edge_local: gtx.int32,
     vertical_start: gtx.int32,
     vertical_end: gtx.int32,
-):
+) -> None:
     """
     Formerly known as fused_solve_nonhydro_stencil_15_to_28_predictor.
 
@@ -464,12 +461,12 @@ def compute_rho_theta_pgrad_and_update_vn(
         - limited_area: option indicating the grid is limited area or not
         - nflatlev: starting vertical index of flat levels
         - nflat_gradp: starting vertical index when neighboring cell centers lie within the thickness of the layer
-        - start_edge_halo_level_2: start index of second halo level zone for edges
-        - end_edge_halo_level_2: end index of second halo level zone for edges
         - start_edge_lateral_boundary: start index of first lateral boundary level (counting from outermost) zone for edges
-        - end_edge_halo: end index of first halo level zone for edges
         - start_edge_lateral_boundary_level_7: start index of 7th lateral boundary level (counting from outermost) zone for edges
         - start_edge_nudging_level_2: start index of second nudging level zone for edges
+        - end_edge_nudging: end index of nudging level zone for edges
+        - end_edge_halo: end index of first halo level zone for edges
+        - end_edge_halo_level_2: end index of second halo level zone for edges
         - end_edge_local: end index of local zone for edges
 
     Returns:
@@ -511,7 +508,6 @@ def compute_rho_theta_pgrad_and_update_vn(
         limited_area=limited_area,
         nflatlev=nflatlev,
         nflat_gradp=nflat_gradp,
-        start_edge_lateral_boundary=start_edge_lateral_boundary,
         start_edge_lateral_boundary_level_7=start_edge_lateral_boundary_level_7,
         start_edge_nudging_level_2=start_edge_nudging_level_2,
         end_edge_nudging=end_edge_nudging,
@@ -522,10 +518,24 @@ def compute_rho_theta_pgrad_and_update_vn(
             horizontal_pressure_gradient,
             next_vn,
         ),
-        domain={
-            dims.EdgeDim: (horizontal_start, horizontal_end),
-            dims.KDim: (vertical_start, vertical_end),
-        },
+        domain=(
+            {
+                dims.EdgeDim: (0, end_edge_halo_level_2),
+                dims.KDim: (vertical_start, vertical_end),
+            },
+            {
+                dims.EdgeDim: (0, end_edge_halo_level_2),
+                dims.KDim: (vertical_start, vertical_end),
+            },
+            {
+                dims.EdgeDim: (start_edge_nudging_level_2, end_edge_local),
+                dims.KDim: (vertical_start, vertical_end),
+            },
+            {
+                dims.EdgeDim: (start_edge_lateral_boundary, end_edge_local),
+                dims.KDim: (vertical_start, vertical_end),
+            },
+        ),
     )
 
 
