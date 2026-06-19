@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 import functools
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -85,8 +86,14 @@ def get_gtfn_options(
     ):
         # Per-executor K-coarsening: only the vertical-shift (Koff) field-ops get loop-blocked;
         # cell-local field-ops + scans stay uncoarsened (codegen picks backend vs backend_nlb).
-        backend_descriptor.setdefault("thread_block_sizes", (32, 8))
-        backend_descriptor.setdefault("loop_block_sizes", (1, 5))
+        # Env overrides for GH200 config sweep (defaults reproduce the laptop-tuned values):
+        #   SOLVER_BLOCK_H (32), SOLVER_BLOCK_V (8), SOLVER_LOOP_V ("5"; "off"/"0" = no loop-block).
+        block_h = int(os.environ.get("SOLVER_BLOCK_H", "32"))
+        block_v = int(os.environ.get("SOLVER_BLOCK_V", "8"))
+        loop_v = os.environ.get("SOLVER_LOOP_V", "5")
+        backend_descriptor.setdefault("thread_block_sizes", (block_h, block_v))
+        if loop_v not in ("off", "0"):
+            backend_descriptor.setdefault("loop_block_sizes", (1, int(loop_v)))
     return backend_descriptor
 
 
