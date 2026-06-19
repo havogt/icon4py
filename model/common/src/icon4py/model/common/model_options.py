@@ -80,6 +80,27 @@ def get_gtfn_options(
         backend_descriptor.setdefault("enable_tmp_merge", True)
         backend_descriptor.setdefault("thread_block_sizes", (32, 8))
         backend_descriptor.setdefault("loop_block_sizes", (1, 5))
+    if program_name == "compute_horizontal_velocity_quantities_and_fluxes":
+        # Bandwidth-bound edge-gather + pointwise program. The dominant win is the
+        # vertical-shift fusion: the `tangential_wind` reduction is read at Koff[-1] by the
+        # half-level interpolation, so without fusion it is materialized as a separate kernel +
+        # DRAM round-trip; inlining (recompute) it drops a kernel. With full-column K-coarsening
+        # on top this is +16% (laptop) / +11-12% (GH200) vs dace, vs ~parity / -7% without.
+        # loop_block_sizes vertical is full-column = num_levels / thread_block_vertical: (1, 5)
+        # is tuned for 40 levels with thread (32, 8); GH200 @ 80 levels wants (1, 10).
+        # TODO(havogt): derive loop_block_sizes vertical from num_levels.
+        # Env overrides for config sweeps:
+        #   HVEL_BLOCK_H (32), HVEL_BLOCK_V (8), HVEL_LOOP_V ("5"; "off"/"0" = no loop-block),
+        #   HVEL_FUSE ("1"; "0" disables the fusion).
+        block_h = int(os.environ.get("HVEL_BLOCK_H", "32"))
+        block_v = int(os.environ.get("HVEL_BLOCK_V", "8"))
+        loop_v = os.environ.get("HVEL_LOOP_V", "5")
+        backend_descriptor.setdefault("thread_block_sizes", (block_h, block_v))
+        if loop_v not in ("off", "0"):
+            backend_descriptor.setdefault("loop_block_sizes", (1, int(loop_v)))
+        backend_descriptor.setdefault(
+            "enable_vertical_shift_fusion", os.environ.get("HVEL_FUSE", "1") == "1"
+        )
     if program_name in (
         "vertically_implicit_solver_at_predictor_step",
         "vertically_implicit_solver_at_corrector_step",

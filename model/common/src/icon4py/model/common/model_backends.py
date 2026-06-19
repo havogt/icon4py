@@ -73,6 +73,7 @@ def make_custom_gtfn_backend(
     thread_block_sizes: tuple[int, int] | None = None,
     loop_block_sizes: tuple[int, int] | None = None,
     enable_tmp_merge: bool = False,
+    enable_vertical_shift_fusion: bool = False,
     **_,
 ) -> gtx_typing.Backend:
     """Customize the gtfn backend with the given configuration parameters.
@@ -83,6 +84,8 @@ def make_custom_gtfn_backend(
         thread_block_sizes: Unstructured GPU thread-block shape (horizontal, vertical).
         loop_block_sizes: Per-thread loop-block (K-coarsening) shape (horizontal, vertical).
         enable_tmp_merge: Merge same-domain independent temporaries into a single kernel.
+        enable_vertical_shift_fusion: Inline a reduction-temp accessed at a vertical (Koff)
+            shift instead of materializing it, dropping a kernel and its DRAM round-trip.
     """
     on_gpu = device == GPU
     return gtfn.GTFNBackendFactory(
@@ -92,6 +95,7 @@ def make_custom_gtfn_backend(
         otf_workflow__bare_translation__thread_block_sizes=thread_block_sizes,
         otf_workflow__bare_translation__loop_block_sizes=loop_block_sizes,
         otf_workflow__bare_translation__enable_tmp_merge=enable_tmp_merge,
+        otf_workflow__bare_translation__enable_vertical_shift_fusion=enable_vertical_shift_fusion,
     )
 
 
