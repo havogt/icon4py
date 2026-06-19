@@ -67,12 +67,31 @@ def get_allocator(
     raise ValueError(f"Cannot get allocator from {backend}")
 
 
-def make_custom_gtfn_backend(device: DeviceType, cached: bool = True, **_) -> gtx_typing.Backend:
+def make_custom_gtfn_backend(
+    device: DeviceType,
+    cached: bool = True,
+    thread_block_sizes: tuple[int, int] | None = None,
+    loop_block_sizes: tuple[int, int] | None = None,
+    enable_tmp_merge: bool = False,
+    **_,
+) -> gtx_typing.Backend:
+    """Customize the gtfn backend with the given configuration parameters.
+
+    Args:
+        device: The target device.
+        cached: Cache the compiled programs.
+        thread_block_sizes: Unstructured GPU thread-block shape (horizontal, vertical).
+        loop_block_sizes: Per-thread loop-block (K-coarsening) shape (horizontal, vertical).
+        enable_tmp_merge: Merge same-domain independent temporaries into a single kernel.
+    """
     on_gpu = device == GPU
     return gtfn.GTFNBackendFactory(
         gpu=on_gpu,
         cached=cached,
         otf_workflow__cached_translation=cached,
+        otf_workflow__bare_translation__thread_block_sizes=thread_block_sizes,
+        otf_workflow__bare_translation__loop_block_sizes=loop_block_sizes,
+        otf_workflow__bare_translation__enable_tmp_merge=enable_tmp_merge,
     )
 
 

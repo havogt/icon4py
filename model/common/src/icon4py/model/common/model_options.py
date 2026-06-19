@@ -70,6 +70,23 @@ def get_dace_options(
 def get_gtfn_options(
     program_name: str, **backend_descriptor: Any
 ) -> model_backends.BackendDescriptor:
+    if program_name == "compute_rho_theta_pgrad_and_update_vn":
+        # Merge the same-domain Green-Gauss gradient reductions into a single kernel (sharing
+        # the C2E2CO gathers) and use a full-column K-coarsening thread/loop-block shape.
+        # The optimal loop-block vertical extent is num_levels / thread_block_vertical (full
+        # column): (1, 5) is tuned for 40 levels with thread (32, 8); GH200 @ 80 levels wants
+        # (1, 10). TODO(havogt): derive loop_block_sizes vertical from num_levels.
+        backend_descriptor.setdefault("enable_tmp_merge", True)
+        backend_descriptor.setdefault("thread_block_sizes", (32, 8))
+        backend_descriptor.setdefault("loop_block_sizes", (1, 5))
+    if program_name in (
+        "vertically_implicit_solver_at_predictor_step",
+        "vertically_implicit_solver_at_corrector_step",
+    ):
+        # Per-executor K-coarsening: only the vertical-shift (Koff) field-ops get loop-blocked;
+        # cell-local field-ops + scans stay uncoarsened (codegen picks backend vs backend_nlb).
+        backend_descriptor.setdefault("thread_block_sizes", (32, 8))
+        backend_descriptor.setdefault("loop_block_sizes", (1, 5))
     return backend_descriptor
 
 
