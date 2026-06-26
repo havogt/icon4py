@@ -8,6 +8,7 @@
 import dataclasses
 import enum
 import logging
+import os
 from collections.abc import Callable
 
 import gt4py.next as gtx
@@ -166,6 +167,10 @@ def _should_replace_skip_values(
         bool: True if the skip values in the neighbor table should be replaced, False otherwise.
 
     """
+    if os.environ.get("ICON4PY_REPLACE_ALL_SKIPS") == "1":
+        # Also replace pentagon skip-values on global grids, relying on ICON's 0-weight for the
+        # phantom 6th neighbor so the duplicated read contributes 0 — eliminates the can_deref guards.
+        return not keep_skip_values
     return not keep_skip_values and (
         limited_area_or_distributed or not _has_skip_values(offset, limited_area_or_distributed)
     )

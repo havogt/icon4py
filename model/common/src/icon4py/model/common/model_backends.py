@@ -69,11 +69,17 @@ def get_allocator(
 
 def make_custom_gtfn_backend(
     device: DeviceType,
+    *,
     cached: bool = True,
     thread_block_sizes: tuple[int, int] | None = None,
     loop_block_sizes: tuple[int, int] | None = None,
     enable_tmp_merge: bool = False,
     enable_vertical_shift_fusion: bool = False,
+    enable_connectivity_inline: bool = False,
+    enable_concat_where_fusion: bool = False,
+    enable_kband_split: bool = False,
+    enable_branchless_skip_reduce: bool = False,
+    enable_sibling_reduce_fusion: bool = False,
     **_,
 ) -> gtx_typing.Backend:
     """Customize the gtfn backend with the given configuration parameters.
@@ -86,6 +92,8 @@ def make_custom_gtfn_backend(
         enable_tmp_merge: Merge same-domain independent temporaries into a single kernel.
         enable_vertical_shift_fusion: Inline a reduction-temp accessed at a vertical (Koff)
             shift instead of materializing it, dropping a kernel and its DRAM round-trip.
+        enable_connectivity_inline: Inline a reduction-temp accessed at a single connectivity
+            hop instead of materializing it, recomputing the reduction at the neighbor location.
     """
     on_gpu = device == GPU
     return gtfn.GTFNBackendFactory(
@@ -96,6 +104,11 @@ def make_custom_gtfn_backend(
         otf_workflow__bare_translation__loop_block_sizes=loop_block_sizes,
         otf_workflow__bare_translation__enable_tmp_merge=enable_tmp_merge,
         otf_workflow__bare_translation__enable_vertical_shift_fusion=enable_vertical_shift_fusion,
+        otf_workflow__bare_translation__enable_connectivity_inline=enable_connectivity_inline,
+        otf_workflow__bare_translation__enable_concat_where_fusion=enable_concat_where_fusion,
+        otf_workflow__bare_translation__enable_kband_split=enable_kband_split,
+        otf_workflow__bare_translation__enable_branchless_skip_reduce=enable_branchless_skip_reduce,
+        otf_workflow__bare_translation__enable_sibling_reduce_fusion=enable_sibling_reduce_fusion,
     )
 
 
