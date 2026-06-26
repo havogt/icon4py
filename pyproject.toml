@@ -399,8 +399,15 @@ url = 'https://gridtools.github.io/pypi/'
 
 [tool.uv.sources]
 # dace = {index = "gridtools"}
-# gt4py = {git = "https://github.com/GridTools/gt4py", branch = "main"}
-# gt4py = {index = "test.pypi"}
+# gtfn-optimization work: gt4py transforms live on havogt/gt4py, gridtools header changes on
+# havogt/gridtools — both branch `havogt_gtfn_optimize`.
+gt4py = {git = "https://github.com/havogt/gt4py", branch = "havogt_gtfn_optimize"}
+# NOTE: the gtfn wins ALSO need the modified gridtools_cpp headers (scan-fusion + branchless
+# skip-reduce) from havogt/gridtools@havogt_gtfn_optimize. gridtools_cpp CANNOT be git-pinned:
+# its wheel is built by a CMake header-collection pre-step that pip/uv skip, so a git+subdirectory
+# build yields an empty, mis-versioned (0.0.0) package. Until the gridtools packaging is made
+# self-building, build the wheel (gridtools/.python_package: `nox -s build_wheel`) on that branch
+# and install it over the stock wheel. See docs/gridtools_cpp_packaging.md.
 icon4py-atmosphere-advection = {workspace = true}
 icon4py-atmosphere-diffusion = {workspace = true}
 icon4py-atmosphere-dycore = {workspace = true}

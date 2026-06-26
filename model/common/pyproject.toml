@@ -27,7 +27,7 @@ classifiers = [
 ]
 dependencies = [
   'array-api-compat>=1.13.0',
-  'gt4py==1.1.10',
+  'gt4py>=1.1.10',  # pinned to havogt/gt4py@havogt_gtfn_optimize via [tool.uv.sources] in the root pyproject
   'packaging>=20.0',
   'typing-extensions>=4.11.0',
   'numpy>=1.23.3',
