@@ -2353,6 +2353,7 @@ dev = [
   {name = "pytest-cov"},
   {name = "pytest-factoryboy"},
   {name = "pytest-mpi"},
+  {name = "pytest-subtests"},
   {name = "pytest-unused-fixtures"},
   {name = "pytest-xdist", extra = ["psutil"]},
   {name = "ruff"},
@@ -2403,6 +2404,7 @@ scripts = [
   {name = "pytest-cov"},
   {name = "pytest-factoryboy"},
   {name = "pytest-mpi"},
+  {name = "pytest-subtests"},
   {name = "pytest-unused-fixtures"},
   {name = "pytest-xdist", extra = ["psutil"]},
   {name = "rich"},
@@ -2420,6 +2422,7 @@ test = [
   {name = "pytest-cov"},
   {name = "pytest-factoryboy"},
   {name = "pytest-mpi"},
+  {name = "pytest-subtests"},
   {name = "pytest-unused-fixtures"},
   {name = "pytest-xdist", extra = ["psutil"]}
 ]
@@ -2482,6 +2485,7 @@ dev = [
   {name = "pytest-cov", specifier = ">=5.0.0"},
   {name = "pytest-factoryboy", specifier = ">=2.6.1"},
   {name = "pytest-mpi", specifier = ">=0.6"},
+  {name = "pytest-subtests", specifier = ">=0.14"},
   {name = "pytest-unused-fixtures", specifier = ">=0.2.0"},
   {name = "pytest-xdist", extras = ["psutil"], specifier = ">=3.5.0"},
   {name = "ruff", specifier = ">=0.8.0"},
@@ -2529,6 +2533,7 @@ scripts = [
   {name = "pytest-cov", specifier = ">=5.0.0"},
   {name = "pytest-factoryboy", specifier = ">=2.6.1"},
   {name = "pytest-mpi", specifier = ">=0.6"},
+  {name = "pytest-subtests", specifier = ">=0.14"},
   {name = "pytest-unused-fixtures", specifier = ">=0.2.0"},
   {name = "pytest-xdist", extras = ["psutil"], specifier = ">=3.5.0"},
   {name = "rich", specifier = ">=13.0.0"},
@@ -2546,6 +2551,7 @@ test = [
   {name = "pytest-cov", specifier = ">=5.0.0"},
   {name = "pytest-factoryboy", specifier = ">=2.6.1"},
   {name = "pytest-mpi", specifier = ">=0.6"},
+  {name = "pytest-subtests", specifier = ">=0.14"},
   {name = "pytest-unused-fixtures", specifier = ">=0.2.0"},
   {name = "pytest-xdist", extras = ["psutil"], specifier = ">=3.5.0"}
 ]
@@ -5694,6 +5700,19 @@ source = {registry = "https://pypi.org/simple"}
 version = "0.6"
 wheels = [
   {url = "https://files.pythonhosted.org/packages/a6/2b/0ed49de84e96ebf771c86a16d88b48c08d291627cfcdce30973f8538c99e/pytest_mpi-0.6-py2.py3-none-any.whl", hash = "sha256:1b7e193fb3be31d08c8e4dd7435e8e13e14b17ead6a6fc6aa07a6d3c7145590b", size = 5907, upload-time = "2022-01-08T02:19:24.8Z"}
+]
+
+[[package]]
+dependencies = [
+  {name = "attrs"},
+  {name = "pytest"}
+]
+name = "pytest-subtests"
+sdist = {url = "https://files.pythonhosted.org/packages/bb/d9/20097971a8d315e011e055d512fa120fd6be3bdb8f4b3aa3e3c6bf77bebc/pytest_subtests-0.15.0.tar.gz", hash = "sha256:cb495bde05551b784b8f0b8adfaa27edb4131469a27c339b80fd8d6ba33f887c", size = 18525, upload-time = "2025-10-20T16:26:18.358Z"}
+source = {registry = "https://pypi.org/simple"}
+version = "0.15.0"
+wheels = [
+  {url = "https://files.pythonhosted.org/packages/23/64/bba465299b37448b4c1b84c7a04178399ac22d47b3dc5db1874fe55a2bd3/pytest_subtests-0.15.0-py3-none-any.whl", hash = "sha256:da2d0ce348e1f8d831d5a40d81e3aeac439fec50bd5251cbb7791402696a9493", size = 9185, upload-time = "2025-10-20T16:26:17.239Z"}
 ]
 
 [[package]]
