@@ -2052,7 +2052,7 @@ class TmxEntrySavepoint(IconSavepoint):
         return self._get_field("pres", dims.CellDim, dims.KDim)
 
     def pres_ifc(self):
-        return self._get_field("pres_ifc", dims.CellDim, dims.KDim)
+        return self._get_field("pres_ifc", dims.CellDim, dims.KHalfDim)
 
     def mair(self):
         return self._get_field("mair", dims.CellDim, dims.KDim)
