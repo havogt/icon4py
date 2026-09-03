@@ -20,7 +20,8 @@ def _interpolate_cell_field_to_half_levels_vp(
     """
     Interpolate a CellDim variable of floating precision from full levels to half levels.
     The return variable also has floating precision.
-        var_half_k-1/2 = wgt_fac_c_k-1 var_half_k-1 + wgt_fac_c_k var_half_k
+        var_half_k = wgtfac_c_k * var_full_k + (1 - wgtfac_c_k) * var_full_k-1
+    (half level k lies above full level k, so ``var_full_k`` is the level below it)
 
     Args:
         wgtfac_c: weight factor
@@ -42,7 +43,8 @@ def _interpolate_cell_field_to_half_levels_wp(
     """
     Interpolate a CellDim variable of working precision from full levels to half levels.
     The return variable also has working precision.
-        var_half_k-1/2 = wgt_fac_c_k-1 var_half_k-1 + wgt_fac_c_k var_half_k
+        var_half_k = wgtfac_c_k * var_full_k + (1 - wgtfac_c_k) * var_full_k-1
+    (half level k lies above full level k, so ``var_full_k`` is the level below it)
 
     Args:
         wgtfac_c: weight factor

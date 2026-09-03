@@ -19,7 +19,8 @@ def _interpolate_edge_field_to_half_levels_wp(
     """
     Interpolate a EdgeDim variable of working precision from full levels to half levels.
     The return variable also has working precision.
-        var_half_k-1/2 = wgt_fac_c_k-1 var_half_k-1 + wgt_fac_c_k var_half_k
+        var_half_k = wgtfac_e_k * var_full_k + (1 - wgtfac_e_k) * var_full_k-1
+    (half level k lies above full level k, so ``var_full_k`` is the level below it)
 
     Args:
         wgtfac_e: weight factor
