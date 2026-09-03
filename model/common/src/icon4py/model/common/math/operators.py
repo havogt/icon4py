@@ -78,3 +78,23 @@ def _compute_reciprocal_on_edge_k(
 ) -> fa.EdgeKField[ta.wpfloat]:
     """Compute the elementwise reciprocal ``1 / input_field``."""
     return wpfloat("1.0") / input_field
+
+
+@gtx.field_operator
+def _broadcast_value_on_cell_k(
+    value: ta.wpfloat,
+    like: fa.CellKField[ta.wpfloat],
+) -> fa.CellKField[ta.wpfloat]:
+    """
+    A cell K field holding ``value`` on the K range of ``like``.
+
+    TODO(jcanton): drop this once a ``broadcast`` can carry a bounded K range.
+    Workaround for GT4Py: both branches of a ``concat_where`` must be fields
+    with a bounded K range. A bare scalar or a ``broadcast`` leaves the range
+    open, which raises "Cannot compute length of open 'UnitRange'" on the
+    embedded backend and silently computes wrong values with gtfn. Multiplying
+    an input field by zero anchors the result to that field's range.
+
+    ``like`` is only used for its domain; its values must be finite.
+    """
+    return like * wpfloat("0.0") + value
