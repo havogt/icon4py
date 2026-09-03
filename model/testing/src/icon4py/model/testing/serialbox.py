@@ -1971,13 +1971,13 @@ class TmxInitSavepoint(IconSavepoint):
     """
 
     def inv_ddqz_z_half(self):
-        return self._get_field("inv_ddqz_z_half", dims.CellDim, dims.KDim)
+        return self._get_field("inv_ddqz_z_half", dims.CellDim, dims.KHalfDim)
 
     def inv_ddqz_z_half_e(self):
-        return self._get_field("inv_ddqz_z_half_e", dims.EdgeDim, dims.KDim)
+        return self._get_field("inv_ddqz_z_half_e", dims.EdgeDim, dims.KHalfDim)
 
     def inv_ddqz_z_half_v(self):
-        return self._get_field("inv_ddqz_z_half_v", dims.VertexDim, dims.KDim)
+        return self._get_field("inv_ddqz_z_half_v", dims.VertexDim, dims.KHalfDim)
 
     def inv_ddqz_z_full_e(self):
         return self._get_field("inv_ddqz_z_full_e", dims.EdgeDim, dims.KDim)
@@ -1996,10 +1996,10 @@ class TmxInitSavepoint(IconSavepoint):
         return self._get_field("wgtfacq1_e", dims.EdgeDim, dims.KDim)
 
     def geopot_agl_ifc(self):
-        return self._get_field("geopot_agl_ifc", dims.CellDim, dims.KDim)
+        return self._get_field("geopot_agl_ifc", dims.CellDim, dims.KHalfDim)
 
     def mix_len_sq(self):
-        return self._get_field("mix_len_sq", dims.CellDim, dims.KDim)
+        return self._get_field("mix_len_sq", dims.CellDim, dims.KHalfDim)
 
     def scaling_factor_louis(self):
         return self._get_field("scaling_factor_louis", dims.CellDim)
@@ -2022,7 +2022,7 @@ class TmxEntrySavepoint(IconSavepoint):
         return self._get_field("va", dims.CellDim, dims.KDim)
 
     def wa(self):
-        return self._get_field("wa", dims.CellDim, dims.KDim)
+        return self._get_field("wa", dims.CellDim, dims.KHalfDim)
 
     def qv(self):
         return self._get_field("qv", dims.CellDim, dims.KDim)
@@ -2078,6 +2078,73 @@ class TmxSurfaceFluxesSavepoint(IconSavepoint):
 
     def q_snocpymlt(self):
         return self._get_field("q_snocpymlt", dims.CellDim)
+
+
+class TmxDiagnosticsExitSavepoint(IconSavepoint):
+    """Savepoint at exit of vdf Compute_diagnostics in mo_vdf_atmo.f90."""
+
+    def theta_v(self):
+        return self._get_field("theta_v", dims.CellDim, dims.KDim)
+
+    def cptgz(self):
+        return self._get_field("cptgz", dims.CellDim, dims.KDim)
+
+    def ghf(self):
+        return self._get_field("ghf", dims.CellDim, dims.KDim)
+
+    def bruvais(self):
+        return self._get_field("bruvais", dims.CellDim, dims.KHalfDim)
+
+    def rho_ic(self):
+        return self._get_field("rho_ic", dims.CellDim, dims.KHalfDim)
+
+    def vn(self):
+        return self._get_field("vn", dims.EdgeDim, dims.KDim)
+
+    def u_vert(self):
+        return self._get_field("u_vert", dims.VertexDim, dims.KDim)
+
+    def v_vert(self):
+        return self._get_field("v_vert", dims.VertexDim, dims.KDim)
+
+    def w_vert(self):
+        return self._get_field("w_vert", dims.VertexDim, dims.KHalfDim)
+
+    def vn_ie(self):
+        return self._get_field("vn_ie", dims.EdgeDim, dims.KHalfDim)
+
+    def vt_ie(self):
+        return self._get_field("vt_ie", dims.EdgeDim, dims.KHalfDim)
+
+    def w_ie(self):
+        return self._get_field("w_ie", dims.EdgeDim, dims.KHalfDim)
+
+    def shear(self):
+        return self._get_field("shear", dims.EdgeDim, dims.KDim)
+
+    def div_of_stress(self):
+        return self._get_field("div_of_stress", dims.EdgeDim, dims.KDim)
+
+    def div_c(self):
+        return self._get_field("div_c", dims.CellDim, dims.KDim)
+
+    def mech_prod(self):
+        return self._get_field("mech_prod", dims.CellDim, dims.KHalfDim)
+
+    def km_ic(self):
+        return self._get_field("km_ic", dims.CellDim, dims.KHalfDim)
+
+    def kh_ic(self):
+        return self._get_field("kh_ic", dims.CellDim, dims.KHalfDim)
+
+    def km_c(self):
+        return self._get_field("km_c", dims.CellDim, dims.KDim)
+
+    def km_iv(self):
+        return self._get_field("km_iv", dims.VertexDim, dims.KHalfDim)
+
+    def km_ie(self):
+        return self._get_field("km_ie", dims.EdgeDim, dims.KHalfDim)
 
 
 class IconTimeStepExitSavepoint(IconSavepoint):
@@ -2517,5 +2584,13 @@ class IconSerialDataProvider:
     def from_savepoint_tmx_surface_fluxes(self, date: str) -> TmxSurfaceFluxesSavepoint:
         savepoint = self.serializer.savepoint["tmx-surface-fluxes"].id[1].date[date].as_savepoint()
         return TmxSurfaceFluxesSavepoint(
+            savepoint, self.serializer, size=self.grid_size, backend=self.backend
+        )
+
+    def from_savepoint_tmx_diagnostics_exit(self, date: str) -> TmxDiagnosticsExitSavepoint:
+        savepoint = (
+            self.serializer.savepoint["tmx-diagnostics-exit"].id[1].date[date].as_savepoint()
+        )
+        return TmxDiagnosticsExitSavepoint(
             savepoint, self.serializer, size=self.grid_size, backend=self.backend
         )
