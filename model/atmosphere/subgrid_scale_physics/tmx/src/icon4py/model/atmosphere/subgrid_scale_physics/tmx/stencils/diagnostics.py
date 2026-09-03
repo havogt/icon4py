@@ -285,12 +285,12 @@ def compute_thermodynamic_diagnostics(
             # rho_ic
             {
                 dims.CellDim: (cell_start_lateral_boundary_level_2, cell_end_halo_level_2),
-                dims.KDim: (vertical_start, vertical_end_half),
+                dims.KHalfDim: (vertical_start, vertical_end_half),
             },
             # bruvais
             {
                 dims.CellDim: (cell_start_lateral_boundary_level_3, cell_end_local),
-                dims.KDim: (vertical_start_interior, vertical_end),
+                dims.KHalfDim: (vertical_start_interior, vertical_end),
             },
         ),
     )
@@ -512,17 +512,17 @@ def compute_edge_shear_diagnostics(
             # w_ie
             {
                 dims.EdgeDim: (edge_start_lateral_boundary_level_2, edge_end_halo_level_2),
-                dims.KDim: (vertical_start, vertical_end_half),
+                dims.KHalfDim: (vertical_start, vertical_end_half),
             },
             # vn_ie
             {
                 dims.EdgeDim: (edge_start_lateral_boundary_level_2, edge_end_halo_level_3),
-                dims.KDim: (vertical_start, vertical_end_half),
+                dims.KHalfDim: (vertical_start, vertical_end_half),
             },
             # vt_ie
             {
                 dims.EdgeDim: (edge_start_lateral_boundary_level_3, edge_end_halo_level_2),
-                dims.KDim: (vertical_start, vertical_end_half),
+                dims.KHalfDim: (vertical_start, vertical_end_half),
             },
             # shear / div_stress
             {
@@ -597,7 +597,7 @@ def compute_strain_rate_diagnostics(
             # mech_prod
             {
                 dims.CellDim: (cell_start_lateral_boundary_level_3, cell_end_halo),
-                dims.KDim: (vertical_start_interior, vertical_end),
+                dims.KHalfDim: (vertical_start_interior, vertical_end),
             },
         ),
     )
@@ -780,7 +780,7 @@ def compute_smagorinsky_viscosity(
         out=(km_ic, kh_ic),
         domain={
             dims.CellDim: (horizontal_start, horizontal_end),
-            dims.KDim: (vertical_start, vertical_end),
+            dims.KHalfDim: (vertical_start, vertical_end),
         },
     )
 
@@ -840,7 +840,7 @@ def assign_constant_viscosity(
         out=(km_ic, kh_ic),
         domain={
             dims.CellDim: (horizontal_start, horizontal_end),
-            dims.KDim: (vertical_start, vertical_end),
+            dims.KHalfDim: (vertical_start, vertical_end),
         },
     )
 
@@ -974,7 +974,7 @@ def interpolate_km(
         out=km_iv,
         domain={
             dims.VertexDim: (vertex_start, vertex_end),
-            dims.KDim: (vertical_start, vertical_end_half),
+            dims.KHalfDim: (vertical_start, vertical_end_half),
         },
     )
     _interpolate_km_to_edges(
@@ -984,7 +984,7 @@ def interpolate_km(
         out=km_ie,
         domain={
             dims.EdgeDim: (edge_start, edge_end),
-            dims.KDim: (vertical_start, vertical_end_half),
+            dims.KHalfDim: (vertical_start, vertical_end_half),
         },
     )
 
