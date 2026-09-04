@@ -17,7 +17,6 @@ import gt4py.next as gtx
 
 from icon4py.model.atmosphere.subgrid_scale_physics.tmx import tmx_states
 from icon4py.model.common import dimension as dims
-from icon4py.model.common.metrics import metric_fields
 
 
 if TYPE_CHECKING:
@@ -66,11 +65,9 @@ def construct_metric_state(
         wgtfacq_e=metrics_savepoint.wgtfacq_e(),
         wgtfacq1_e=init_savepoint.wgtfacq1_e(),
         geopot_agl_ifc=init_savepoint.geopot_agl_ifc(),
-        # as the metrics factory computes it, so the datatest below validates
-        # the formula against the serialized 'ghf'
         height_above_ground=gtx.as_field(
             (dims.CellDim, dims.KDim),
-            metric_fields.compute_height_above_ground(z_mc=z_mc.ndarray, z_ifc=z_ifc.ndarray),
+            z_mc.asnumpy() - z_ifc.asnumpy()[:, -1:],
             allocator=allocator,
         ),
         z_mc=z_mc,
