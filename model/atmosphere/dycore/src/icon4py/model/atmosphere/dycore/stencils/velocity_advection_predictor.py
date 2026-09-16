@@ -9,12 +9,8 @@ import gt4py.next as gtx
 from gt4py.next import astype, broadcast
 from gt4py.next.experimental import concat_where
 
-from icon4py.model.atmosphere.dycore.stencils.compute_contravariant_correction import (
-    _compute_contravariant_correction,
-)
 from icon4py.model.atmosphere.dycore.stencils.compute_diagnostics_from_normal_wind import (
-    _compute_horizontal_kinetic_energy,
-    _interpolate_to_half_levels,
+    _compute_diagnostics_from_normal_wind,
 )
 from icon4py.model.atmosphere.dycore.stencils.extrapolate_at_top import _extrapolate_at_top
 from icon4py.model.atmosphere.dycore.stencils.velocity_advection_terms import (
@@ -22,9 +18,6 @@ from icon4py.model.atmosphere.dycore.stencils.velocity_advection_terms import (
     _compute_advection_in_vertical_momentum,
 )
 from icon4py.model.common import dimension as dims, field_type_aliases as fa, type_alias as ta
-from icon4py.model.common.interpolation.stencils.compute_tangential_wind import (
-    _compute_tangential_wind,
-)
 from icon4py.model.common.interpolation.stencils.interpolate_cell_field_to_half_levels import (
     _interpolate_cell_field_to_half_levels_vp,
 )
@@ -32,53 +25,6 @@ from icon4py.model.common.interpolation.stencils.interpolate_to_cell_center_vp i
     _interpolate_to_cell_center_vp,
 )
 from icon4py.model.common.type_alias import vpfloat
-
-
-@gtx.field_operator
-def _compute_diagnostics_from_normal_wind(
-    tangential_wind_on_half_levels: fa.EdgeKHalfField[ta.vpfloat],
-    vn: fa.EdgeKField[ta.wpfloat],
-    rbf_vec_coeff_e: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2EDim], ta.wpfloat],
-    wgtfac_e: fa.EdgeKHalfField[ta.vpfloat],
-    wgtfacq_e: fa.EdgeKField[ta.vpfloat],
-    ddxn_z_full: fa.EdgeKField[ta.vpfloat],
-    ddxt_z_full: fa.EdgeKField[ta.vpfloat],
-    skip_compute_predictor_vertical_advection: bool,
-    nlev: gtx.int32,
-) -> tuple[
-    fa.EdgeKField[ta.vpfloat],
-    fa.EdgeKHalfField[ta.vpfloat],
-    fa.EdgeKHalfField[ta.vpfloat],
-    fa.EdgeKField[ta.vpfloat],
-    fa.EdgeKField[ta.vpfloat],
-]:
-    tangential_wind = astype(_compute_tangential_wind(vn, rbf_vec_coeff_e), vpfloat)
-    horizontal_kinetic_energy_at_edges_on_model_levels = _compute_horizontal_kinetic_energy(
-        vn, tangential_wind
-    )
-    vn_on_half_levels = concat_where(
-        dims.KHalfDim < nlev,
-        _interpolate_to_half_levels(wgtfac_e, vn),
-        _extrapolate_at_top(wgtfacq_e, vn),
-    )
-
-    tangential_wind_on_half_levels = (
-        _interpolate_to_half_levels(wgtfac_e, tangential_wind)
-        if not skip_compute_predictor_vertical_advection
-        else tangential_wind_on_half_levels
-    )
-
-    contravariant_correction_at_edges_on_model_levels = _compute_contravariant_correction(
-        vn, ddxn_z_full, ddxt_z_full, tangential_wind
-    )
-
-    return (
-        tangential_wind,
-        tangential_wind_on_half_levels,
-        vn_on_half_levels,
-        horizontal_kinetic_energy_at_edges_on_model_levels,
-        contravariant_correction_at_edges_on_model_levels,
-    )
 
 
 @gtx.field_operator
@@ -157,20 +103,28 @@ def _compute_velocity_advection_in_predictor_step(
 ]:
     (
         tangential_wind,
-        tangential_wind_on_half_levels,
-        vn_on_half_levels,
+        interpolated_tangential_wind_on_half_levels,
+        interpolated_vn_on_half_levels,
         horizontal_kinetic_energy_at_edges_on_model_levels,
         contravariant_correction_at_edges_on_model_levels,
     ) = _compute_diagnostics_from_normal_wind(
-        tangential_wind_on_half_levels=tangential_wind_on_half_levels,
         vn=vn,
         rbf_vec_coeff_e=rbf_vec_coeff_e,
         wgtfac_e=wgtfac_e,
-        wgtfacq_e=wgtfacq_e,
         ddxn_z_full=ddxn_z_full,
         ddxt_z_full=ddxt_z_full,
-        skip_compute_predictor_vertical_advection=skip_compute_predictor_vertical_advection,
-        nlev=nlev,
+    )
+
+    vn_on_half_levels = concat_where(
+        dims.KHalfDim < nlev,
+        interpolated_vn_on_half_levels,
+        _extrapolate_at_top(wgtfacq_e, vn),
+    )
+
+    tangential_wind_on_half_levels = (
+        interpolated_tangential_wind_on_half_levels
+        if not skip_compute_predictor_vertical_advection
+        else tangential_wind_on_half_levels
     )
 
     contravariant_correction_at_cells_on_half_levels = _interpolate_contravariant_correction_to_cells_on_half_levels(

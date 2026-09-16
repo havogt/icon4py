@@ -12,12 +12,8 @@ from gt4py.next.experimental import concat_where
 from icon4py.model.atmosphere.dycore.stencils.accumulate_prep_adv_fields import (
     _accumulate_prep_adv_fields,
 )
-from icon4py.model.atmosphere.dycore.stencils.compute_contravariant_correction import (
-    _compute_contravariant_correction,
-)
 from icon4py.model.atmosphere.dycore.stencils.compute_diagnostics_from_normal_wind import (
-    _compute_horizontal_kinetic_energy,
-    _interpolate_to_half_levels,
+    _compute_diagnostics_from_normal_wind,
 )
 from icon4py.model.atmosphere.dycore.stencils.compute_mass_flux import (
     _compute_mass_and_temperature_flux,
@@ -28,9 +24,6 @@ from icon4py.model.atmosphere.dycore.stencils.spatially_average_flux_or_velocity
 )
 from icon4py.model.common import dimension as dims, field_type_aliases as fa, type_alias as ta
 from icon4py.model.common.dimension import E2C2EO
-from icon4py.model.common.interpolation.stencils.compute_tangential_wind import (
-    _compute_tangential_wind,
-)
 from icon4py.model.common.type_alias import vpfloat
 
 
@@ -65,8 +58,18 @@ def _compute_horizontal_velocity_quantities_and_fluxes(
     horizontal_gradient_of_normal_wind_divergence = astype(
         neighbor_sum(geofac_grdiv * vn(E2C2EO), axis=dims.E2C2EODim), vpfloat
     )
-    tangential_wind = astype(
-        _compute_tangential_wind(vn=vn, rbf_vec_coeff_e=rbf_vec_coeff_e), vpfloat
+    (
+        tangential_wind,
+        tangential_wind_on_half_levels,
+        vn_on_half_levels,
+        horizontal_kinetic_energy_at_edges_on_model_levels,
+        computed_contravariant_correction_at_edges_on_model_levels,
+    ) = _compute_diagnostics_from_normal_wind(
+        vn=vn,
+        rbf_vec_coeff_e=rbf_vec_coeff_e,
+        wgtfac_e=wgtfac_e,
+        ddxn_z_full=ddxn_z_full,
+        ddxt_z_full=ddxt_z_full,
     )
 
     (
@@ -79,16 +82,9 @@ def _compute_horizontal_velocity_quantities_and_fluxes(
         theta_v_at_edges_on_model_levels,
     )
 
-    horizontal_kinetic_energy_at_edges_on_model_levels = _compute_horizontal_kinetic_energy(
-        vn, tangential_wind
-    )
-
-    vn_on_half_levels = _interpolate_to_half_levels(wgtfac_e, vn)
-    tangential_wind_on_half_levels = _interpolate_to_half_levels(wgtfac_e, tangential_wind)
-
     contravariant_correction_at_edges_on_model_levels = concat_where(
         nflatlev <= dims.KDim,
-        _compute_contravariant_correction(vn, ddxn_z_full, ddxt_z_full, tangential_wind),
+        computed_contravariant_correction_at_edges_on_model_levels,
         contravariant_correction_at_edges_on_model_levels,
     )
 
