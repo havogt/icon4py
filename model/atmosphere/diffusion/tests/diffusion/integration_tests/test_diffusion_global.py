@@ -29,6 +29,11 @@ from .test_diffusion import (
 @pytest.mark.parametrize(
     "experiment_description, step_date_init, step_date_exit",
     [
+        (
+            test_defs.Experiments.EXCLAIM_APE,
+            "2000-01-01T00:00:02.000",
+            "2000-01-01T00:00:02.000",
+        ),
         (test_defs.Experiments.JW, "2008-09-01T00:05:00.000", "2008-09-01T00:05:00.000"),
         (
             test_defs.Experiments.WEISMAN_KLEMP_TORUS,
