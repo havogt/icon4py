@@ -20,11 +20,7 @@ import gt4py.next.typing as gtx_typing
 import icon4py.model.common.grid.states as grid_states
 import icon4py.model.common.states.prognostic_state as prognostics
 from icon4py.model.atmosphere.diffusion import diffusion_states
-from icon4py.model.atmosphere.diffusion.diffusion import (
-    DiffusionConfig,
-    DiffusionParams,
-    ForcingType,
-)
+from icon4py.model.atmosphere.diffusion.diffusion import DiffusionConfig, DiffusionParams
 from icon4py.model.atmosphere.diffusion.diffusion_utils import (
     _init_diffusion_local_fields_for_regular_timestep,
     _init_nabla2_factor_in_upper_damping_zone,
@@ -49,7 +45,6 @@ from icon4py.model.atmosphere.diffusion.stencils.calculate_nabla2_for_w import (
     _calculate_nabla2_for_w,
 )
 from icon4py.model.common import constants, dimension as dims
-from icon4py.model.common.decomposition import definitions as decomposition
 from icon4py.model.common.grid import horizontal as h_grid, icon as icon_grid, vertical as v_grid
 from icon4py.model.common.interpolation.stencils.mo_intp_rbf_rbf_vec_interpol_vertex import (
     _mo_intp_rbf_rbf_vec_interpol_vertex,
@@ -72,15 +67,17 @@ class DiffusionGlobal:
         edge_params: grid_states.EdgeParams,
         cell_params: grid_states.CellParams,
         allocator: gtx_typing.Allocator | None,
-        exchange: decomposition.ExchangeRuntime,
         ndyn_substeps: int,
     ) -> None:
         if grid.limited_area:
             raise ValueError("'DiffusionGlobal' does not support limited area grids.")
+        if grid.config.distributed:
+            raise ValueError(
+                "'DiffusionGlobal' does not do halo exchanges; it runs on a single rank only."
+            )
         assert cell_params.area is not None
 
         self._allocator = allocator
-        self._exchange = exchange
         self.config = config
         self._params = params
         self._grid = grid
@@ -92,7 +89,6 @@ class DiffusionGlobal:
         self._offset_provider = grid.connectivities
         ndyn_substeps_as_float = float(ndyn_substeps)
 
-        self.halo_exchange_wait = decomposition.create_halo_exchange_wait(self._exchange)
         self.rd_o_cvd: float = constants.GAS_CONSTANT_DRY_AIR / (
             constants.CPD - constants.GAS_CONSTANT_DRY_AIR
         )
@@ -220,13 +216,6 @@ class DiffusionGlobal:
             domain=vertex_domain,
             offset_provider=self._offset_provider,
         )
-        self._exchange(
-            self.u_vert,
-            self.v_vert,
-            dim=dims.VertexDim,
-            full_exchange=True,
-            stream=decomposition.DEFAULT_STREAM,
-        )
 
         _calculate_nabla2_and_smag_coefficients_for_vn(
             diff_multfac_smag=self.diff_multfac_smag,
@@ -253,8 +242,6 @@ class DiffusionGlobal:
             offset_provider=self._offset_provider,
         )
 
-        self._exchange.exchange(dims.EdgeDim, self.z_nabla2_e, stream=decomposition.DEFAULT_STREAM)
-
         _mo_intp_rbf_rbf_vec_interpol_vertex(
             p_e_in=self.z_nabla2_e,
             ptr_coeff_1=self._interpolation_state.rbf_coeff_1,
@@ -262,13 +249,6 @@ class DiffusionGlobal:
             out=(self.u_vert, self.v_vert),
             domain=vertex_domain,
             offset_provider=self._offset_provider,
-        )
-        self._exchange(
-            self.u_vert,
-            self.v_vert,
-            dim=dims.VertexDim,
-            full_exchange=True,
-            stream=decomposition.DEFAULT_STREAM,
         )
 
         _apply_diffusion_to_vn(
@@ -294,12 +274,6 @@ class DiffusionGlobal:
                 dims.KDim: (0, num_levels),
             },
             offset_provider=self._offset_provider,
-        )
-        handle_edge_comm = self._exchange(
-            prognostic_state.vn,
-            dim=dims.EdgeDim,
-            full_exchange=False,
-            stream=decomposition.DEFAULT_STREAM,
         )
 
         _calculate_nabla2_for_w(
@@ -338,8 +312,6 @@ class DiffusionGlobal:
             offset_provider=self._offset_provider,
         )
 
-        self.halo_exchange_wait(handle_edge_comm, stream=decomposition.DEFAULT_STREAM)
-
         if self.config.apply_to_temperature:
             _calculate_enhanced_diffusion_coefficients_for_grid_point_cold_pools(
                 theta_v=prognostic_state.theta_v,
@@ -374,16 +346,4 @@ class DiffusionGlobal:
                     dims.KDim: (0, num_levels),
                 },
                 offset_provider=self._offset_provider,
-            )
-            if initial_run or self.config.iforcing not in (ForcingType.NWP, ForcingType.AES):
-                self._exchange.exchange(
-                    dims.CellDim,
-                    prognostic_state.theta_v,
-                    prognostic_state.exner,
-                    stream=decomposition.DEFAULT_STREAM,
-                )
-
-        if initial_run or self.config.iforcing not in (ForcingType.NWP, ForcingType.AES):
-            self._exchange.exchange(
-                dims.CellDim, prognostic_state.w, stream=decomposition.DEFAULT_STREAM
             )

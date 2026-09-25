@@ -11,7 +11,6 @@ import pytest
 
 from icon4py.model.atmosphere.diffusion import diffusion, diffusion_global, diffusion_states
 from icon4py.model.common import model_backends
-from icon4py.model.common.decomposition import definitions as decomp_defs
 from icon4py.model.common.grid import vertical as v_grid
 from icon4py.model.testing import definitions as test_defs, test_utils
 
@@ -75,7 +74,6 @@ def test_run_diffusion_global_single_step(  # noqa: PLR0917 [too-many-positional
         edge_params=edge_geometry,
         cell_params=cell_geometry,
         allocator=allocator,
-        exchange=decomp_defs.SingleNodeExchange(),
         ndyn_substeps=experiment.config.driver.ndyn_substeps,
     )
 
