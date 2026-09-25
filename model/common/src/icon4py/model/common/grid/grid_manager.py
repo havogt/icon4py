@@ -102,6 +102,7 @@ class GridManager:
         keep_skip_values: bool,
         process_props: decomposition.ProcessProperties,
         decomposer: decomp.Decomposer = _single_node_decomposer,
+        extra_halo_rings: int = 0,
     ) -> None:
         if not process_props.is_single_rank() and isinstance(
             decomposer, decomp.SingleNodeDecomposer
@@ -122,6 +123,7 @@ class GridManager:
             geometry_type=geometry_type,
             decomposer=decomposer,
             process_props=process_props,
+            extra_halo_rings=extra_halo_rings,
         )
         self._coordinates = self._read_coordinates(allocator, geometry_type)
         self._geometry = self._read_geometry_fields(allocator)
@@ -389,11 +391,13 @@ class GridManager:
 
     def _construct_decomposed_grid(
         self,
+        *,
         allocator: gtx_typing.Allocator | None,
         keep_skip_values: bool,
         geometry_type: icon.GeometryType,
         decomposer: decomp.Decomposer,
         process_props: decomposition.ProcessProperties,
+        extra_halo_rings: int = 0,
     ) -> None:
         """Construct the grid topology from the icon grid file.
 
@@ -436,6 +440,7 @@ class GridManager:
             full_grid_size=global_size,
             connectivities=global_neighbor_tables,
             allocator=allocator,
+            extra_halo_rings=extra_halo_rings,
         )
 
         self._decomposition_info = halo_constructor(cells_to_rank_mapping)

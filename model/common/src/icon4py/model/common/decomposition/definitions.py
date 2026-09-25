@@ -679,6 +679,13 @@ class DecompositionFlag(int, Enum):
     - edges that are only on the cell(SECOND_HALO_LEVEL)
     """
 
+    EXTRA_HALO_LEVEL = 4
+    """
+    This type does not exist in ICON. It denotes the cells, vertices and edges of additional halo
+    rings: each ring adds the cells sharing a vertex with the local cells, together with their
+    vertices and edges.
+    """
+
 
 class ParallelLogger(logging.Filter):
     def __init__(
