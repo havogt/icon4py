@@ -6,7 +6,7 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 """
-Diffusion for grids without lateral boundaries, executed on the embedded backend.
+Diffusion for grids without lateral boundaries, on a single rank.
 
 The same time step as `diffusion.Diffusion`, but every stencil is a direct field operator call
 instead of a program set up with `setup_program`. The diagnostics for turbulence (`div_ic`,
@@ -70,6 +70,7 @@ class DiffusionGlobal:
         cell_params: grid_states.CellParams,
         allocator: gtx_typing.Allocator | None,
         ndyn_substeps: int,
+        backend: gtx_typing.Backend | None = None,
     ) -> None:
         if grid.limited_area:
             raise ValueError("'DiffusionGlobal' does not support limited area grids.")
@@ -78,6 +79,34 @@ class DiffusionGlobal:
                 "'DiffusionGlobal' does not do halo exchanges; it runs on a single rank only."
             )
         assert cell_params.area is not None
+
+        def unstructured(op: gtx_typing.FieldOperator) -> gtx_typing.FieldOperator:
+            return op.with_grid_type(gtx.GridType.UNSTRUCTURED).with_backend(backend)
+
+        self._init_diffusion_local_fields_for_regular_timestep = (
+            _init_diffusion_local_fields_for_regular_timestep.with_backend(backend)
+        )
+        self._init_nabla2_factor_in_upper_damping_zone = (
+            _init_nabla2_factor_in_upper_damping_zone.with_backend(backend)
+        )
+        self._scale_k = _scale_k.with_backend(backend)
+        self._setup_fields_for_initial_step = _setup_fields_for_initial_step.with_backend(backend)
+        self._apply_diffusion_to_theta_and_exner = unstructured(_apply_diffusion_to_theta_and_exner)
+        self._apply_diffusion_to_vn = unstructured(_apply_diffusion_to_vn)
+        self._apply_nabla2_to_w = unstructured(_apply_nabla2_to_w)
+        self._apply_nabla2_to_w_in_upper_damping_layer = unstructured(
+            _apply_nabla2_to_w_in_upper_damping_layer
+        )
+        self._calculate_enhanced_diffusion_coefficients_for_grid_point_cold_pools = unstructured(
+            _calculate_enhanced_diffusion_coefficients_for_grid_point_cold_pools
+        )
+        self._calculate_nabla2_and_smag_coefficients_for_vn = unstructured(
+            _calculate_nabla2_and_smag_coefficients_for_vn
+        )
+        self._calculate_nabla2_for_w = unstructured(_calculate_nabla2_for_w)
+        self._mo_intp_rbf_rbf_vec_interpol_vertex = unstructured(
+            _mo_intp_rbf_rbf_vec_interpol_vertex
+        )
 
         self.config = config
         self._params = params
@@ -101,7 +130,7 @@ class DiffusionGlobal:
 
         num_levels = self._grid.num_levels
         self.diff_multfac_vn, self.smag_limit, self.enh_smag_fac = (
-            _init_diffusion_local_fields_for_regular_timestep(
+            self._init_diffusion_local_fields_for_regular_timestep(
                 params.K4,
                 ndyn_substeps_as_float,
                 *params.smagorinski_factor,
@@ -119,7 +148,7 @@ class DiffusionGlobal:
         if end_index_of_damping_layer > 0:
             self.diff_multfac_n2w = concat_where(
                 (dims.KHalfDim >= 1) & (dims.KHalfDim < end_index_of_damping_layer + 1),
-                _init_nabla2_factor_in_upper_damping_zone(
+                self._init_nabla2_factor_in_upper_damping_zone(
                     physical_heights=heights,
                     end_index_of_damping_layer=end_index_of_damping_layer,
                     nshift=0,
@@ -154,7 +183,7 @@ class DiffusionGlobal:
         cell_half_level_domain = {dims.CellDim: self._cells, dims.KHalfDim: (0, num_levels)}
 
         if initial_run:
-            diff_multfac_vn, smag_limit = _setup_fields_for_initial_step(
+            diff_multfac_vn, smag_limit = self._setup_fields_for_initial_step(
                 self._params.K4,
                 self.config.hdiff_efdt_ratio,
                 domain=k_domain,
@@ -166,9 +195,11 @@ class DiffusionGlobal:
             smag_limit = self.smag_limit
             smag_offset = self.smag_offset
 
-        diff_multfac_smag = _scale_k(self.enh_smag_fac, dtime, domain=k_domain, offset_provider={})
+        diff_multfac_smag = self._scale_k(
+            self.enh_smag_fac, dtime, domain=k_domain, offset_provider={}
+        )
 
-        u_vert, v_vert = _mo_intp_rbf_rbf_vec_interpol_vertex(
+        u_vert, v_vert = self._mo_intp_rbf_rbf_vec_interpol_vertex(
             p_e_in=prognostic_state.vn,
             ptr_coeff_1=self._interpolation_state.rbf_coeff_1,
             ptr_coeff_2=self._interpolation_state.rbf_coeff_2,
@@ -176,7 +207,7 @@ class DiffusionGlobal:
             offset_provider=self._offset_provider,
         )
 
-        kh_smag_e, _, z_nabla2_e = _calculate_nabla2_and_smag_coefficients_for_vn(
+        kh_smag_e, _, z_nabla2_e = self._calculate_nabla2_and_smag_coefficients_for_vn(
             diff_multfac_smag=diff_multfac_smag,
             tangent_orientation=self._edge_params.tangent_orientation,
             inv_primal_edge_length=self._edge_params.inverse_primal_edge_lengths,
@@ -194,7 +225,7 @@ class DiffusionGlobal:
             offset_provider=self._offset_provider,
         )
 
-        u_vert, v_vert = _mo_intp_rbf_rbf_vec_interpol_vertex(
+        u_vert, v_vert = self._mo_intp_rbf_rbf_vec_interpol_vertex(
             p_e_in=z_nabla2_e,
             ptr_coeff_1=self._interpolation_state.rbf_coeff_1,
             ptr_coeff_2=self._interpolation_state.rbf_coeff_2,
@@ -202,7 +233,7 @@ class DiffusionGlobal:
             offset_provider=self._offset_provider,
         )
 
-        vn = _apply_diffusion_to_vn(
+        vn = self._apply_diffusion_to_vn(
             u_vert=u_vert,
             v_vert=v_vert,
             primal_normal_vert_v1=self._edge_params.primal_normal_vert[0],
@@ -223,13 +254,13 @@ class DiffusionGlobal:
             offset_provider=self._offset_provider,
         )
 
-        z_nabla2_c = _calculate_nabla2_for_w(
+        z_nabla2_c = self._calculate_nabla2_for_w(
             w=prognostic_state.w,
             geofac_n2s=self._interpolation_state.geofac_n2s,
             domain=cell_half_level_domain,
             offset_provider=self._offset_provider,
         )
-        w = _apply_nabla2_to_w(
+        w = self._apply_nabla2_to_w(
             area=self._cell_params.area,
             z_nabla2_c=z_nabla2_c,
             geofac_n2s=self._interpolation_state.geofac_n2s,
@@ -242,7 +273,7 @@ class DiffusionGlobal:
         if nrdmax > 1:
             w = concat_where(
                 (dims.KHalfDim >= 1) & (dims.KHalfDim < nrdmax),
-                _apply_nabla2_to_w_in_upper_damping_layer(
+                self._apply_nabla2_to_w_in_upper_damping_layer(
                     w=w,
                     diff_multfac_n2w=self.diff_multfac_n2w,
                     cell_area=self._cell_params.area,
@@ -258,7 +289,7 @@ class DiffusionGlobal:
         if self.config.apply_to_temperature:
             kh_smag_e = concat_where(
                 num_levels - 2 <= dims.KDim,
-                _calculate_enhanced_diffusion_coefficients_for_grid_point_cold_pools(
+                self._calculate_enhanced_diffusion_coefficients_for_grid_point_cold_pools(
                     theta_v=prognostic_state.theta_v,
                     theta_ref_mc=self._metric_state.theta_ref_mc,
                     thresh_tdiff=self.thresh_tdiff,
@@ -269,7 +300,7 @@ class DiffusionGlobal:
                 ),
                 kh_smag_e,
             )
-            theta_v, exner = _apply_diffusion_to_theta_and_exner(
+            theta_v, exner = self._apply_diffusion_to_theta_and_exner(
                 kh_smag_e=kh_smag_e,
                 inv_dual_edge_length=self._edge_params.inverse_dual_edge_lengths,
                 theta_v=prognostic_state.theta_v,

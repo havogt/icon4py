@@ -49,8 +49,6 @@ def test_run_diffusion_global_single_step(  # noqa: PLR0917 [too-many-positional
     metric_state: diffusion_states.DiffusionMetricState,
     backend,
 ):
-    if backend is not None:
-        pytest.skip("'DiffusionGlobal' runs on the embedded backend only.")
     grid = get_grid_for_experiment(experiment, backend)
     cell_geometry = get_cell_geometry_for_experiment(experiment, backend)
     edge_geometry = get_edge_geometry_for_experiment(experiment, backend)
@@ -74,6 +72,7 @@ def test_run_diffusion_global_single_step(  # noqa: PLR0917 [too-many-positional
         edge_params=edge_geometry,
         cell_params=cell_geometry,
         allocator=allocator,
+        backend=backend,
         ndyn_substeps=experiment.config.driver.ndyn_substeps,
     )
 
