@@ -6,7 +6,7 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 import gt4py.next as gtx
-from gt4py.next import astype, broadcast
+from gt4py.next import astype
 
 from icon4py.model.common import dimension as dims, field_type_aliases as fa
 from icon4py.model.common.type_alias import vpfloat, wpfloat
@@ -20,9 +20,7 @@ def _apply_nabla2_to_w_in_upper_damping_layer(
     z_nabla2_c: fa.CellKHalfField[vpfloat],
 ) -> fa.CellKHalfField[wpfloat]:
     z_nabla2_c_wp = astype(z_nabla2_c, wpfloat)
-    cell_area_tmp = broadcast(cell_area, (dims.CellDim, dims.KHalfDim))
-
-    w_wp = w + diff_multfac_n2w * cell_area_tmp * z_nabla2_c_wp
+    w_wp = w + diff_multfac_n2w * cell_area * z_nabla2_c_wp
     return w_wp
 
 
