@@ -63,6 +63,7 @@ class IconLikeHaloConstructor(HaloConstructor):
         process_props: defs.ProcessProperties,
         connectivities: dict[gtx.FieldOffset | str, data_alloc.NDArray],
         allocator: gtx_typing.Allocator | None = None,
+        extra_rings: int = 0,
     ):
         """
 
@@ -70,11 +71,13 @@ class IconLikeHaloConstructor(HaloConstructor):
             process_props: contains information on the communicator and local compute node.
             connectivities: connectivity arrays needed to construct the halos
             allocator: GT4Py buffer allocator
+            extra_rings: number of additional halo rings beyond the ICON-like halo
         """
         self._xp = data_alloc.import_array_ns(allocator)
         self._process_props = process_props
         self._connectivities = {self._value(k): v for k, v in connectivities.items()}
         self._assert_all_neighbor_tables()
+        self._extra_rings = extra_rings
 
     @staticmethod
     def _value(k: gtx.FieldOffset | str) -> str:
@@ -218,6 +221,7 @@ class IconLikeHaloConstructor(HaloConstructor):
         first_halo_level_mask: data_alloc.NDArray,
         second_halo_level_mask: data_alloc.NDArray,
         third_halo_level_mask: data_alloc.NDArray,
+        extra_halo_level_mask: data_alloc.NDArray,
     ) -> None:
         halo_levels = self._xp.full(
             all_indices.size,
@@ -235,6 +239,9 @@ class IconLikeHaloConstructor(HaloConstructor):
 
         assert (halo_levels[third_halo_level_mask] == defs.DecompositionFlag.UNDEFINED.value).all()
         halo_levels[third_halo_level_mask] = defs.DecompositionFlag.THIRD_HALO_LEVEL
+
+        assert (halo_levels[extra_halo_level_mask] == defs.DecompositionFlag.UNDEFINED.value).all()
+        halo_levels[extra_halo_level_mask] = defs.DecompositionFlag.EXTRA_HALO_LEVEL
 
         decomp_info.set_dimension(dim, all_indices, owner_mask, halo_levels)
 
@@ -361,6 +368,17 @@ class IconLikeHaloConstructor(HaloConstructor):
         second_halo_cells = self._xp.setdiff1d(total_halo_cells, first_halo_cells)
         all_cells = self._xp.hstack((owned_cells, first_halo_cells, second_halo_cells))
 
+        extra_cells = all_cells[:0]
+        for _ in range(self._extra_rings):
+            ring = self._xp.setdiff1d(
+                self._find_cell_neighbors_for_vertices(
+                    self._find_vertex_neighbors_for_cells(all_cells)
+                ),
+                all_cells,
+            )
+            extra_cells = self._xp.hstack((extra_cells, ring))
+            all_cells = self._xp.hstack((all_cells, ring))
+
         self._set_decomposition_info_dimension(
             decomp_info=decomp_info,
             dim=dims.CellDim,
@@ -369,10 +387,15 @@ class IconLikeHaloConstructor(HaloConstructor):
             first_halo_level_mask=self._xp.isin(all_cells, first_halo_cells),
             second_halo_level_mask=self._xp.isin(all_cells, second_halo_cells),
             third_halo_level_mask=self._xp.zeros_like(all_cells, dtype=bool),
+            extra_halo_level_mask=self._xp.isin(all_cells, extra_cells),
         )
 
         # Vertices
         vertex_second_halo = self._xp.setdiff1d(vertex_on_halo_cells, vertex_on_cutting_line)
+        vertex_extra_halo = self._xp.setdiff1d(
+            self._find_vertex_neighbors_for_cells(extra_cells),
+            self._xp.union1d(vertex_on_owned_cells, vertex_second_halo),
+        )
         all_vertices = self._xp.hstack((vertex_on_owned_cells, vertex_second_halo))
         vertex_owner_mask = self._xp.isin(all_vertices, vertex_on_owned_cells)
         vertex_owner_mask = self._update_owner_mask_by_max_rank_convention(
@@ -393,6 +416,7 @@ class IconLikeHaloConstructor(HaloConstructor):
                 vertex_owner_list,
                 self._xp.setdiff1d(vertex_on_owned_cells, vertex_owner_list),
                 vertex_second_halo,
+                vertex_extra_halo,
             )
         )
         vertex_owner_mask = self._xp.isin(all_vertices, vertex_owner_list)
@@ -410,6 +434,7 @@ class IconLikeHaloConstructor(HaloConstructor):
                 all_vertices, self._xp.setdiff1d(vertex_on_halo_cells, vertex_on_owned_cells)
             ),
             third_halo_level_mask=self._xp.zeros_like(vertex_owner_mask, dtype=bool),
+            extra_halo_level_mask=self._xp.isin(all_vertices, vertex_extra_halo),
         )
 
         # Edges
@@ -425,6 +450,12 @@ class IconLikeHaloConstructor(HaloConstructor):
         edge_third_level = self._xp.setdiff1d(edge_on_any_halo_line, edge_second_level)
         edge_third_level = self._xp.setdiff1d(edge_third_level, edge_on_cutting_line)
 
+        edge_extra_level = self._xp.setdiff1d(
+            self._find_edge_neighbors_for_cells(extra_cells),
+            self._xp.union1d(
+                edge_on_owned_cells, self._xp.union1d(edge_second_level, edge_third_level)
+            ),
+        )
         all_edges = self._xp.hstack((edge_on_owned_cells, edge_second_level, edge_third_level))
         edge_owner_mask = self._xp.isin(all_edges, edge_on_owned_cells)
         edge_owner_mask = self._update_owner_mask_by_max_rank_convention(
@@ -446,6 +477,7 @@ class IconLikeHaloConstructor(HaloConstructor):
                 self._xp.setdiff1d(edge_on_owned_cells, edge_owner_list),
                 edge_second_level,
                 edge_third_level,
+                edge_extra_level,
             )
         )
         edge_owner_mask = self._xp.isin(all_edges, edge_owner_list)
@@ -461,6 +493,7 @@ class IconLikeHaloConstructor(HaloConstructor):
             ),
             second_halo_level_mask=self._xp.isin(all_edges, edge_second_level),
             third_halo_level_mask=self._xp.isin(all_edges, edge_third_level),
+            extra_halo_level_mask=self._xp.isin(all_edges, edge_extra_level),
         )
 
         return decomp_info
@@ -471,6 +504,7 @@ def get_halo_constructor(
     full_grid_size: base.HorizontalGridSize,
     connectivities: dict[gtx.FieldOffset | str, data_alloc.NDArray],
     allocator: gtx_typing.Allocator | None,
+    extra_halo_rings: int = 0,
 ) -> HaloConstructor:
     """
     Factory method to create the halo constructor.
@@ -483,6 +517,7 @@ def get_halo_constructor(
         full_grid_size
         allocator:
         connectivities:
+        extra_halo_rings: number of additional halo rings beyond the ICON-like halo
 
     Returns: a HaloConstructor suitable for the process_props
 
@@ -497,6 +532,7 @@ def get_halo_constructor(
         process_props=process_props,
         connectivities=connectivities,
         allocator=allocator,
+        extra_rings=extra_halo_rings,
     )
 
 
