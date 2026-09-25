@@ -12,7 +12,9 @@ from icon4py.model.atmosphere.diffusion.diffusion_utils import _scale_k
 from icon4py.model.atmosphere.diffusion.stencils.apply_diffusion_to_theta_and_exner import (
     _apply_diffusion_to_theta_and_exner,
 )
-from icon4py.model.atmosphere.diffusion.stencils.apply_diffusion_to_vn import _apply_diffusion_to_vn
+from icon4py.model.atmosphere.diffusion.stencils.apply_nabla2_and_nabla4_global_to_vn import (
+    _apply_nabla2_and_nabla4_global_to_vn,
+)
 from icon4py.model.atmosphere.diffusion.stencils.apply_nabla2_to_w import _apply_nabla2_to_w
 from icon4py.model.atmosphere.diffusion.stencils.apply_nabla2_to_w_in_upper_damping_layer import (
     _apply_nabla2_to_w_in_upper_damping_layer,
@@ -26,6 +28,7 @@ from icon4py.model.atmosphere.diffusion.stencils.calculate_nabla2_and_smag_coeff
 from icon4py.model.atmosphere.diffusion.stencils.calculate_nabla2_for_w import (
     _calculate_nabla2_for_w,
 )
+from icon4py.model.atmosphere.diffusion.stencils.calculate_nabla4 import _calculate_nabla4
 from icon4py.model.common import dimension as dims, field_type_aliases as fa
 from icon4py.model.common.interpolation.stencils.mo_intp_rbf_rbf_vec_interpol_vertex import (
     _mo_intp_rbf_rbf_vec_interpol_vertex,
@@ -54,7 +57,6 @@ def _diffusion_global_step(
     dual_normal_vert_x: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2VDim], wpfloat],
     dual_normal_vert_y: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2VDim], wpfloat],
     edge_area: fa.EdgeField[wpfloat],
-    nudgecoeff_e: fa.EdgeField[wpfloat],
     cell_area: fa.CellField[wpfloat],
     geofac_n2s: gtx.Field[gtx.Dims[dims.CellDim, dims.C2E2CODim], wpfloat],
     geofac_div: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], wpfloat],
@@ -98,7 +100,7 @@ def _diffusion_global_step(
         smag_offset,
     )
     u_vert, v_vert = _mo_intp_rbf_rbf_vec_interpol_vertex(z_nabla2_e, rbf_coeff_1, rbf_coeff_2)
-    vn_new = _apply_diffusion_to_vn(
+    z_nabla4_e2 = _calculate_nabla4(
         u_vert,
         v_vert,
         primal_normal_vert_x,
@@ -106,15 +108,9 @@ def _diffusion_global_step(
         z_nabla2_e,
         inv_vert_vert_length,
         inv_primal_edge_length,
-        edge_area,
-        kh_smag_e,
-        diff_multfac_vn,
-        nudgecoeff_e,
-        vn,
-        0.0,
-        0.0,
-        0,
-        False,
+    )
+    vn_new = _apply_nabla2_and_nabla4_global_to_vn(
+        edge_area, kh_smag_e, z_nabla2_e, z_nabla4_e2, diff_multfac_vn, vn
     )
 
     z_nabla2_c = _calculate_nabla2_for_w(w, geofac_n2s)

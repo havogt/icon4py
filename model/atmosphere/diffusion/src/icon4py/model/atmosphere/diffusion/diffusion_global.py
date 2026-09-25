@@ -176,7 +176,6 @@ class DiffusionGlobal:
             dual_normal_vert_x=self._edge_params.dual_normal_vert[0],
             dual_normal_vert_y=self._edge_params.dual_normal_vert[1],
             edge_area=self._edge_params.edge_areas,
-            nudgecoeff_e=self._interpolation_state.nudgecoeff_e,
             cell_area=self._cell_params.area,
             geofac_n2s=self._interpolation_state.geofac_n2s,
             geofac_div=self._interpolation_state.geofac_div,
