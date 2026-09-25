@@ -77,20 +77,25 @@ def test_run_diffusion_global_single_step(  # noqa: PLR0917 [too-many-positional
         ndyn_substeps=experiment.config.driver.ndyn_substeps,
     )
 
-    diffusion_granule.run(prognostic_state=prognostic_state, dtime=dtime)
+    new_prognostic_state = diffusion_granule.run(prognostic_state=prognostic_state, dtime=dtime)
 
+    for name in ("rho", "w", "vn", "exner", "theta_v"):
+        assert test_utils.dallclose(
+            getattr(prognostic_state, name).asnumpy(),
+            getattr(savepoint_diffusion_init, name)().asnumpy(),
+        )
     assert test_utils.dallclose(
-        prognostic_state.vn.asnumpy(),
+        new_prognostic_state.vn.asnumpy(),
         savepoint_diffusion_exit.vn().asnumpy(),
         atol=1.0e-8,
         rtol=1.0e-9,
     )
     assert test_utils.dallclose(
-        prognostic_state.w.asnumpy(), savepoint_diffusion_exit.w().asnumpy(), atol=1e-14
+        new_prognostic_state.w.asnumpy(), savepoint_diffusion_exit.w().asnumpy(), atol=1e-14
     )
     assert test_utils.dallclose(
-        prognostic_state.theta_v.asnumpy(), savepoint_diffusion_exit.theta_v().asnumpy()
+        new_prognostic_state.theta_v.asnumpy(), savepoint_diffusion_exit.theta_v().asnumpy()
     )
     assert test_utils.dallclose(
-        prognostic_state.exner.asnumpy(), savepoint_diffusion_exit.exner().asnumpy()
+        new_prognostic_state.exner.asnumpy(), savepoint_diffusion_exit.exner().asnumpy()
     )
