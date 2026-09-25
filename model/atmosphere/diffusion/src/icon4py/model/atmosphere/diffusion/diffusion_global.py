@@ -77,6 +77,8 @@ class DiffusionGlobal:
         self._vertical_grid = vertical_grid
         self._metric_state = metric_state
         self._interpolation_state = interpolation_state
+        self._geofac_n2s_c = interpolation_state.geofac_n2s_c
+        self._geofac_n2s_nbh = interpolation_state.geofac_n2s_nbh
         self._edge_params = edge_params
         self._cell_params = cell_params
         self._offset_provider = grid.connectivities
@@ -178,8 +180,8 @@ class DiffusionGlobal:
             cell_area=self._cell_params.area,
             geofac_n2s=self._interpolation_state.geofac_n2s,
             geofac_div=self._interpolation_state.geofac_div,
-            geofac_n2s_c=self._interpolation_state.geofac_n2s_c,
-            geofac_n2s_nbh=self._interpolation_state.geofac_n2s_nbh,
+            geofac_n2s_c=self._geofac_n2s_c,
+            geofac_n2s_nbh=self._geofac_n2s_nbh,
             theta_ref_mc=self._metric_state.theta_ref_mc,
             zd_vertoffset=self._metric_state.zd_vertoffset,
             zd_diffcoef=self._metric_state.zd_diffcoef,

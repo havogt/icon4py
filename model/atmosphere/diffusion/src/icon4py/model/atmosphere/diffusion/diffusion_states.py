@@ -84,12 +84,20 @@ class DiffusionInterpolationState:
 
     @functools.cached_property
     def geofac_n2s_c(self) -> fa.CellField[float]:
-        return gtx.as_field((dims.CellDim,), data=self.geofac_n2s.ndarray[:, 0])
+        return gtx.as_field(
+            (dims.CellDim,),
+            data=self.geofac_n2s.ndarray[:, 0],
+            allocator=data_alloc.array_namespace(self.geofac_n2s.ndarray),
+        )
 
     @functools.cached_property
     def geofac_n2s_nbh(self) -> gtx.Field[gtx.Dims[dims.CellDim, dims.C2E2CDim], float]:
         geofac_nbh_ar = self.geofac_n2s.ndarray[:, 1:]
-        return gtx.as_field((dims.CellDim, dims.C2E2CDim), geofac_nbh_ar)
+        return gtx.as_field(
+            (dims.CellDim, dims.C2E2CDim),
+            geofac_nbh_ar,
+            allocator=data_alloc.array_namespace(self.geofac_n2s.ndarray),
+        )
 
 
 def initialize_diffusion_diagnostic_state(
