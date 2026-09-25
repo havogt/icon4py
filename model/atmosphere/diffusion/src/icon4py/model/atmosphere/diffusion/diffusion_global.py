@@ -15,6 +15,7 @@ instead of a program set up with `setup_program`. The diagnostics for turbulence
 
 from __future__ import annotations
 
+import gt4py.next as gtx
 import gt4py.next.typing as gtx_typing
 
 import icon4py.model.common.grid.states as grid_states
@@ -150,33 +151,13 @@ class DiffusionGlobal:
         )
 
     def _determine_horizontal_domains(self) -> None:
-        cell_domain = h_grid.domain(dims.CellDim)
-        edge_domain = h_grid.domain(dims.EdgeDim)
-        vertex_domain = h_grid.domain(dims.VertexDim)
+        def interior(dim: gtx.Dimension) -> tuple[gtx.int32, gtx.int32]:
+            domain = h_grid.domain(dim)(h_grid.Zone.INTERIOR)
+            return self._grid.start_index(domain), self._grid.end_index(domain)
 
-        self._cell_start_interior = self._grid.start_index(cell_domain(h_grid.Zone.INTERIOR))
-        self._cell_start_nudging = self._grid.start_index(cell_domain(h_grid.Zone.NUDGING))
-        self._cell_start_lateral_boundary_level_4 = self._grid.start_index(
-            cell_domain(h_grid.Zone.LATERAL_BOUNDARY_LEVEL_4)
-        )
-        self._cell_end_local = self._grid.end_index(cell_domain(h_grid.Zone.LOCAL))
-        self._cell_end_halo = self._grid.end_index(cell_domain(h_grid.Zone.HALO))
-
-        self._edge_start_lateral_boundary_level_5 = self._grid.start_index(
-            edge_domain(h_grid.Zone.LATERAL_BOUNDARY_LEVEL_5)
-        )
-        self._edge_start_nudging = self._grid.start_index(edge_domain(h_grid.Zone.NUDGING))
-        self._edge_start_nudging_level_2 = self._grid.start_index(
-            edge_domain(h_grid.Zone.NUDGING_LEVEL_2)
-        )
-        self._edge_end_local = self._grid.end_index(edge_domain(h_grid.Zone.LOCAL))
-        self._edge_end_halo = self._grid.end_index(edge_domain(h_grid.Zone.HALO))
-        self._edge_end_halo_level_2 = self._grid.end_index(edge_domain(h_grid.Zone.HALO_LEVEL_2))
-
-        self._vertex_start_lateral_boundary_level_2 = self._grid.start_index(
-            vertex_domain(h_grid.Zone.LATERAL_BOUNDARY_LEVEL_2)
-        )
-        self._vertex_end_local = self._grid.end_index(vertex_domain(h_grid.Zone.LOCAL))
+        self._cells = interior(dims.CellDim)
+        self._edges = interior(dims.EdgeDim)
+        self._vertices = interior(dims.VertexDim)
 
     def run(
         self,
@@ -205,7 +186,7 @@ class DiffusionGlobal:
         _scale_k(self.enh_smag_fac, dtime, out=self.diff_multfac_smag, offset_provider={})
 
         vertex_domain = {
-            dims.VertexDim: (self._vertex_start_lateral_boundary_level_2, self._vertex_end_local),
+            dims.VertexDim: self._vertices,
             dims.KDim: (0, num_levels),
         }
         _mo_intp_rbf_rbf_vec_interpol_vertex(
@@ -233,10 +214,7 @@ class DiffusionGlobal:
             smag_offset=smag_offset,
             out=(self.kh_smag_e, self.kh_smag_ec, self.z_nabla2_e),
             domain={
-                dims.EdgeDim: (
-                    self._edge_start_lateral_boundary_level_5,
-                    self._edge_end_halo_level_2,
-                ),
+                dims.EdgeDim: self._edges,
                 dims.KDim: (0, num_levels),
             },
             offset_provider=self._offset_provider,
@@ -266,11 +244,11 @@ class DiffusionGlobal:
             vn=prognostic_state.vn,
             nudgezone_diff=0.0,
             fac_bdydiff_v=0.0,
-            start_2nd_nudge_line_idx_e=self._edge_start_nudging_level_2,
+            start_2nd_nudge_line_idx_e=self._edges[0],
             limited_area=False,
             out=prognostic_state.vn,
             domain={
-                dims.EdgeDim: (self._edge_start_lateral_boundary_level_5, self._edge_end_local),
+                dims.EdgeDim: self._edges,
                 dims.KDim: (0, num_levels),
             },
             offset_provider=self._offset_provider,
@@ -281,7 +259,7 @@ class DiffusionGlobal:
             geofac_n2s=self._interpolation_state.geofac_n2s,
             out=self.z_nabla2_c,
             domain={
-                dims.CellDim: (self._cell_start_lateral_boundary_level_4, self._cell_end_halo),
+                dims.CellDim: self._cells,
                 dims.KHalfDim: (0, num_levels),
             },
             offset_provider=self._offset_provider,
@@ -294,7 +272,7 @@ class DiffusionGlobal:
             diff_multfac_w=self.diff_multfac_w,
             out=prognostic_state.w,
             domain={
-                dims.CellDim: (self._cell_start_interior, self._cell_end_local),
+                dims.CellDim: self._cells,
                 dims.KHalfDim: (0, num_levels),
             },
             offset_provider=self._offset_provider,
@@ -306,7 +284,7 @@ class DiffusionGlobal:
             z_nabla2_c=self.z_nabla2_c,
             out=prognostic_state.w,
             domain={
-                dims.CellDim: (self._cell_start_interior, self._cell_end_local),
+                dims.CellDim: self._cells,
                 dims.KHalfDim: (1, self._vertical_grid.end_index_of_damping_layer + 1),
             },
             offset_provider=self._offset_provider,
@@ -321,7 +299,7 @@ class DiffusionGlobal:
                 kh_smag_e=self.kh_smag_e,
                 out=self.kh_smag_e,
                 domain={
-                    dims.EdgeDim: (self._edge_start_nudging, self._edge_end_halo),
+                    dims.EdgeDim: self._edges,
                     dims.KDim: (num_levels - 2, num_levels),
                 },
                 offset_provider=self._offset_provider,
@@ -342,7 +320,7 @@ class DiffusionGlobal:
                 apply_zdiffusion_t=self.config.apply_zdiffusion_t,
                 out=(prognostic_state.theta_v, prognostic_state.exner),
                 domain={
-                    dims.CellDim: (self._cell_start_nudging, self._cell_end_local),
+                    dims.CellDim: self._cells,
                     dims.KDim: (0, num_levels),
                 },
                 offset_provider=self._offset_provider,
