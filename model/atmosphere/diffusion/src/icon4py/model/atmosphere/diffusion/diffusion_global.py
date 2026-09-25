@@ -83,14 +83,16 @@ class DiffusionGlobal:
         def unstructured(op: gtx_typing.FieldOperator) -> gtx_typing.FieldOperator:
             return op.with_grid_type(gtx.GridType.UNSTRUCTURED).with_backend(backend)
 
+        # TODO(havogt): bind as unstructured once gtfn lowers the staggered vertical shift in
+        # `_en_smag_fac_for_zero_nshift` correctly on an unstructured grid (it writes only level 0).
         self._init_diffusion_local_fields_for_regular_timestep = (
             _init_diffusion_local_fields_for_regular_timestep.with_backend(backend)
         )
-        self._init_nabla2_factor_in_upper_damping_zone = (
-            _init_nabla2_factor_in_upper_damping_zone.with_backend(backend)
+        self._init_nabla2_factor_in_upper_damping_zone = unstructured(
+            _init_nabla2_factor_in_upper_damping_zone
         )
-        self._scale_k = _scale_k.with_backend(backend)
-        self._setup_fields_for_initial_step = _setup_fields_for_initial_step.with_backend(backend)
+        self._scale_k = unstructured(_scale_k)
+        self._setup_fields_for_initial_step = unstructured(_setup_fields_for_initial_step)
         self._apply_diffusion_to_theta_and_exner = unstructured(_apply_diffusion_to_theta_and_exner)
         self._apply_diffusion_to_vn = unstructured(_apply_diffusion_to_vn)
         self._apply_nabla2_to_w = unstructured(_apply_nabla2_to_w)
