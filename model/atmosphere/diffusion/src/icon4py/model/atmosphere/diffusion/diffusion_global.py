@@ -6,7 +6,10 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 """
-Diffusion for grids without lateral boundaries, on a single rank.
+Diffusion for grids without lateral boundaries.
+
+The step does no halo exchange: on a distributed grid its inputs must already be valid on every halo
+point it reads, and it computes its outputs on the owned points only.
 
 The same time step as `diffusion.Diffusion`, but every stencil is a direct field operator call
 instead of a program set up with `setup_program`. The diagnostics for turbulence (`div_ic`,
@@ -54,10 +57,6 @@ class DiffusionGlobal:
     ) -> None:
         if grid.limited_area:
             raise ValueError("'DiffusionGlobal' does not support limited area grids.")
-        if grid.config.distributed:
-            raise ValueError(
-                "'DiffusionGlobal' does not do halo exchanges; it runs on a single rank only."
-            )
         assert cell_params.area is not None
 
         def unstructured(op: gtx_typing.FieldOperator) -> gtx_typing.FieldOperator:
