@@ -10,14 +10,12 @@ from __future__ import annotations
 import pytest
 
 from icon4py.model.atmosphere.diffusion import diffusion, diffusion_global, diffusion_states
-from icon4py.model.common import dimension as dims, model_backends
+from icon4py.model.common import model_backends
 from icon4py.model.common.decomposition import definitions as decomp_defs
 from icon4py.model.common.grid import vertical as v_grid
-from icon4py.model.common.utils import data_allocation as data_alloc
-from icon4py.model.testing import definitions as test_defs
+from icon4py.model.testing import definitions as test_defs, test_utils
 
 from ..fixtures import *  # noqa: F403
-from ..utils import verify_diffusion_fields
 from .test_diffusion import (
     get_cell_geometry_for_experiment,
     get_edge_geometry_for_experiment,
@@ -60,18 +58,6 @@ def test_run_diffusion_global_single_step(  # noqa: PLR0917 [too-many-positional
     allocator = model_backends.get_allocator(backend)
     dtime = savepoint_diffusion_init.get_metadata("dtime").get("dtime")
 
-    dwdx = savepoint_diffusion_init.dwdx()
-    dwdy = savepoint_diffusion_init.dwdy()
-    if dwdx.shape != savepoint_diffusion_init.w().shape:
-        # some experiments serialize dwdx/dwdy as (1, 1) placeholders when they are not used
-        dwdx = data_alloc.zero_field(grid, dims.CellDim, dims.KHalfDim, allocator=allocator)
-        dwdy = data_alloc.zero_field(grid, dims.CellDim, dims.KHalfDim, allocator=allocator)
-    diagnostic_state = diffusion_states.DiffusionDiagnosticState(
-        hdef_ic=savepoint_diffusion_init.hdef_ic(),
-        div_ic=savepoint_diffusion_init.div_ic(),
-        dwdx=dwdx,
-        dwdy=dwdy,
-    )
     prognostic_state = savepoint_diffusion_init.construct_prognostics()
 
     vertical_config = experiment.config.vertical_grid
@@ -93,8 +79,20 @@ def test_run_diffusion_global_single_step(  # noqa: PLR0917 [too-many-positional
         ndyn_substeps=experiment.config.driver.ndyn_substeps,
     )
 
-    diffusion_granule.run(
-        diagnostic_state=diagnostic_state, prognostic_state=prognostic_state, dtime=dtime
-    )
+    diffusion_granule.run(prognostic_state=prognostic_state, dtime=dtime)
 
-    verify_diffusion_fields(config, diagnostic_state, prognostic_state, savepoint_diffusion_exit)
+    assert test_utils.dallclose(
+        prognostic_state.vn.asnumpy(),
+        savepoint_diffusion_exit.vn().asnumpy(),
+        atol=1.0e-8,
+        rtol=1.0e-9,
+    )
+    assert test_utils.dallclose(
+        prognostic_state.w.asnumpy(), savepoint_diffusion_exit.w().asnumpy(), atol=1e-14
+    )
+    assert test_utils.dallclose(
+        prognostic_state.theta_v.asnumpy(), savepoint_diffusion_exit.theta_v().asnumpy()
+    )
+    assert test_utils.dallclose(
+        prognostic_state.exner.asnumpy(), savepoint_diffusion_exit.exner().asnumpy()
+    )

@@ -9,7 +9,8 @@
 Diffusion for grids without lateral boundaries, executed on the embedded backend.
 
 The same time step as `diffusion.Diffusion`, but every stencil is a direct field operator call
-instead of a program set up with `setup_program`.
+instead of a program set up with `setup_program`. The diagnostics for turbulence (`div_ic`,
+`hdef_ic`, `dwdx`, `dwdy`) are not computed, whatever `shear_type`, `loutshs` and `a_hshr` ask for.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ from icon4py.model.atmosphere.diffusion.diffusion import (
     DiffusionConfig,
     DiffusionParams,
     ForcingType,
-    TurbulenceShearForcingType,
 )
 from icon4py.model.atmosphere.diffusion.diffusion_utils import (
     _init_diffusion_local_fields_for_regular_timestep,
@@ -35,17 +35,18 @@ from icon4py.model.atmosphere.diffusion.stencils.apply_diffusion_to_theta_and_ex
     _apply_diffusion_to_theta_and_exner,
 )
 from icon4py.model.atmosphere.diffusion.stencils.apply_diffusion_to_vn import _apply_diffusion_to_vn
-from icon4py.model.atmosphere.diffusion.stencils.apply_diffusion_to_w_and_compute_horizontal_gradients_for_turbulence import (
-    _apply_diffusion_to_w_and_compute_horizontal_gradients_for_turbulence,
-)
-from icon4py.model.atmosphere.diffusion.stencils.calculate_diagnostic_quantities_for_turbulence import (
-    _calculate_diagnostic_quantities_for_turbulence,
+from icon4py.model.atmosphere.diffusion.stencils.apply_nabla2_to_w import _apply_nabla2_to_w
+from icon4py.model.atmosphere.diffusion.stencils.apply_nabla2_to_w_in_upper_damping_layer import (
+    _apply_nabla2_to_w_in_upper_damping_layer,
 )
 from icon4py.model.atmosphere.diffusion.stencils.calculate_enhanced_diffusion_coefficients_for_grid_point_cold_pools import (
     _calculate_enhanced_diffusion_coefficients_for_grid_point_cold_pools,
 )
 from icon4py.model.atmosphere.diffusion.stencils.calculate_nabla2_and_smag_coefficients_for_vn import (
     _calculate_nabla2_and_smag_coefficients_for_vn,
+)
+from icon4py.model.atmosphere.diffusion.stencils.calculate_nabla2_for_w import (
+    _calculate_nabla2_for_w,
 )
 from icon4py.model.common import constants, dimension as dims
 from icon4py.model.common.decomposition import definitions as decomposition
@@ -148,6 +149,9 @@ class DiffusionGlobal:
             self._grid, dims.EdgeDim, dims.KDim, allocator=allocator
         )
         self.diff_multfac_smag = data_alloc.zero_field(self._grid, dims.KDim, allocator=allocator)
+        self.z_nabla2_c = data_alloc.zero_field(
+            self._grid, dims.CellDim, dims.KHalfDim, allocator=allocator
+        )
 
     def _determine_horizontal_domains(self) -> None:
         cell_domain = h_grid.domain(dims.CellDim)
@@ -180,7 +184,6 @@ class DiffusionGlobal:
 
     def run(
         self,
-        diagnostic_state: diffusion_states.DiffusionDiagnosticState,
         prognostic_state: prognostics.PrognosticState,
         dtime: float,
         initial_run: bool = False,
@@ -250,27 +253,6 @@ class DiffusionGlobal:
             offset_provider=self._offset_provider,
         )
 
-        if (
-            self.config.shear_type
-            >= TurbulenceShearForcingType.VERTICAL_HORIZONTAL_OF_HORIZONTAL_WIND
-            or self.config.loutshs
-            or self.config.a_hshr > 0.0
-        ):
-            _calculate_diagnostic_quantities_for_turbulence(
-                kh_smag_ec=self.kh_smag_ec,
-                vn=prognostic_state.vn,
-                e_bln_c_s=self._interpolation_state.e_bln_c_s,
-                geofac_div=self._interpolation_state.geofac_div,
-                diff_multfac_smag=self.diff_multfac_smag,
-                wgtfac_c=self._metric_state.wgtfac_c,
-                out=(diagnostic_state.div_ic, diagnostic_state.hdef_ic),
-                domain={
-                    dims.CellDim: (self._cell_start_nudging, self._cell_end_local),
-                    dims.KHalfDim: (1, num_levels),
-                },
-                offset_provider=self._offset_provider,
-            )
-
         self._exchange.exchange(dims.EdgeDim, self.z_nabla2_e, stream=decomposition.DEFAULT_STREAM)
 
         _mo_intp_rbf_rbf_vec_interpol_vertex(
@@ -320,24 +302,38 @@ class DiffusionGlobal:
             stream=decomposition.DEFAULT_STREAM,
         )
 
-        _apply_diffusion_to_w_and_compute_horizontal_gradients_for_turbulence(
-            area=self._cell_params.area,
+        _calculate_nabla2_for_w(
+            w=prognostic_state.w,
             geofac_n2s=self._interpolation_state.geofac_n2s,
-            geofac_grg_x=self._interpolation_state.geofac_grg_x,
-            geofac_grg_y=self._interpolation_state.geofac_grg_y,
-            w_old=prognostic_state.w,
-            type_shear=self.config.shear_type,
-            dwdx=diagnostic_state.dwdx,
-            dwdy=diagnostic_state.dwdy,
-            diff_multfac_w=self.diff_multfac_w,
-            diff_multfac_n2w=self.diff_multfac_n2w,
-            nrdmax=self._vertical_grid.end_index_of_damping_layer + 1,
-            interior_idx=self._cell_start_interior,
-            halo_idx=self._cell_end_local,
-            out=(prognostic_state.w, diagnostic_state.dwdx, diagnostic_state.dwdy),
+            out=self.z_nabla2_c,
             domain={
                 dims.CellDim: (self._cell_start_lateral_boundary_level_4, self._cell_end_halo),
                 dims.KHalfDim: (0, num_levels),
+            },
+            offset_provider=self._offset_provider,
+        )
+        _apply_nabla2_to_w(
+            area=self._cell_params.area,
+            z_nabla2_c=self.z_nabla2_c,
+            geofac_n2s=self._interpolation_state.geofac_n2s,
+            w=prognostic_state.w,
+            diff_multfac_w=self.diff_multfac_w,
+            out=prognostic_state.w,
+            domain={
+                dims.CellDim: (self._cell_start_interior, self._cell_end_local),
+                dims.KHalfDim: (0, num_levels),
+            },
+            offset_provider=self._offset_provider,
+        )
+        _apply_nabla2_to_w_in_upper_damping_layer(
+            w=prognostic_state.w,
+            diff_multfac_n2w=self.diff_multfac_n2w,
+            cell_area=self._cell_params.area,
+            z_nabla2_c=self.z_nabla2_c,
+            out=prognostic_state.w,
+            domain={
+                dims.CellDim: (self._cell_start_interior, self._cell_end_local),
+                dims.KHalfDim: (1, self._vertical_grid.end_index_of_damping_layer + 1),
             },
             offset_provider=self._offset_provider,
         )
