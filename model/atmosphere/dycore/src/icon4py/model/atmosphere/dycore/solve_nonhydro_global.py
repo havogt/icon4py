@@ -96,10 +96,9 @@ class SolveNonhydroGlobal:
         self._offset_provider = grid.connectivities
         self._determine_horizontal_domains()
 
-        self._interpolated_fourth_order_divdamp_factor = data_alloc.zero_field(
-            grid, dims.KDim, dtype=ta.wpfloat, allocator=allocator
-        )
-        unstructured(smagorinsky._en_smag_fac_for_zero_nshift)(
+        self._interpolated_fourth_order_divdamp_factor = unstructured(
+            smagorinsky._en_smag_fac_for_zero_nshift
+        )(
             vect_a=vertical_params.interface_physical_height,
             hdiff_smag_fac=config.fourth_order_divdamp_factor,
             hdiff_smag_fac2=config.fourth_order_divdamp_factor2,
@@ -109,7 +108,7 @@ class SolveNonhydroGlobal:
             hdiff_smag_z2=config.fourth_order_divdamp_z2,
             hdiff_smag_z3=config.fourth_order_divdamp_z3,
             hdiff_smag_z4=config.fourth_order_divdamp_z4,
-            out=self._interpolated_fourth_order_divdamp_factor,
+            domain={dims.KDim: (0, grid.num_levels)},
             offset_provider={},
         )
         self._zeros_cells_on_half_levels = self._zeros(dims.CellDim, dims.KHalfDim)
@@ -225,12 +224,7 @@ class SolveNonhydroGlobal:
             cells_khalf,
             {dims.CellDim: self._cells},
         )
-        out = tuple(
-            gtx.constructors.zeros(domain, dtype=ta.wpfloat, allocator=self._allocator)
-            for domain in out_domains
-        )
-
-        self._solve_nonhydro_global_step(
+        out = self._solve_nonhydro_global_step(
             current_vn=prognostic_state.vn,
             current_w=prognostic_state.w,
             current_rho=prognostic_state.rho,
@@ -350,7 +344,6 @@ class SolveNonhydroGlobal:
             start_of_d2dz2_of_exner_extrapolation=gtx.int32(max(1, metric.nflat_gradp)),
             end_index_of_damping_layer=gtx.int32(vertical.end_index_of_damping_layer),
             kstart_moist=gtx.int32(vertical.kstart_moist),
-            out=out,
             domain=out_domains,
             offset_provider=self._offset_provider,
         )
