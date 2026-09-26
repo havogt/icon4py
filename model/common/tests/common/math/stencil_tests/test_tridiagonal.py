@@ -24,14 +24,20 @@ from icon4py.model.testing import stencil_tests
 
 
 @gtx.field_operator(grid_type=gtx.GridType.UNSTRUCTURED)
-def _solve_on_half_levels_mixed_precision(
+def _solve_on_half_levels_mixed_precision(  # noqa: PLR0917 [too-many-positional-arguments]
     a: fa.CellKHalfField[vpfloat],  # type: ignore[valid-type]
     b: fa.CellKHalfField[vpfloat],  # type: ignore[valid-type]
     c: fa.CellKHalfField[vpfloat],  # type: ignore[valid-type]
     d: fa.CellKHalfField[wpfloat],
+    vertical_start: gtx.int32,
+    vertical_end: gtx.int32,
 ) -> fa.CellKHalfField[wpfloat]:
-    q, d_prime = _solve_tridiagonal_matrix_forward_sweep_on_half_levels_mixed_precision(a, b, c, d)
-    return _solve_tridiagonal_matrix_back_substitution_on_half_levels_mixed_precision(q, d_prime)
+    q, d_prime = _solve_tridiagonal_matrix_forward_sweep_on_half_levels_mixed_precision(
+        a, b, c, d, vertical_start, vertical_end
+    )
+    return _solve_tridiagonal_matrix_back_substitution_on_half_levels_mixed_precision(
+        q, d_prime, vertical_start, vertical_end
+    )
 
 
 def solve_tridiagonal_numpy(
@@ -64,6 +70,8 @@ def tridiagonal_input_data(
             horizontal_dim, vertical_dim, low=-1.0, high=1.0, dtype=coefficient_dtype
         ),
         d=data_alloc.random_field(horizontal_dim, vertical_dim, dtype=wpfloat),
+        vertical_start=gtx.int32(0),
+        vertical_end=gtx.int32(grid.size[vertical_dim]),
         domain={
             horizontal_dim: (0, grid.size[horizontal_dim]),
             vertical_dim: (0, grid.size[vertical_dim]),

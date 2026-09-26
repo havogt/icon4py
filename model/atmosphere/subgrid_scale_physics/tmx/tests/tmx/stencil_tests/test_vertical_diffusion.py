@@ -218,6 +218,8 @@ def solve_input_data(
         rhs=data_alloc.random_field(horizontal_dim, vertical_dim),
         tend=data_alloc.random_field(horizontal_dim, vertical_dim),
         dtime=wpfloat(0.5),
+        vertical_start=gtx.int32(vertical_start),
+        vertical_end=gtx.int32(vertical_end),
         out=data_alloc.zero_field(horizontal_dim, vertical_dim),
         domain={
             horizontal_dim: (0, gtx.int32(horizontal_size)),
@@ -231,9 +233,19 @@ class TestSolveImplicitVerticalDiffusionOnCells(stencil_tests.StencilTest):
     OUTPUTS = ("out",)
 
     @stencil_tests.static_reference
-    def reference(grid: base.Grid, *, domain: dict, out: np.ndarray, **kwargs: Any) -> dict:
+    def reference(
+        grid: base.Grid,
+        *,
+        vertical_start: int,
+        vertical_end: int,
+        domain: dict,
+        out: np.ndarray,
+        **kwargs: Any,
+    ) -> dict:
         return dict(
-            out=implicit_diffusion_tendency_numpy(**kwargs, rows=vertical_rows(domain, dims.KDim))
+            out=implicit_diffusion_tendency_numpy(
+                **kwargs, rows=slice(vertical_start, vertical_end)
+            )
         )
 
     @stencil_tests.input_data_fixture
@@ -253,10 +265,18 @@ class TestSolveImplicitVerticalDiffusionOnCellHalfLevels(stencil_tests.StencilTe
     OUTPUTS = ("out",)
 
     @stencil_tests.static_reference
-    def reference(grid: base.Grid, *, domain: dict, out: np.ndarray, **kwargs: Any) -> dict:
+    def reference(
+        grid: base.Grid,
+        *,
+        vertical_start: int,
+        vertical_end: int,
+        domain: dict,
+        out: np.ndarray,
+        **kwargs: Any,
+    ) -> dict:
         return dict(
             out=implicit_diffusion_tendency_numpy(
-                **kwargs, rows=vertical_rows(domain, dims.KHalfDim)
+                **kwargs, rows=slice(vertical_start, vertical_end)
             )
         )
 
@@ -277,9 +297,19 @@ class TestSolveImplicitVerticalDiffusionOnEdges(stencil_tests.StencilTest):
     OUTPUTS = ("out",)
 
     @stencil_tests.static_reference
-    def reference(grid: base.Grid, *, domain: dict, out: np.ndarray, **kwargs: Any) -> dict:
+    def reference(
+        grid: base.Grid,
+        *,
+        vertical_start: int,
+        vertical_end: int,
+        domain: dict,
+        out: np.ndarray,
+        **kwargs: Any,
+    ) -> dict:
         return dict(
-            out=implicit_diffusion_tendency_numpy(**kwargs, rows=vertical_rows(domain, dims.KDim))
+            out=implicit_diffusion_tendency_numpy(
+                **kwargs, rows=slice(vertical_start, vertical_end)
+            )
         )
 
     @stencil_tests.input_data_fixture

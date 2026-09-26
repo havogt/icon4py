@@ -904,7 +904,7 @@ def compute_max_nbhgt(
     )
 
 
-@gtx.scan_operator(axis=dims.KDim, forward=True, init=(0, False))
+@gtx.field_operator
 def _compute_param(  # noqa: PLR0917 [too-many-positional-arguments]
     param: tuple[gtx.int32, bool],
     z_me_jk: float,

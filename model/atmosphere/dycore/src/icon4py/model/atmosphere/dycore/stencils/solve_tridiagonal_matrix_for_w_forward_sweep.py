@@ -26,6 +26,8 @@ def _solve_tridiagonal_matrix_for_w_forward_sweep(
     z_exner_expl: fa.CellKField[wpfloat],
     dtime: wpfloat,
     cpd: wpfloat,
+    vertical_start: gtx.int32,
+    vertical_end: gtx.int32,
 ) -> tuple[fa.CellKHalfField[vpfloat], fa.CellKHalfField[wpfloat]]:
     """Formerly known as _mo_solve_nonhydro_stencil_52."""
     ddqz_z_half_wp = astype(ddqz_z_half, wpfloat)
@@ -41,7 +43,7 @@ def _solve_tridiagonal_matrix_for_w_forward_sweep(
         z_exner_expl(dims.KHalfDim - 0.5) - z_exner_expl(dims.KHalfDim + 0.5)
     )
     z_q_res, w_res = _solve_tridiagonal_matrix_forward_sweep_on_half_levels_mixed_precision(
-        a=z_a, b=z_b, c=z_c, d=w_prep
+        a=z_a, b=z_b, c=z_c, d=w_prep, vertical_start=vertical_start, vertical_end=vertical_end
     )
     return z_q_res, w_res
 
@@ -74,6 +76,8 @@ def solve_tridiagonal_matrix_for_w_forward_sweep(
         z_exner_expl=z_exner_expl,
         dtime=dtime,
         cpd=cpd,
+        vertical_start=vertical_start,
+        vertical_end=vertical_end,
         out=(z_q, w),
         domain={
             dims.CellDim: (horizontal_start, horizontal_end),

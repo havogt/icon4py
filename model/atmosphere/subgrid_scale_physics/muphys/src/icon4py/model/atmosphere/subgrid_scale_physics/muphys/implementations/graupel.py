@@ -8,7 +8,7 @@
 from typing import NamedTuple
 
 import gt4py.next as gtx
-from gt4py.next import broadcast, maximum, minimum, where
+from gt4py.next import broadcast, maximum, minimum, scan, where
 from gt4py.next.experimental import concat_where
 
 from icon4py.model.atmosphere.subgrid_scale_physics.muphys.core.common.constants import (
@@ -166,20 +166,7 @@ def _temperature_update(  # noqa: PLR0917 [too-many-positional-arguments]
     return TempState(t=t, eflx=eflx, activated=current_level_activated)
 
 
-@gtx.scan_operator(
-    axis=dims.KDim,
-    forward=True,
-    init=IntegrationState(
-        r=PrecipStateQx(x=0.0, p=0.0, activated=False),
-        s=PrecipStateQx(x=0.0, p=0.0, activated=False),
-        i=PrecipStateQx(x=0.0, p=0.0, activated=False),
-        g=PrecipStateQx(x=0.0, p=0.0, activated=False),
-        t_state=TempState(t=0.0, eflx=0.0, activated=False),
-        rho=0.0,
-        pflx_tot=0.0,
-        t_in=0.0,
-    ),
-)
+@gtx.field_operator
 def _precip_and_t(  # noqa: PLR0917 [too-many-positional-arguments]
     previous_level: IntegrationState,
     t: ta.wpfloat,
@@ -480,6 +467,7 @@ def _q_t_update(  # noqa: PLR0917 [too-many-positional-arguments]
 
 @gtx.field_operator
 def _precipitation_effects(  # noqa: PLR0917 [too-many-positional-arguments]
+    first_lev: gtx.int32,
     last_lev: gtx.int32,
     kmin_r: fa.CellKField[bool],  # rain minimum level
     kmin_i: fa.CellKField[bool],  # ice minimum level
@@ -505,7 +493,21 @@ def _precipitation_effects(  # noqa: PLR0917 [too-many-positional-arguments]
 ]:
     t_kp1 = concat_where(dims.KDim < last_lev, t(dims.KDim + 1), t)
 
-    precip_state = _precip_and_t(
+    precip_state = scan(
+        _precip_and_t,
+        range=(dims.KDim, first_lev, last_lev + 1),
+        forward=True,
+        init=IntegrationState(
+            r=PrecipStateQx(x=0.0, p=0.0, activated=False),
+            s=PrecipStateQx(x=0.0, p=0.0, activated=False),
+            i=PrecipStateQx(x=0.0, p=0.0, activated=False),
+            g=PrecipStateQx(x=0.0, p=0.0, activated=False),
+            t_state=TempState(t=0.0, eflx=0.0, activated=False),
+            rho=0.0,
+            pflx_tot=0.0,
+            t_in=0.0,
+        ),
+    )(
         t,
         t_kp1,
         rho,
@@ -536,6 +538,7 @@ def _precipitation_effects(  # noqa: PLR0917 [too-many-positional-arguments]
 
 @gtx.field_operator
 def graupel(  # noqa: PLR0917 [too-many-positional-arguments]
+    first_level: gtx.int32,
     last_level: gtx.int32,
     dz: fa.CellKField[ta.wpfloat],
     te: fa.CellKField[ta.wpfloat],  # Temperature
@@ -570,7 +573,7 @@ def graupel(  # noqa: PLR0917 [too-many-positional-arguments]
         (q, te),
     )
     qr, qs, qi, qg, t, pflx, pr, ps, pi, pg, pre = _precipitation_effects(
-        last_level, kmin_r, kmin_i, kmin_s, kmin_g, q, t, rho, dz, dt
+        first_level, last_level, kmin_r, kmin_i, kmin_s, kmin_g, q, t, rho, dz, dt
     )
 
     return t, Q(v=q.v, c=q.c, r=qr, s=qs, i=qi, g=qg), pflx, pr, ps, pi, pg, pre
@@ -600,6 +603,7 @@ def graupel_run(  # noqa: PLR0917 [too-many-positional-arguments]
     enable_masking: bool,
 ) -> None:
     graupel(
+        first_level=vertical_start,
         last_level=vertical_end - 1,
         dz=dz,
         te=te,

@@ -49,10 +49,7 @@ from icon4py.model.common.constants import PhysicsConstants, RayleighType
 from icon4py.model.common.math.tridiagonal import (
     _solve_tridiagonal_matrix_back_substitution_on_half_levels_mixed_precision,
 )
-from icon4py.model.common.math.value_of_size import (
-    value_of_size_on_cells_on_half_levels_vp,
-    value_of_size_on_cells_on_half_levels_wp,
-)
+from icon4py.model.common.math.value_of_size import value_of_size_on_cells_on_half_levels_wp
 from icon4py.model.common.type_alias import vpfloat, wpfloat
 
 
@@ -186,11 +183,7 @@ def solve_w(
     dtime: wpfloat,
     cpd: wpfloat,
 ) -> fa.CellKHalfField[wpfloat]:
-    (
-        tridiagonal_intermediate_result,
-        next_w_intermediate_result,
-    ) = concat_where(
-        dims.KHalfDim > 0,
+    tridiagonal_intermediate_result, next_w_intermediate_result = (
         _solve_tridiagonal_matrix_for_w_forward_sweep(
             vwind_impl_wgt=vwind_impl_wgt,
             theta_v_ic=theta_v_ic,
@@ -201,17 +194,17 @@ def solve_w(
             z_exner_expl=z_exner_expl,
             dtime=dtime,
             cpd=cpd,
-        ),
-        (
-            value_of_size_on_cells_on_half_levels_vp(vpfloat("0.0"), z_alpha),
-            value_of_size_on_cells_on_half_levels_wp(wpfloat("0.0"), z_w_expl),
-        ),
+            vertical_start=1,
+            vertical_end=last_inner_level,
+        )
     )
     next_w = concat_where(
-        dims.KHalfDim < last_inner_level,
+        (1 <= dims.KHalfDim) & (dims.KHalfDim < last_inner_level),
         _solve_tridiagonal_matrix_back_substitution_on_half_levels_mixed_precision(
             q=tridiagonal_intermediate_result,
             d_prime=next_w_intermediate_result,
+            vertical_start=1,
+            vertical_end=last_inner_level,
         ),
         next_w,
     )

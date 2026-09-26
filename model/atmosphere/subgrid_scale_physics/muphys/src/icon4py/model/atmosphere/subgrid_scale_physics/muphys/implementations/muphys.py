@@ -18,6 +18,7 @@ from icon4py.model.common import dimension as dims, field_type_aliases as fa, ty
 
 @gtx.field_operator
 def _muphys(  # noqa: PLR0917 [too-many-positional-arguments]
+    first_level: gtx.int32,
     last_level: gtx.int32,
     dz: fa.CellKField[ta.wpfloat],
     te: fa.CellKField[ta.wpfloat],  # Temperature
@@ -43,6 +44,7 @@ def _muphys(  # noqa: PLR0917 [too-many-positional-arguments]
     )
 
     t, q, pflx, pr, ps, pi, pg, pre = graupel(
+        first_level=first_level,
         last_level=last_level,
         dz=dz,
         te=te,
@@ -88,6 +90,7 @@ def muphys_run(  # noqa: PLR0917 [too-many-positional-arguments]
     vertical_end: gtx.int32,
 ) -> None:
     _muphys(
+        first_level=vertical_start,
         last_level=vertical_end - 1,
         dz=dz,
         te=te,
