@@ -8,11 +8,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 from typing import TYPE_CHECKING, Any
 
 import gt4py.next as gtx
 import pytest
+from gt4py.next import common as gtx_common
 
 
 if TYPE_CHECKING:
@@ -20,7 +22,11 @@ if TYPE_CHECKING:
 
 import icon4py.model.common.dimension as dims
 import icon4py.model.common.grid.states as grid_states
-from icon4py.model.atmosphere.dycore import dycore_states, solve_nonhydro as solve_nh
+from icon4py.model.atmosphere.dycore import (
+    dycore_states,
+    solve_nonhydro as solve_nh,
+    solve_nonhydro_global,
+)
 from icon4py.model.common import model_backends, utils as common_utils
 from icon4py.model.common.decomposition import definitions as decomposition
 from icon4py.model.common.grid import (
@@ -42,13 +48,12 @@ from icon4py.model.testing.fixtures.datatest import backend_like
 from icon4py.model.testing.fixtures.stencil_tests import grid_manager
 
 
-@pytest.fixture(scope="module")
-def solve_nonhydro(
+def _setup(
     geometry_field_source: grid_geometry.GridGeometry,
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
     metrics_field_source: metrics_factory.MetricsFieldsFactory,
     backend_like: model_backends.BackendLike,
-) -> solve_nh.SolveNonhydro:
+) -> dict[str, Any]:
     allocator = model_backends.get_allocator(backend_like)
     mesh = geometry_field_source.grid
 
@@ -201,8 +206,8 @@ def solve_nonhydro(
         coeff_gradekin=metrics_field_source.get(metrics_attributes.COEFF_GRADEKIN),
     )
 
-    solve_nonhydro = solve_nh.SolveNonhydro(
-        grid=mesh,
+    return dict(
+        mesh=mesh,
         config=config,
         params=nonhydro_params,
         metric_state_nonhydro=metric_state_nonhydro,
@@ -211,38 +216,35 @@ def solve_nonhydro(
         edge_geometry=edge_geometry,
         cell_geometry=cell_geometry,
         owner_mask=geometry_field_source.get("cell_owner_mask"),
+    )
+
+
+@pytest.fixture(scope="module")
+def solve_nonhydro(
+    geometry_field_source: grid_geometry.GridGeometry,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+) -> solve_nh.SolveNonhydro:
+    setup = _setup(
+        geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
+    )
+    return solve_nh.SolveNonhydro(
+        grid=setup.pop("mesh"),
+        **setup,
         exchange=decomposition.SingleNodeExchange(),
         backend=backend_like,
         max_nudging_coefficient=0.375,
     )
 
-    return solve_nonhydro
 
-
-@pytest.mark.parametrize(
-    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
-)
-@pytest.mark.benchmark
-@pytest.mark.continuous_benchmarking
-@pytest.mark.benchmark_only
-def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-arguments]
-    grid_manager: gm.GridManager,
-    solve_nonhydro: solve_nh.SolveNonhydro,
-    at_first_substep: bool,
-    at_last_substep: bool,
-    backend_like: model_backends.BackendLike,
-    benchmark: Any,
-) -> None:
-    allocator = model_backends.get_allocator(backend_like)
-    mesh = grid_manager.grid
-
-    dtime = 10.0 if mesh.limited_area else 90.0
-
-    prepare_fluxes_for_advection = True
-    ndyn_substeps = 5
-    at_initial_timestep = False
-    second_order_divdamp_factor = 0.02
-
+def _states(
+    mesh: Any, allocator: Any
+) -> tuple[
+    dycore_states.PrepAdvection,
+    nonhydro_states.DiagnosticStateNonHydro,
+    common_utils.TimeStepPair[prognostics.PrognosticState],
+]:
     prep_adv = dycore_states.PrepAdvection(
         vn_traj=data_alloc.zero_field(mesh, dims.EdgeDim, dims.KDim, allocator=allocator),
         mass_flx_me=data_alloc.zero_field(mesh, dims.EdgeDim, dims.KDim, allocator=allocator),
@@ -322,6 +324,35 @@ def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-argumen
 
     prognostic_states = common_utils.TimeStepPair(prognostic_state_nnow, prognostic_state_nnew)
 
+    return prep_adv, diagnostic_state_nh, prognostic_states
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+@pytest.mark.benchmark
+@pytest.mark.continuous_benchmarking
+@pytest.mark.benchmark_only
+def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-arguments]
+    grid_manager: gm.GridManager,
+    solve_nonhydro: solve_nh.SolveNonhydro,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    backend_like: model_backends.BackendLike,
+    benchmark: Any,
+) -> None:
+    allocator = model_backends.get_allocator(backend_like)
+    mesh = grid_manager.grid
+
+    dtime = 10.0 if mesh.limited_area else 90.0
+
+    prepare_fluxes_for_advection = True
+    ndyn_substeps = 5
+    at_initial_timestep = False
+    second_order_divdamp_factor = 0.02
+
+    prep_adv, diagnostic_state_nh, prognostic_states = _states(mesh, allocator)
+
     solve_nonhydro_timestep_variants = functools.partial(
         solve_nonhydro.time_step,
         diagnostic_state_nh=diagnostic_state_nh,
@@ -339,3 +370,105 @@ def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-argumen
         at_first_substep=at_first_substep,
         at_last_substep=at_last_substep,
     )
+
+
+def _to_jax(obj: Any, jnp: Any) -> Any:
+    if isinstance(obj, gtx_common.Connectivity):
+        return gtx.as_connectivity(
+            obj.domain,
+            obj.codomain,
+            jnp.asarray(obj.asnumpy()),
+            skip_value=obj.skip_value,
+            allocator=jnp,
+        )
+    if isinstance(obj, gtx.Field):
+        return gtx.as_field(obj.domain, jnp.asarray(obj.asnumpy()), allocator=jnp)
+    if isinstance(obj, tuple):
+        return tuple(_to_jax(x, jnp) for x in obj)
+    if isinstance(obj, common_utils.PredictorCorrectorPair):
+        return common_utils.PredictorCorrectorPair(*(_to_jax(x, jnp) for x in obj))
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.replace(
+            obj,
+            **{
+                f.name: _to_jax(getattr(obj, f.name), jnp)
+                for f in dataclasses.fields(obj)
+                if f.init
+            },
+        )
+    return obj
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+@pytest.mark.benchmark
+@pytest.mark.benchmark_only
+def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    backend_like: model_backends.BackendLike,
+    benchmark: Any,
+) -> None:
+    """
+    Benchmark `SolveNonhydroGlobal`, the fused single-field-operator substep, under `jax.jit`.
+
+    It runs on the embedded backend with JAX arrays on the default JAX device; the constant
+    fields are computed with `--backend` and then converted.
+    """
+    jax = pytest.importorskip("jax")
+    jnp = jax.numpy
+    setup = _setup(
+        geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
+    )
+    mesh = setup.pop("mesh")
+    if mesh.limited_area:
+        pytest.skip("'SolveNonhydroGlobal' does not support limited area grids.")
+    vertical_params = setup.pop("vertical_params")
+    jax_mesh = dataclasses.replace(
+        mesh, connectivities={k: _to_jax(v, jnp) for k, v in mesh.connectivities.items()}
+    )
+    solver = solve_nonhydro_global.SolveNonhydroGlobal(
+        grid=jax_mesh,
+        vertical_params=v_grid.VerticalGrid(
+            config=vertical_params.config,
+            vct_a=_to_jax(vertical_params.vct_a, jnp),
+            vct_b=_to_jax(vertical_params.vct_b, jnp),
+        ),
+        **{k: _to_jax(v, jnp) for k, v in setup.items()},
+        allocator=jnp,
+    )
+
+    prep_adv, diagnostic_state_nh, prognostic_states = _states(
+        mesh, model_backends.get_allocator(backend_like)
+    )
+    prep_adv, diagnostic_state_nh = _to_jax(prep_adv, jnp), _to_jax(diagnostic_state_nh, jnp)
+    intermediate_state = solver.initial_intermediate_state()
+    prognostic_fields = ("rho", "w", "vn", "exner", "theta_v")
+    prognostic_input = {
+        k: _to_jax(getattr(prognostic_states.current, k), jnp) for k in prognostic_fields
+    }
+
+    def step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
+        new, *_ = solver.time_step(
+            diagnostic_state_nh=diagnostic_state_nh,
+            prognostic_state=prognostics.PrognosticState(**fields),
+            intermediate_state=intermediate_state,
+            prep_adv=prep_adv,
+            second_order_divdamp_factor=0.02,
+            dtime=90.0,
+            ndyn_substeps_var=5,
+            at_initial_timestep=False,
+            prepare_fluxes_for_advection=True,
+            at_first_substep=at_first_substep,
+            at_last_substep=at_last_substep,
+        )
+        return {k: getattr(new, k) for k in prognostic_fields}
+
+    jitted = jax.jit(step)
+    jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray)
+    benchmark(lambda: jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray))
