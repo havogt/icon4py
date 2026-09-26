@@ -49,8 +49,8 @@ def is_ndarray(obj: Any) -> TypeGuard[NDArray]:
 
 
 def is_rank0_ndarray(obj: Any) -> TypeGuard[ScalarLikeArray]:
-    """Whether `obj` is a 0-d (scalar-like) array."""
-    return is_ndarray(obj) and obj.shape == ()
+    """Whether `obj` is a 0-d (scalar-like) array of any array library, not a scalar."""
+    return not isinstance(obj, np.generic) and getattr(obj, "shape", None) == ()
 
 
 def backend_name(backend: gtx_typing.Backend | None) -> str:
