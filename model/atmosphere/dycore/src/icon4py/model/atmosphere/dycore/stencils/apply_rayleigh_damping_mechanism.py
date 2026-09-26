@@ -6,7 +6,6 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 import gt4py.next as gtx
-from gt4py.next import broadcast
 
 from icon4py.model.common import dimension as dims, field_type_aliases as fa
 from icon4py.model.common.type_alias import wpfloat
@@ -18,7 +17,6 @@ def _apply_rayleigh_damping_mechanism(
     w: fa.CellKHalfField[wpfloat],
 ) -> fa.CellKHalfField[wpfloat]:
     """Formerly known as _mo_solve_nonhydro_stencil_54."""
-    z_raylfac = broadcast(z_raylfac, (dims.CellDim, dims.KHalfDim))
     w_wp = z_raylfac * w
     return w_wp
 

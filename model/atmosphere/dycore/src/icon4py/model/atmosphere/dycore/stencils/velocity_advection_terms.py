@@ -11,7 +11,6 @@ import gt4py.next as gtx
 from gt4py.next import (
     abs,  # noqa: A004
     astype,
-    broadcast,
     maximum,
     minimum,
     neighbor_sum,
@@ -161,17 +160,9 @@ def _compute_cfl(
         contravariant_corrected_w_at_cells_on_half_levels_wp * dtime / ddqz_z_half_wp
     )
 
-    cfl_clipping = where(
-        abs(vertical_cfl_number) > VerticalCflConstants.W_LIMIT,
-        broadcast(True, (dims.CellDim, dims.KHalfDim)),
-        False,
-    )
+    cfl_clipping = abs(vertical_cfl_number) > VerticalCflConstants.W_LIMIT
 
-    vertical_cfl = where(
-        cfl_clipping,
-        vertical_cfl_number,
-        broadcast(wpfloat("0.0"), (dims.CellDim, dims.KHalfDim)),
-    )
+    vertical_cfl = where(cfl_clipping, vertical_cfl_number, wpfloat("0.0"))
 
     return cfl_clipping, astype(vertical_cfl, vpfloat)
 
@@ -377,7 +368,7 @@ def _compute_advection_in_vertical_momentum(
         )
         if not skip_vertical_wind_advective_tendency
         # Skipped: a placeholder that must not be read; the caller keeps its previous tendency.
-        else broadcast(vpfloat("0.0"), (dims.CellDim, dims.KHalfDim))
+        else value_of_size_on_cells_on_half_levels_vp(vpfloat("0.0"), ddqz_z_half)
     )
 
     contravariant_corrected_w_at_cells_on_model_levels = (

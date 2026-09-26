@@ -6,7 +6,7 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 import gt4py.next as gtx
-from gt4py.next import astype, broadcast
+from gt4py.next import astype
 
 from icon4py.model.common import dimension as dims, field_type_aliases as fa
 from icon4py.model.common.dimension import E2C
@@ -24,7 +24,6 @@ def _add_vertical_wind_derivative_to_divergence_damping(
     """Formerly known as _mo_solve_nonhydro_stencil_17."""
     z_graddiv_vn_wp = astype(z_graddiv_vn, wpfloat)
 
-    scalfac_dd3d = broadcast(scalfac_dd3d, (dims.EdgeDim, dims.KDim))
     z_graddiv_vn_wp = z_graddiv_vn_wp + (
         hmask_dd3d
         * scalfac_dd3d
