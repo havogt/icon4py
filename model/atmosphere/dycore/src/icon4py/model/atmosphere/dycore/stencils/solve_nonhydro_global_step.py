@@ -10,13 +10,19 @@ from gt4py.next import abs, astype, maximum, reduce  # noqa: A004
 from gt4py.next.experimental import concat_where
 
 from icon4py.model.atmosphere.dycore.dycore_utils import _compute_rayleigh_damping_factor
+from icon4py.model.atmosphere.dycore.stencils.add_temporal_tendencies_to_vn import (
+    _add_temporal_tendencies_to_vn,
+)
 from icon4py.model.atmosphere.dycore.stencils.compute_cell_diagnostics_for_dycore import (
     _compute_interpolation_and_nonhydro_buoy,
     _compute_perturbed_quantities_and_interpolation,
 )
 from icon4py.model.atmosphere.dycore.stencils.compute_edge_diagnostics_for_dycore_and_update_vn import (
     _apply_divergence_damping_and_update_vn,
-    _compute_rho_theta_pgrad_and_update_vn,
+    _compute_horizontal_pressure_gradient,
+)
+from icon4py.model.atmosphere.dycore.stencils.compute_horizontal_advection_of_rho_and_theta import (
+    _compute_horizontal_advection_of_rho_and_theta,
 )
 from icon4py.model.atmosphere.dycore.stencils.compute_horizontal_velocity_quantities import (
     _compute_averaged_vn_and_fluxes,
@@ -96,7 +102,6 @@ def _solve_nonhydro_global_step(
     rho_iau_increment: fa.CellKField[vpfloat],
     normal_wind_iau_increment: fa.EdgeKField[vpfloat],
     exner_iau_increment: fa.CellKField[vpfloat],
-    grf_tend_vn: fa.EdgeKField[wpfloat],
     # intermediate state
     tangential_wind_on_half_levels: fa.EdgeKHalfField[vpfloat],
     contravariant_correction_at_edges_on_model_levels: fa.EdgeKField[vpfloat],
@@ -191,7 +196,6 @@ def _solve_nonhydro_global_step(
     rayleigh_type: gtx.int32,
     divdamp_type: gtx.int32,
     divdamp_order: gtx.int32,
-    num_edges: gtx.int32,
     nlev: gtx.int32,
     nflatlev: gtx.int32,
     nflat_gradp: gtx.int32,
@@ -366,53 +370,44 @@ def _solve_nonhydro_global_step(
         )
     )
 
-    (
-        rho_at_edges,
-        theta_v_at_edges,
-        horizontal_pressure_gradient,
-        next_vn,
-    ) = _compute_rho_theta_pgrad_and_update_vn(
-        next_vn=current_vn,
-        current_vn=current_vn,
-        tangential_wind=tangential_wind,
-        reference_rho_at_edges_on_model_levels=reference_rho_at_edges_on_model_levels,
-        reference_theta_at_edges_on_model_levels=reference_theta_at_edges_on_model_levels,
+    rho_at_edges, theta_v_at_edges = _compute_horizontal_advection_of_rho_and_theta(
+        p_vn=current_vn,
+        p_vt=tangential_wind,
+        pos_on_tplane_e_1=pos_on_tplane_e_1,
+        pos_on_tplane_e_2=pos_on_tplane_e_2,
+        primal_normal_cell_1=primal_normal_cell_x,
+        dual_normal_cell_1=dual_normal_cell_x,
+        primal_normal_cell_2=primal_normal_cell_y,
+        dual_normal_cell_2=dual_normal_cell_y,
+        p_dthalf=wpfloat("0.5") * dtime,
+        rho_ref_me=reference_rho_at_edges_on_model_levels,
+        theta_ref_me=reference_theta_at_edges_on_model_levels,
         perturbed_rho_at_cells_on_model_levels=perturbed_rho,
         perturbed_theta_v_at_cells_on_model_levels=perturbed_theta_v,
+        geofac_grg_x=geofac_grg_x,
+        geofac_grg_y=geofac_grg_y,
+    )
+    horizontal_pressure_gradient = _compute_horizontal_pressure_gradient(
         temporal_extrapolation_of_perturbed_exner=exner_extrapolation,
         ddz_of_temporal_extrapolation_of_perturbed_exner_on_model_levels=ddz_exner_extrapolation,
         d2dz2_of_temporal_extrapolation_of_perturbed_exner_on_model_levels=d2dz2_exner_extrapolation,
         hydrostatic_correction_on_lowest_level=hydrostatic_correction_on_lowest_level,
-        predictor_normal_wind_advective_tendency=predictor_normal_wind_advective_tendency,
-        normal_wind_tendency_due_to_slow_physics_process=normal_wind_tendency_due_to_slow_physics_process,
-        normal_wind_iau_increment=normal_wind_iau_increment,
-        grf_tend_vn=grf_tend_vn,
-        geofac_grg_x=geofac_grg_x,
-        geofac_grg_y=geofac_grg_y,
-        pos_on_tplane_e_x=pos_on_tplane_e_1,
-        pos_on_tplane_e_y=pos_on_tplane_e_2,
-        primal_normal_cell_x=primal_normal_cell_x,
-        dual_normal_cell_x=dual_normal_cell_x,
-        primal_normal_cell_y=primal_normal_cell_y,
-        dual_normal_cell_y=dual_normal_cell_y,
         ddxn_z_full=ddxn_z_full,
         c_lin_e=c_lin_e,
         ikoffset=vertoffset_gradp,
         zdiff_gradp=zdiff_gradp,
         pg_exdist=pg_exdist,
         inv_dual_edge_length=inv_dual_edge_length,
-        dtime=dtime,
-        is_iau_active=False,
-        iau_wgt_dyn=wpfloat("0.0"),
-        limited_area=False,
         nflatlev=nflatlev,
         nflat_gradp=nflat_gradp,
-        start_edge_lateral_boundary=0,
-        start_edge_lateral_boundary_level_7=0,
-        start_edge_nudging_level_2=0,
-        end_edge_nudging=0,
-        end_edge_local=num_edges,
-        end_edge_halo=num_edges,
+    )
+    next_vn = _add_temporal_tendencies_to_vn(
+        vn_nnow=current_vn,
+        ddt_vn_apc_ntl1=predictor_normal_wind_advective_tendency,
+        ddt_vn_phy=normal_wind_tendency_due_to_slow_physics_process,
+        z_theta_v_e=theta_v_at_edges,
+        z_gradh_exner=horizontal_pressure_gradient,
+        dtime=dtime,
     )
 
     (
