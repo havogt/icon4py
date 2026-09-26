@@ -26,6 +26,7 @@ exclude = [
     "cupy",
     "ghex",
     "dace",
+    "jax",
     "mpi4py",
     "netcdf4",
     "pymetis",

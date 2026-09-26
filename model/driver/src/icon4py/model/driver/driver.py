@@ -698,7 +698,16 @@ def initialize_driver(
     grid_manager: gm.GridManager,
     process_props: decomposition_defs.ProcessProperties,
     backend: gtx.typing.Backend | None,
+    jax: bool = False,
 ) -> Icon4pyDriver:
+    """
+    Set up the driver.
+
+    With `jax`, the setup runs on the embedded backend and the time loop runs the
+    single-field-operator global diffusion and dynamical core steps on JAX arrays under jax.jit.
+    """
+    if jax and backend is not None:
+        raise ValueError("The JAX driver sets up on the embedded backend: pass backend=None.")
     output_path = driver_config.prepare_output_directory(
         config_output_path=config.driver.output_path,
         cli_output_path=None,
@@ -743,20 +752,37 @@ def initialize_driver(
     model_time_variables = driver_states.ModelTimeVariables(config=config.driver)
 
     log.info("initializing granules")
-    granules = driver_utils.initialize_granules(
-        config=config,
-        grid=grid_manager.grid,
-        vertical_grid=vertical_grid,
-        static_field_factories=static_field_factories,
-        model_time_variables=model_time_variables,
-        exchange=exchange,
-        owner_mask=gtx.as_field(
-            (dims.CellDim,),
-            decomposition_info.owner_mask(dims.CellDim),  # type: ignore[arg-type]  # due to array_ns opacity
-            allocator=allocator,
-        ),
-        backend=backend,
+    owner_mask = gtx.as_field(
+        (dims.CellDim,),
+        decomposition_info.owner_mask(dims.CellDim),  # type: ignore[arg-type]  # due to array_ns opacity
+        allocator=allocator,
     )
+    driver_class: Callable[..., Icon4pyDriver] = Icon4pyDriver
+    if jax:
+        from icon4py.model.driver import jax_driver  # noqa: PLC0415 [import-outside-top-level]
+
+        driver_class = functools.partial(
+            jax_driver.JaxIcon4pyDriver,
+            global_granules=driver_utils.initialize_global_granules(
+                config=config,
+                grid=grid_manager.grid,
+                vertical_grid=vertical_grid,
+                static_field_factories=static_field_factories,
+                owner_mask=owner_mask,
+            ),
+        )
+        granules = driver_utils.Granules()
+    else:
+        granules = driver_utils.initialize_granules(
+            config=config,
+            grid=grid_manager.grid,
+            vertical_grid=vertical_grid,
+            static_field_factories=static_field_factories,
+            model_time_variables=model_time_variables,
+            exchange=exchange,
+            owner_mask=owner_mask,
+            backend=backend,
+        )
     io_monitor = None
     if config.driver.enable_output:
         log.info("Initializing IO monitor")
@@ -772,7 +798,7 @@ def initialize_driver(
             decomposition_info=decomposition_info,
         )
 
-    icon4py_driver = Icon4pyDriver(
+    icon4py_driver = driver_class(
         config=config,
         backend=backend,
         grid=grid_manager.grid,
@@ -804,12 +830,15 @@ def run_driver(
     grid_manager: gm.GridManager,
     process_props: decomposition_defs.ProcessProperties,
     backend: gtx.typing.Backend | None,
+    jax: bool = False,
+    on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None,
 ) -> tuple[driver_states.DriverStates, Icon4pyDriver]:
     icon4py_driver = initialize_driver(
         config=config,
         grid_manager=grid_manager,
         process_props=process_props,
         backend=backend,
+        jax=jax,
     )
     allocator = model_backends.get_allocator(backend)
     prognostic_state_now = prognostics.initialize_prognostic_state(
@@ -864,10 +893,13 @@ def run_driver(
         solve_nonhydro_diagnostic_state=solve_nonhydro_diagnostic_state,
         tracer_prep_adv_state=tracer_prep_adv_state,
     )
-    driver_utils.validate_granule_state_consistency(
-        config=icon4py_driver.config,
-        granules=icon4py_driver.granules,
-        states=ds,
-    )
+    if jax:
+        icon4py_driver.on_step_end = on_step_end  # type: ignore[attr-defined]  # only the JAX driver has the hook
+    else:
+        driver_utils.validate_granule_state_consistency(
+            config=icon4py_driver.config,
+            granules=icon4py_driver.granules,
+            states=ds,
+        )
     icon4py_driver.time_integration(ds)
     return ds, icon4py_driver

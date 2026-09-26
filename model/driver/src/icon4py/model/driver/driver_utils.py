@@ -18,8 +18,12 @@ from typing import Any, Literal
 import gt4py.next as gtx
 import gt4py.next.typing as gtx_typing
 
-from icon4py.model.atmosphere.diffusion import diffusion, diffusion_states
-from icon4py.model.atmosphere.dycore import dycore_states, solve_nonhydro as solve_nh
+from icon4py.model.atmosphere.diffusion import diffusion, diffusion_global, diffusion_states
+from icon4py.model.atmosphere.dycore import (
+    dycore_states,
+    solve_nonhydro as solve_nh,
+    solve_nonhydro_global,
+)
 from icon4py.model.atmosphere.subgrid_scale_physics.muphys import (
     component as muphys_component,
     state as muphys_state,
@@ -52,7 +56,7 @@ from icon4py.model.common.interpolation import interpolation_attributes, interpo
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import factory as states_factory, static_fields, tracer_states
 from icon4py.model.common.utils import data_allocation as data_alloc
-from icon4py.model.driver import config as driver_config, driver_constants, driver_states
+from icon4py.model.driver import config as driver_config, driver_constants, driver_states, jax_utils
 
 
 log = logging.getLogger(__name__)
@@ -213,17 +217,19 @@ def create_static_field_factories(
     )
 
 
-def initialize_granules(
-    *,
-    config: driver_config.ExperimentConfig,
-    grid: icon_grid.IconGrid,
-    vertical_grid: v_grid.VerticalGrid,
+@dataclasses.dataclass(frozen=True)
+class DynamicsStates:
+    cell_geometry: grid_states.CellParams
+    edge_geometry: grid_states.EdgeParams
+    diffusion_interpolation_state: diffusion_states.DiffusionInterpolationState
+    diffusion_metric_state: diffusion_states.DiffusionMetricState
+    solve_nonhydro_interpolation_state: dycore_states.InterpolationState
+    solve_nonhydro_metric_state: dycore_states.MetricStateNonHydro
+
+
+def create_dynamics_states(
     static_field_factories: static_fields.StaticFieldFactories,
-    model_time_variables: driver_states.ModelTimeVariables,
-    exchange: decomposition_defs.ExchangeRuntime,
-    owner_mask: fa.CellField[bool],
-    backend: gtx_typing.Backend | None,
-) -> Granules:
+) -> DynamicsStates:
     geometry_field_source = static_field_factories.geometry
     interpolation_field_source = static_field_factories.interpolation
     metrics_field_source = static_field_factories.metrics
@@ -384,6 +390,37 @@ def initialize_granules(
         coeff_gradekin=metrics_field_source.get(metrics_attributes.COEFF_GRADEKIN),
     )
 
+    return DynamicsStates(
+        cell_geometry=cell_geometry,
+        edge_geometry=edge_geometry,
+        diffusion_interpolation_state=diffusion_interpolation_state,
+        diffusion_metric_state=diffusion_metric_state,
+        solve_nonhydro_interpolation_state=solve_nonhydro_interpolation_state,
+        solve_nonhydro_metric_state=solve_nonhydro_metric_state,
+    )
+
+
+def initialize_granules(
+    *,
+    config: driver_config.ExperimentConfig,
+    grid: icon_grid.IconGrid,
+    vertical_grid: v_grid.VerticalGrid,
+    static_field_factories: static_fields.StaticFieldFactories,
+    model_time_variables: driver_states.ModelTimeVariables,
+    exchange: decomposition_defs.ExchangeRuntime,
+    owner_mask: fa.CellField[bool],
+    backend: gtx_typing.Backend | None,
+) -> Granules:
+    interpolation_field_source = static_field_factories.interpolation
+    metrics_field_source = static_field_factories.metrics
+    states = create_dynamics_states(static_field_factories)
+    cell_geometry = states.cell_geometry
+    edge_geometry = states.edge_geometry
+    diffusion_interpolation_state = states.diffusion_interpolation_state
+    diffusion_metric_state = states.diffusion_metric_state
+    solve_nonhydro_interpolation_state = states.solve_nonhydro_interpolation_state
+    solve_nonhydro_metric_state = states.solve_nonhydro_metric_state
+
     solve_nonhydro_granule: solve_nh.SolveNonhydro | None = None
     if config.nonhydrostatic is not None:
         nonhydro_params = solve_nh.NonHydrostaticParams(config.nonhydrostatic)
@@ -493,6 +530,70 @@ def initialize_granules(
         tracer_advection=tracer_advection_granule,
         physics=physics_granule,
     )
+
+
+@dataclasses.dataclass
+class GlobalGranules:
+    diffusion: diffusion_global.DiffusionGlobal | None = None
+    solve_nonhydro: solve_nonhydro_global.SolveNonhydroGlobal | None = None
+
+
+def initialize_global_granules(
+    *,
+    config: driver_config.ExperimentConfig,
+    grid: icon_grid.IconGrid,
+    vertical_grid: v_grid.VerticalGrid,
+    static_field_factories: static_fields.StaticFieldFactories,
+    owner_mask: fa.CellField[bool],
+) -> GlobalGranules:
+    """
+    The single-field-operator diffusion and dynamical core steps, on JAX arrays.
+
+    The static states are built from the factories as for `initialize_granules` and then
+    converted to JAX once.
+    """
+    jnp = jax_utils.import_jax().numpy
+    states = jax_utils.to_jax(create_dynamics_states(static_field_factories))
+    jax_grid = dataclasses.replace(
+        grid, connectivities={k: jax_utils.to_jax(v) for k, v in grid.connectivities.items()}
+    )
+    jax_vertical_grid = v_grid.VerticalGrid(
+        config=vertical_grid.config,
+        vct_a=jax_utils.to_jax(vertical_grid.vct_a),  # type: ignore[attr-defined]  # mypy sees the InitVar, not the property
+        vct_b=jax_utils.to_jax(vertical_grid.vct_b),  # type: ignore[attr-defined]
+    )
+
+    solve_nonhydro_granule = None
+    if config.nonhydrostatic is not None:
+        solve_nonhydro_granule = solve_nonhydro_global.SolveNonhydroGlobal(
+            grid=jax_grid,
+            config=config.nonhydrostatic,
+            params=solve_nh.NonHydrostaticParams(config.nonhydrostatic),
+            metric_state_nonhydro=states.solve_nonhydro_metric_state,
+            interpolation_state=states.solve_nonhydro_interpolation_state,
+            vertical_params=jax_vertical_grid,
+            edge_geometry=states.edge_geometry,
+            cell_geometry=states.cell_geometry,
+            owner_mask=jax_utils.to_jax(owner_mask),
+            allocator=jnp,
+        )
+
+    diffusion_granule = None
+    if config.diffusion is not None:
+        diffusion_granule = diffusion_global.DiffusionGlobal(
+            grid=jax_grid,
+            config=config.diffusion,
+            params=diffusion.DiffusionParams(config.diffusion),
+            vertical_grid=jax_vertical_grid,
+            metric_state=states.diffusion_metric_state,
+            interpolation_state=states.diffusion_interpolation_state,
+            edge_params=states.edge_geometry,
+            cell_params=states.cell_geometry,
+            allocator=jnp,
+            ndyn_substeps=config.driver.ndyn_substeps,
+        )
+
+    return GlobalGranules(diffusion=diffusion_granule, solve_nonhydro=solve_nonhydro_granule)
 
 
 def spinup_second_order_divdamp_factor(

@@ -13,7 +13,7 @@ from typing import Annotated
 
 import typer
 
-from icon4py.model.common import model_backends, model_options
+from icon4py.model.common import model_backends, model_options, time
 from icon4py.model.common.decomposition import (
     definitions as decomposition_defs,
     mpi_decomposition as mpi_decomp,
@@ -77,6 +77,22 @@ def main(
             )
         ),
     ] = common_io.OutputMode.DISTRIBUTED,
+    jax: Annotated[
+        bool,
+        typer.Option(
+            "--jax/--no-jax",
+            help=(
+                "Run the time loop with the single-field-operator global steps on JAX arrays under "
+                "jax.jit (one rank, no tracer transport, no output; needs --icon4py-backend embedded)."
+            ),
+        ),
+    ] = False,
+    n_time_steps: Annotated[
+        int | None,
+        typer.Option(
+            help="Number of time steps to run, instead of the configured end of simulation."
+        ),
+    ] = None,
 ) -> None:
     """
     CLI entry point that runs the icon4py driver.
@@ -103,6 +119,8 @@ def main(
     }
     if output_path is not None:
         driver_overrides["output_path"] = output_path
+    if n_time_steps is not None:
+        driver_overrides["end_of_simulation"] = time.NumTimeSteps(n_time_steps)
     config = config.with_overrides(driver=driver_overrides)
 
     backend = model_options.customize_backend(
@@ -124,6 +142,7 @@ def main(
         grid_manager=grid_manager,
         process_props=process_props,
         backend=backend,
+        jax=jax,
     )
 
 
