@@ -26,6 +26,8 @@ def solve_tridiagonal_matrix_for_w_back_substitution(
     _solve_tridiagonal_matrix_back_substitution_on_half_levels_mixed_precision(
         q=z_q,
         d_prime=w,
+        vertical_start=vertical_start,
+        vertical_end=vertical_end,
         out=w,
         domain={
             dims.CellDim: (horizontal_start, horizontal_end),

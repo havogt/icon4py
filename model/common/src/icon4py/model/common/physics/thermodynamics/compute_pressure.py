@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import gt4py.next as gtx
-from gt4py.next import exp, log, sqrt
+from gt4py.next import exp, log, scan, sqrt
 
 from icon4py.model.common import (
     constants as phy_const,
@@ -54,13 +54,13 @@ def _compute_surface_pressure(
     return surface_pressure
 
 
-@gtx.scan_operator(axis=dims.KDim, forward=False, init=(0.0, 0.0, True))
+@gtx.field_operator
 def _scan_pressure(
     state: tuple[ta.wpfloat, ta.wpfloat, bool],
     ddqz_z_full: ta.wpfloat,
     virtual_temperature: ta.wpfloat,
     surface_pressure: ta.wpfloat,
-):
+) -> tuple[ta.wpfloat, ta.wpfloat, bool]:
     pressure_interface = (
         surface_pressure * exp(-PhysicsConstants.grav_o_rd * ddqz_z_full / virtual_temperature)
         if state[2]
@@ -79,6 +79,8 @@ def _compute_hydrostatic_pressure_on_model_levels(
     ddqz_z_full: fa.CellKField[ta.wpfloat],
     virtual_temperature: fa.CellKField[ta.wpfloat],
     pressure_ifc: fa.CellKHalfField[ta.wpfloat],
+    vertical_start: gtx.int32,
+    vertical_end: gtx.int32,
 ) -> tuple[fa.CellKField[ta.wpfloat], fa.CellKField[ta.wpfloat]]:
     """
     Compute the hydrostatic pressure from the hydrostatic balance equation
@@ -94,9 +96,12 @@ def _compute_hydrostatic_pressure_on_model_levels(
     Returns:
         pressure at full levels, pressure at the bounding upper interface of each level
     """
-    pressure, pressure_ifc_on_model_levels, _ = _scan_pressure(
-        ddqz_z_full, virtual_temperature, pressure_ifc(dims.KDim + 0.5)
-    )
+    pressure, pressure_ifc_on_model_levels, _ = scan(
+        _scan_pressure,
+        range=(dims.KDim, vertical_start, vertical_end),
+        forward=False,
+        init=(0.0, 0.0, True),
+    )(ddqz_z_full, virtual_temperature, pressure_ifc(dims.KDim + 0.5))
     return pressure, pressure_ifc_on_model_levels
 
 
@@ -129,14 +134,14 @@ def compute_surface_and_hydrostatic_pressure(  # noqa: PLR0917 [too-many-positio
         ddqz_z_full,
         virtual_temperature,
         pressure_ifc,
+        vertical_start,
+        vertical_end,
         out=(pressure, pressure_ifc_on_model_levels),
         domain={
             dims.CellDim: (horizontal_start, horizontal_end),
             dims.KDim: (vertical_start, vertical_end),
         },
     )
-    # TODO(havogt): The range of the scan is deduced from the (unique) domain,
-    # therefore multiple output domains are currently not possible with scans.
     _copy_model_level_below_to_half_levels_on_cells(
         pressure_ifc_on_model_levels,
         out=pressure_ifc,

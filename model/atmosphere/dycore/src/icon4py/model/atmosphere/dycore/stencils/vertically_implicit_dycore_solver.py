@@ -177,11 +177,7 @@ def solve_w(
     dtime: wpfloat,
     cpd: wpfloat,
 ) -> fa.CellKHalfField[wpfloat]:
-    (
-        tridiagonal_intermediate_result,
-        next_w_intermediate_result,
-    ) = concat_where(
-        dims.KHalfDim > 0,
+    tridiagonal_intermediate_result, next_w_intermediate_result = (
         _solve_tridiagonal_matrix_for_w_forward_sweep(
             vwind_impl_wgt=vwind_impl_wgt,
             theta_v_ic=theta_v_ic,
@@ -192,14 +188,17 @@ def solve_w(
             z_exner_expl=z_exner_expl,
             dtime=dtime,
             cpd=cpd,
-        ),
-        (broadcast(vpfloat("0.0"), (dims.CellDim,)), broadcast(wpfloat("0.0"), (dims.CellDim,))),
+            vertical_start=1,
+            vertical_end=last_inner_level,
+        )
     )
     next_w = concat_where(
-        dims.KHalfDim < last_inner_level,
+        (1 <= dims.KHalfDim) & (dims.KHalfDim < last_inner_level),
         _solve_tridiagonal_matrix_back_substitution_on_half_levels_mixed_precision(
             q=tridiagonal_intermediate_result,
             d_prime=next_w_intermediate_result,
+            vertical_start=1,
+            vertical_end=last_inner_level,
         ),
         next_w,
     )

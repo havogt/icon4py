@@ -125,15 +125,19 @@ def _solve_implicit_vertical_diffusion_on_cells(
     rhs: fa.CellKField[wpfloat],
     tend: fa.CellKField[wpfloat],
     dtime: wpfloat,
+    vertical_start: gtx.int32,
+    vertical_end: gtx.int32,
 ) -> fa.CellKField[wpfloat]:
     """
     tend plus the tendency of one implicit step of the vertical diffusion with matrix (a, b, c).
 
-    The system spans the call's vertical domain; a on its first row and c on its last row
-    have no effect.
+    The system spans the levels [vertical_start, vertical_end); a on its first row and c on
+    its last row have no effect.
     """
     inv_dtime = wpfloat("1.0") / dtime
-    x = _solve_tridiagonal_matrix_on_cells(a, inv_dtime + b, c, var * inv_dtime + rhs)
+    x = _solve_tridiagonal_matrix_on_cells(
+        a, inv_dtime + b, c, var * inv_dtime + rhs, vertical_start, vertical_end
+    )
     return tend + (x - var) * inv_dtime
 
 
@@ -146,15 +150,19 @@ def _solve_implicit_vertical_diffusion_on_cell_half_levels(
     rhs: fa.CellKHalfField[wpfloat],
     tend: fa.CellKHalfField[wpfloat],
     dtime: wpfloat,
+    vertical_start: gtx.int32,
+    vertical_end: gtx.int32,
 ) -> fa.CellKHalfField[wpfloat]:
     """
     tend plus the tendency of one implicit step of the vertical diffusion with matrix (a, b, c).
 
-    The system spans the call's vertical domain; a on its first row and c on its last row
-    have no effect.
+    The system spans the levels [vertical_start, vertical_end); a on its first row and c on
+    its last row have no effect.
     """
     inv_dtime = wpfloat("1.0") / dtime
-    x = _solve_tridiagonal_matrix_on_cell_half_levels(a, inv_dtime + b, c, var * inv_dtime + rhs)
+    x = _solve_tridiagonal_matrix_on_cell_half_levels(
+        a, inv_dtime + b, c, var * inv_dtime + rhs, vertical_start, vertical_end
+    )
     return tend + (x - var) * inv_dtime
 
 
@@ -167,13 +175,17 @@ def _solve_implicit_vertical_diffusion_on_edges(
     rhs: fa.EdgeKField[wpfloat],
     tend: fa.EdgeKField[wpfloat],
     dtime: wpfloat,
+    vertical_start: gtx.int32,
+    vertical_end: gtx.int32,
 ) -> fa.EdgeKField[wpfloat]:
     """
     tend plus the tendency of one implicit step of the vertical diffusion with matrix (a, b, c).
 
-    The system spans the call's vertical domain; a on its first row and c on its last row
-    have no effect.
+    The system spans the levels [vertical_start, vertical_end); a on its first row and c on
+    its last row have no effect.
     """
     inv_dtime = wpfloat("1.0") / dtime
-    x = _solve_tridiagonal_matrix_on_edges(a, inv_dtime + b, c, var * inv_dtime + rhs)
+    x = _solve_tridiagonal_matrix_on_edges(
+        a, inv_dtime + b, c, var * inv_dtime + rhs, vertical_start, vertical_end
+    )
     return tend + (x - var) * inv_dtime

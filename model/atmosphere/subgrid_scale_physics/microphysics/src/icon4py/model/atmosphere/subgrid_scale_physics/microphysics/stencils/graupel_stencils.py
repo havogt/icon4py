@@ -8,7 +8,7 @@
 import sys
 
 import gt4py.next as gtx
-from gt4py.next import broadcast, exp, log, maximum, minimum, where
+from gt4py.next import broadcast, exp, int32, log, maximum, minimum, scan, where
 
 from icon4py.model.atmosphere.subgrid_scale_physics.microphysics.microphysics_constants import (
     MicrophysicsConstants,
@@ -37,40 +37,7 @@ from icon4py.model.common.type_alias import wpfloat
 sys.setrecursionlimit(350000)
 
 
-@gtx.scan_operator(
-    axis=dims.KDim,
-    forward=True,
-    init=(
-        wpfloat("0.0"),  # temperature tendency
-        wpfloat("0.0"),  # qv tendency
-        wpfloat("0.0"),  # qc tendency
-        wpfloat("0.0"),  # qi tendency
-        wpfloat("0.0"),  # qr tendency
-        wpfloat("0.0"),  # qs tendency
-        wpfloat("0.0"),  # qg tendency
-        wpfloat("0.0"),  # qv
-        wpfloat("0.0"),  # qc
-        wpfloat("0.0"),  # qi
-        wpfloat("0.0"),  # qr
-        wpfloat("0.0"),  # qs
-        wpfloat("0.0"),  # qg
-        wpfloat("0.0"),  # rhoqrv
-        wpfloat("0.0"),  # rhoqsv
-        wpfloat("0.0"),  # rhoqgv
-        wpfloat("0.0"),  # rhoqiv
-        wpfloat("0.0"),  # newv_r
-        wpfloat("0.0"),  # newv_s
-        wpfloat("0.0"),  # newv_g
-        wpfloat("0.0"),  # newv_i
-        wpfloat("0.0"),  # cloud top distance
-        wpfloat("0.0"),  # density
-        wpfloat("0.0"),  # density factor
-        wpfloat("0.0"),  # density factor for ice
-        wpfloat("0.0"),  # snow intercept parameter
-        wpfloat("0.0"),  # saturation pressure
-        gtx.int32(0),  # k level
-    ),
-)
+@gtx.field_operator
 def _icon_graupel_scan(  # noqa: PLR0912, PLR0915
     state_kup: tuple[
         ta.wpfloat,
@@ -893,6 +860,8 @@ def _icon_graupel(
     qs: fa.CellKField[ta.wpfloat],
     qg: fa.CellKField[ta.wpfloat],
     qnc: fa.CellField[ta.wpfloat],
+    vertical_start: gtx.int32,
+    vertical_end: gtx.int32,
 ) -> tuple[
     fa.CellKField[ta.wpfloat],
     fa.CellKField[ta.wpfloat],
@@ -939,7 +908,41 @@ def _icon_graupel(
         _,
         _,
         _,
-    ) = _icon_graupel_scan(
+    ) = scan(
+        _icon_graupel_scan,
+        range=(dims.KDim, vertical_start, vertical_end),
+        forward=True,
+        init=(
+            wpfloat("0.0"),  # temperature tendency
+            wpfloat("0.0"),  # qv tendency
+            wpfloat("0.0"),  # qc tendency
+            wpfloat("0.0"),  # qi tendency
+            wpfloat("0.0"),  # qr tendency
+            wpfloat("0.0"),  # qs tendency
+            wpfloat("0.0"),  # qg tendency
+            wpfloat("0.0"),  # qv
+            wpfloat("0.0"),  # qc
+            wpfloat("0.0"),  # qi
+            wpfloat("0.0"),  # qr
+            wpfloat("0.0"),  # qs
+            wpfloat("0.0"),  # qg
+            wpfloat("0.0"),  # rhoqrv
+            wpfloat("0.0"),  # rhoqsv
+            wpfloat("0.0"),  # rhoqgv
+            wpfloat("0.0"),  # rhoqiv
+            wpfloat("0.0"),  # newv_r
+            wpfloat("0.0"),  # newv_s
+            wpfloat("0.0"),  # newv_g
+            wpfloat("0.0"),  # newv_i
+            wpfloat("0.0"),  # cloud top distance
+            wpfloat("0.0"),  # density
+            wpfloat("0.0"),  # density factor
+            wpfloat("0.0"),  # density factor for ice
+            wpfloat("0.0"),  # snow intercept parameter
+            wpfloat("0.0"),  # saturation pressure
+            int32(0),  # k level
+        ),
+    )(
         ground_level,
         liquid_autoconversion_option,
         snow_intercept_option,
@@ -1083,6 +1086,8 @@ def icon_graupel(
         qs,
         qg,
         qnc,
+        vertical_start,
+        vertical_end,
         out=(
             temperature_tendency,
             qv_tendency,
