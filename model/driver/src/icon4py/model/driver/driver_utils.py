@@ -129,6 +129,8 @@ def create_grid_manager(
     vertical_grid_config: v_grid.VerticalGridConfig,
     allocator: gtx_typing.Allocator,
     process_props: decomposition_defs.ProcessProperties,
+    *,
+    extra_halo_rings: int = 0,
 ) -> gm.GridManager:
     decomposer = (
         decomp.SingleNodeDecomposer()
@@ -145,6 +147,7 @@ def create_grid_manager(
         keep_skip_values=True,
         process_props=process_props,
         decomposer=decomposer,
+        extra_halo_rings=extra_halo_rings,
     )
 
     return grid_manager
@@ -538,13 +541,17 @@ class GlobalGranules:
     solve_nonhydro: solve_nonhydro_global.SolveNonhydroGlobal | None = None
 
 
+#: Halo rings beyond the ICON-like one (a ring: the cells sharing a vertex with the local cells)
+#: that the global dynamical core and diffusion steps read around the owned cells.
+JAX_EXTRA_HALO_RINGS = 2
+
+
 def initialize_global_granules(
     *,
     config: driver_config.ExperimentConfig,
     grid: icon_grid.IconGrid,
     vertical_grid: v_grid.VerticalGrid,
     static_field_factories: static_fields.StaticFieldFactories,
-    owner_mask: fa.CellField[bool],
 ) -> GlobalGranules:
     """
     The single-field-operator diffusion and dynamical core steps, on JAX arrays.
@@ -554,8 +561,13 @@ def initialize_global_granules(
     """
     jnp = jax_utils.import_jax().numpy
     states = jax_utils.to_jax(create_dynamics_states(static_field_factories))
+    connectivities = grid.connectivities
+    if grid.config.distributed:
+        # The factories need the skip values at the rank rim. Embedded field operators cannot
+        # restrict a neighbor table that has them, and the global steps never read that far.
+        connectivities = {k: jax_utils.without_skip_values(v) for k, v in connectivities.items()}
     jax_grid = dataclasses.replace(
-        grid, connectivities={k: jax_utils.to_jax(v) for k, v in grid.connectivities.items()}
+        grid, connectivities={k: jax_utils.to_jax(v) for k, v in connectivities.items()}
     )
     jax_vertical_grid = v_grid.VerticalGrid(
         config=vertical_grid.config,
@@ -574,7 +586,6 @@ def initialize_global_granules(
             vertical_params=jax_vertical_grid,
             edge_geometry=states.edge_geometry,
             cell_geometry=states.cell_geometry,
-            owner_mask=jax_utils.to_jax(owner_mask),
             allocator=jnp,
         )
 

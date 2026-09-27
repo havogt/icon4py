@@ -768,7 +768,6 @@ def initialize_driver(
                 grid=grid_manager.grid,
                 vertical_grid=vertical_grid,
                 static_field_factories=static_field_factories,
-                owner_mask=owner_mask,
             ),
         )
         granules = driver_utils.Granules()

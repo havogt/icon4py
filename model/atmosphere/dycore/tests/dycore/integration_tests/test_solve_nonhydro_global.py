@@ -70,7 +70,6 @@ def test_run_solve_nonhydro_global_single_step(  # noqa: PLR0917 [too-many-posit
         ),
         edge_geometry=grid_savepoint.construct_edge_geometry(),
         cell_geometry=grid_savepoint.construct_cell_geometry(),
-        owner_mask=grid_savepoint.c_owner_mask(),
         allocator=allocator,
         backend=backend,
     )

@@ -83,7 +83,8 @@ def main(
             "--jax/--no-jax",
             help=(
                 "Run the time loop with the single-field-operator global steps on JAX arrays under "
-                "jax.jit (one rank, no tracer transport, no output; needs --icon4py-backend embedded)."
+                "jax.jit (global grids, no tracer transport, no output; needs --icon4py-backend "
+                "embedded)."
             ),
         ),
     ] = False,
@@ -135,6 +136,9 @@ def main(
         vertical_grid_config=config.vertical_grid,
         allocator=allocator,
         process_props=process_props,
+        extra_halo_rings=(
+            driver_utils.JAX_EXTRA_HALO_RINGS if jax and not process_props.is_single_rank() else 0
+        ),
     )
 
     driver.run_driver(

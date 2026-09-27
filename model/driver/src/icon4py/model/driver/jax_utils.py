@@ -17,6 +17,7 @@ import gt4py.next as gtx
 from gt4py.next import common as gtx_common
 
 import icon4py.model.common.utils as common_utils
+from icon4py.model.common.grid import base as grid_base
 
 
 def import_jax() -> types.ModuleType:
@@ -25,6 +26,14 @@ def import_jax() -> types.ModuleType:
 
     jax.config.update("jax_enable_x64", True)
     return jax
+
+
+def without_skip_values(obj: Any) -> Any:
+    """A neighbor table with its skip values replaced by a valid neighbor of the same entry."""
+    if not gtx_common.is_neighbor_table(obj) or obj.skip_value is None:
+        return obj
+    table = grid_base._replace_skip_values(obj.domain.dims, obj.asnumpy().copy())
+    return gtx.as_connectivity(obj.domain, obj.codomain, table)  # type: ignore[arg-type]  # NDArray is a union
 
 
 def to_jax(obj: Any) -> Any:

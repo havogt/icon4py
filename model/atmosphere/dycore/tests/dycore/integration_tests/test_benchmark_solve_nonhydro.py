@@ -429,6 +429,7 @@ def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positio
     if mesh.limited_area:
         pytest.skip("'SolveNonhydroGlobal' does not support limited area grids.")
     vertical_params = setup.pop("vertical_params")
+    setup.pop("owner_mask")
     jax_mesh = dataclasses.replace(
         mesh, connectivities={k: _to_jax(v, jnp) for k, v in mesh.connectivities.items()}
     )

@@ -67,7 +67,6 @@ class SolveNonhydroGlobal:
         vertical_params: v_grid.VerticalGrid,
         edge_geometry: grid_states.EdgeParams,
         cell_geometry: grid_states.CellParams,
-        owner_mask: fa.CellField[bool],
         allocator: gtx_typing.Allocator | None,
         backend: gtx_typing.Backend | None = None,
     ) -> None:
@@ -91,7 +90,12 @@ class SolveNonhydroGlobal:
         self._vertical_params = vertical_params
         self._edge_geometry = edge_geometry
         self._cell_geometry = cell_geometry
-        self._owner_mask = owner_mask
+        # The step computes the halo cells it reads instead of receiving them from an exchange, so
+        # the extra diffusion of w near the CFL limit, which ICON applies on owned cells only, has to
+        # apply on every cell.
+        self._owner_mask = data_alloc.constant_field(
+            grid, True, dims.CellDim, dtype=bool, allocator=allocator
+        )
         self._allocator = allocator
         self._offset_provider = grid.connectivities
         self._determine_horizontal_domains()
