@@ -21,8 +21,10 @@ enough for one step: `driver_utils.JAX_EXTRA_HALO_RINGS`.
 from __future__ import annotations
 
 import contextlib
+import copy
 import dataclasses
 import datetime
+import functools
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -34,6 +36,7 @@ import icon4py.model.common.utils as common_utils
 from icon4py.model.atmosphere.dycore import dycore_states, solve_nonhydro_global
 from icon4py.model.common import dimension as dims
 from icon4py.model.common.decomposition import definitions as decomposition_defs
+from icon4py.model.common.grid import base as grid_base
 from icon4py.model.common.states import nonhydro_states, prognostic_state as prognostics
 from icon4py.model.common.utils import data_allocation as data_alloc
 from icon4py.model.driver import driver, driver_states, driver_utils, jax_utils
@@ -91,6 +94,67 @@ def _diagnostic_from_dict(d: dict[str, Any]) -> nonhydro_states.DiagnosticStateN
     return nonhydro_states.DiagnosticStateNonHydro(**fields)
 
 
+def _lift_constants(value: Any) -> Any:
+    """
+    The fields in `value`, as a pytree that `_bind_constants` puts back; None if there are none.
+
+    Fields, tuples and dicts of fields, and the fields of dataclasses that `dataclasses.replace`
+    can rebuild are lifted; a grid is not, its connectivities are the offset provider's.
+    """
+    if isinstance(value, gtx.Field):
+        return value
+    if isinstance(value, tuple) and value and all(isinstance(v, gtx.Field) for v in value):
+        return value
+    if isinstance(value, dict) and value and all(isinstance(v, gtx.Field) for v in value.values()):
+        return dict(value)
+    if (
+        dataclasses.is_dataclass(value)
+        and not isinstance(value, (type, grid_base.Grid))
+        and _rebuildable(value)
+    ):
+        lifted = {
+            f.name: lifted
+            for f in dataclasses.fields(value)
+            if (lifted := _lift_constants(getattr(value, f.name))) is not None
+        }
+        return lifted or None
+    return None
+
+
+def _rebuildable(value: Any) -> bool:
+    if not all(f.init for f in dataclasses.fields(value)):
+        return False
+    try:
+        dataclasses.replace(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _bind_constants(value: Any, lifted: Any) -> Any:
+    if isinstance(lifted, dict) and dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.replace(
+            value, **{k: _bind_constants(getattr(value, k), v) for k, v in lifted.items()}
+        )
+    return lifted
+
+
+def _with_constants(granule: Any, constants: dict[str, Any]) -> Any:
+    """A shallow copy of `granule` with the lifted attributes `constants` bound."""
+    bound = copy.copy(granule)
+    for name, lifted in constants.items():
+        setattr(bound, name, _bind_constants(getattr(granule, name), lifted))
+    return bound
+
+
+def _constants_of(granule: Any) -> dict[str, Any]:
+    return {
+        name: lifted
+        for name, value in vars(granule).items()
+        if (lifted := _lift_constants(value)) is not None
+    }
+
+
 class JaxIcon4pyDriver(driver.Icon4pyDriver):
     def __init__(
         self,
@@ -98,6 +162,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         global_granules: driver_utils.GlobalGranules,
         halo_exchange: driver_utils.HaloExchange = driver_utils.HaloExchange.HOST,
         exchange_read_fields_only: bool = False,
+        constants_as_arguments: bool = True,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -125,6 +190,15 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         self.global_granules = global_granules
         self.halo_exchange = driver_utils.HaloExchange(halo_exchange)
         self.exchange_read_fields_only = exchange_read_fields_only
+        # passed as arguments, the static fields are not constants of the jitted programs
+        self._constants = {
+            name: _constants_of(granule) if constants_as_arguments else None
+            for name, granule in (
+                ("solve_nonhydro", global_granules.solve_nonhydro),
+                ("diffusion", global_granules.diffusion),
+            )
+        }
+        self._traces = 0
         self._stream: Any = None
         self._in_flight: tuple[Any, list] | None = None
         self.on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None
@@ -241,22 +315,30 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             assert solve_nonhydro is not None
 
             def substep(
-                prognostic: dict, diagnostic: dict, intermediate: dict, prep_adv: dict
+                constants: dict | None,
+                prognostic: dict,
+                diagnostic: dict,
+                intermediate: dict,
+                prep_adv: dict,
             ) -> tuple[dict, dict, dict, dict]:
-                new_prognostic, new_diagnostic, new_intermediate, new_prep_adv = (
-                    solve_nonhydro.time_step(
-                        diagnostic_state_nh=_diagnostic_from_dict(diagnostic),
-                        prognostic_state=prognostics.PrognosticState(**prognostic),
-                        intermediate_state=solve_nonhydro_global.IntermediateState(**intermediate),
-                        prep_adv=dycore_states.PrepAdvection(**prep_adv),
-                        second_order_divdamp_factor=second_order_divdamp_factor,
-                        dtime=dtime,
-                        ndyn_substeps_var=ndyn_substeps_var,
-                        at_initial_timestep=at_initial_timestep,
-                        prepare_fluxes_for_advection=self.config.tracer_advection is not None,
-                        at_first_substep=at_first_substep,
-                        at_last_substep=at_last_substep,
-                    )
+                self._traces += 1
+                solver = (
+                    solve_nonhydro
+                    if constants is None
+                    else _with_constants(solve_nonhydro, constants)
+                )
+                new_prognostic, new_diagnostic, new_intermediate, new_prep_adv = solver.time_step(
+                    diagnostic_state_nh=_diagnostic_from_dict(diagnostic),
+                    prognostic_state=prognostics.PrognosticState(**prognostic),
+                    intermediate_state=solve_nonhydro_global.IntermediateState(**intermediate),
+                    prep_adv=dycore_states.PrepAdvection(**prep_adv),
+                    second_order_divdamp_factor=second_order_divdamp_factor,
+                    dtime=dtime,
+                    ndyn_substeps_var=ndyn_substeps_var,
+                    at_initial_timestep=at_initial_timestep,
+                    prepare_fluxes_for_advection=self.config.tracer_advection is not None,
+                    at_first_substep=at_first_substep,
+                    at_last_substep=at_last_substep,
                 )
                 return (
                     {k: getattr(new_prognostic, k) for k in _PROGNOSTICS},
@@ -265,7 +347,9 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                     _shallow_dict(new_prep_adv),
                 )
 
-            self._jitted[key] = self._jax.jit(substep)
+            self._jitted[key] = functools.partial(
+                self._jax.jit(substep), self._constants["solve_nonhydro"]
+            )
         return self._jitted[key]
 
     def _jitted_diffusion(self, dtime: float) -> Callable:
@@ -274,13 +358,15 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             diffusion = self.global_granules.diffusion
             assert diffusion is not None
 
-            def run(prognostic: dict) -> dict:
-                new = diffusion.run(
+            def run(constants: dict | None, prognostic: dict) -> dict:
+                self._traces += 1
+                bound = diffusion if constants is None else _with_constants(diffusion, constants)
+                new = bound.run(
                     prognostic_state=prognostics.PrognosticState(**prognostic), dtime=dtime
                 )
                 return {k: getattr(new, k) for k in _PROGNOSTICS}
 
-            self._jitted[key] = self._jax.jit(run)
+            self._jitted[key] = functools.partial(self._jax.jit(run), self._constants["diffusion"])
         return self._jitted[key]
 
     def time_integration(self, ds: driver_states.DriverStates) -> None:
@@ -381,5 +467,5 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         log.info(
             f"JAX time loop: {time_vars.n_time_steps} steps in "
             f"{(datetime.datetime.now() - wall_clock_starting_time).total_seconds():.1f} s, "
-            f"{len(self._jitted)} compiled step variants"
+            f"{len(self._jitted)} jitted functions, {self._traces} traces"
         )

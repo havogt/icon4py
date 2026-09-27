@@ -701,6 +701,7 @@ def initialize_driver(
     jax: bool = False,
     jax_halo_exchange: driver_utils.HaloExchange = driver_utils.HaloExchange.HOST,
     jax_exchange_read_fields_only: bool = False,
+    jax_constants_as_arguments: bool = True,
 ) -> Icon4pyDriver:
     """
     Set up the driver.
@@ -767,6 +768,7 @@ def initialize_driver(
             jax_driver.JaxIcon4pyDriver,
             halo_exchange=jax_halo_exchange,
             exchange_read_fields_only=jax_exchange_read_fields_only,
+            constants_as_arguments=jax_constants_as_arguments,
             global_granules=driver_utils.initialize_global_granules(
                 config=config,
                 grid=grid_manager.grid,
@@ -836,6 +838,7 @@ def run_driver(
     jax: bool = False,
     jax_halo_exchange: driver_utils.HaloExchange = driver_utils.HaloExchange.HOST,
     jax_exchange_read_fields_only: bool = False,
+    jax_constants_as_arguments: bool = True,
     on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None,
 ) -> tuple[driver_states.DriverStates, Icon4pyDriver]:
     icon4py_driver = initialize_driver(
@@ -846,6 +849,7 @@ def run_driver(
         jax=jax,
         jax_halo_exchange=jax_halo_exchange,
         jax_exchange_read_fields_only=jax_exchange_read_fields_only,
+        jax_constants_as_arguments=jax_constants_as_arguments,
     )
     allocator = model_backends.get_allocator(backend)
     prognostic_state_now = prognostics.initialize_prognostic_state(
