@@ -385,6 +385,9 @@ def _to_jax(obj: Any, jnp: Any) -> Any:
         )
     if isinstance(obj, gtx.Field):
         return gtx.as_field(obj.domain, jnp.asarray(obj.asnumpy()), allocator=jnp)
+    if data_alloc.is_ndarray(obj):
+        # 0-d arrays like `max_vertical_cfl` are allocated by the backend, e.g. as cupy arrays
+        return jnp.asarray(data_alloc.as_numpy(obj))
     if isinstance(obj, tuple):
         return tuple(_to_jax(x, jnp) for x in obj)
     if isinstance(obj, common_utils.PredictorCorrectorPair):
