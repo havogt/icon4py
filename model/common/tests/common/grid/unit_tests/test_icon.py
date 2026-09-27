@@ -205,6 +205,27 @@ def test_when_keep_skip_value_then_neighbor_table_matches_config(
         )
 
 
+def test_with_skip_values_replaced_matches_replacement_on_construction(
+    backend: gtx_typing.Backend,
+) -> None:
+    grid_description = test_defs.Grids.MCH_CH_R04B09_DSL
+    grid = utils.run_grid_manager(grid_description, keep_skip_values=True, backend=backend).grid
+    expected = utils.run_grid_manager(
+        grid_description, keep_skip_values=False, backend=backend
+    ).grid
+
+    replaced = icon.with_skip_values_replaced(grid)
+
+    assert not replaced.config.keep_skip_values
+    assert replaced.connectivities.keys() == expected.connectivities.keys()
+    for name, connectivity in replaced.connectivities.items():
+        assert connectivity.skip_value is None
+        np.testing.assert_array_equal(
+            connectivity.asnumpy(), expected.get_connectivity(name).asnumpy(), err_msg=name
+        )
+    assert np.any(grid.get_connectivity("E2C").asnumpy() == gridfile.GridFile.INVALID_INDEX)
+
+
 @pytest.mark.parametrize(
     "grid_description",
     (test_defs.Grids.MCH_CH_R04B09_DSL, test_defs.Grids.R02B04_GLOBAL),

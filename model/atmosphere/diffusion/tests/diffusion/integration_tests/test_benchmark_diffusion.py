@@ -8,13 +8,16 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING, Any
 
+import gt4py.next as gtx
 import pytest
+from gt4py.next import common as gtx_common
 
 import icon4py.model.common.dimension as dims
 import icon4py.model.common.grid.states as grid_states
-from icon4py.model.atmosphere.diffusion import diffusion, diffusion_states
+from icon4py.model.atmosphere.diffusion import diffusion, diffusion_global, diffusion_states
 from icon4py.model.common import constants, model_backends, model_options
 from icon4py.model.common.decomposition import definitions as decomp_defs
 from icon4py.model.common.grid import (
@@ -36,17 +39,13 @@ from icon4py.model.testing.fixtures.datatest import backend_like
 from icon4py.model.testing.fixtures.stencil_tests import grid_manager
 
 
-@pytest.mark.benchmark
-@pytest.mark.continuous_benchmarking
-@pytest.mark.benchmark_only
-def test_diffusion_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
+def _setup(
     geometry_field_source: grid_geometry.GridGeometry,
     grid_manager: gm.GridManager,
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
     metrics_field_source: metrics_factory.MetricsFieldsFactory,
     backend_like: model_backends.BackendLike,
-    benchmark: Any,
-) -> None:
+) -> dict[str, Any]:
     allocator = model_backends.get_allocator(backend_like)
     dtime = 10.0
 
@@ -147,7 +146,6 @@ def test_diffusion_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
         zd_vertoffset=metrics_field_source.get(metrics_attributes.ZD_VERTOFFSET),
         zd_diffcoef=metrics_field_source.get(metrics_attributes.ZD_DIFFCOEF),
     )
-    # initialization of the diagnostic and prognostic state
     diagnostic_state = diffusion_states.DiffusionDiagnosticState(
         hdef_ic=data_alloc.random_field(mesh, dims.CellDim, dims.KHalfDim, allocator=allocator),
         div_ic=data_alloc.random_field(mesh, dims.CellDim, dims.KHalfDim, allocator=allocator),
@@ -163,19 +161,168 @@ def test_diffusion_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
         rho=data_alloc.random_field(mesh, dims.CellDim, dims.KDim, allocator=allocator),
     )
 
-    diffusion_granule = diffusion.Diffusion(
-        grid=mesh,
+    return dict(
+        mesh=mesh,
         config=config,
-        params=diffusion_parameters,
+        diffusion_parameters=diffusion_parameters,
         vertical_grid=vertical_grid,
         metric_state=metric_state,
         interpolation_state=interpolation_state,
-        edge_params=edge_geometry,
-        cell_params=cell_geometry,
+        edge_geometry=edge_geometry,
+        cell_geometry=cell_geometry,
+        diagnostic_state=diagnostic_state,
+        prognostic_state=prognostic_state,
+        dtime=dtime,
+    )
+
+
+@pytest.mark.embedded_remap_error
+@pytest.mark.benchmark
+@pytest.mark.continuous_benchmarking
+@pytest.mark.benchmark_only
+def test_diffusion_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    benchmark: Any,
+) -> None:
+    setup = _setup(
+        geometry_field_source,
+        grid_manager,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+    )
+    diffusion_granule = diffusion.Diffusion(
+        grid=setup["mesh"],
+        config=setup["config"],
+        params=setup["diffusion_parameters"],
+        vertical_grid=setup["vertical_grid"],
+        metric_state=setup["metric_state"],
+        interpolation_state=setup["interpolation_state"],
+        edge_params=setup["edge_geometry"],
+        cell_params=setup["cell_geometry"],
         backend=backend_like,
         exchange=decomp_defs.SingleNodeExchange(),
         ndyn_substeps=5,
         max_nudging_coefficient=0.375,
     )
 
-    benchmark(diffusion_granule.run, diagnostic_state, prognostic_state, dtime)
+    benchmark(
+        diffusion_granule.run,
+        setup["diagnostic_state"],
+        setup["prognostic_state"],
+        setup["dtime"],
+    )
+
+
+def _to_jax(obj: Any, jnp: Any) -> Any:
+    if isinstance(obj, gtx_common.Connectivity):
+        return gtx.as_connectivity(
+            obj.domain,
+            obj.codomain,
+            jnp.asarray(obj.asnumpy()),
+            skip_value=obj.skip_value,
+            allocator=jnp,
+        )
+    if isinstance(obj, gtx.Field):
+        return gtx.as_field(obj.domain, jnp.asarray(obj.asnumpy()), allocator=jnp)
+    if isinstance(obj, tuple):
+        return tuple(_to_jax(x, jnp) for x in obj)
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.replace(
+            obj,
+            **{
+                f.name: _to_jax(getattr(obj, f.name), jnp)
+                for f in dataclasses.fields(obj)
+                if f.init
+            },
+        )
+    return obj
+
+
+@pytest.mark.benchmark
+@pytest.mark.benchmark_only
+@pytest.mark.parametrize("execution", ["jax", "backend"])
+def test_diffusion_global_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    execution: str,
+    benchmark: Any,
+) -> None:
+    """
+    Benchmark `DiffusionGlobal`, the fused single-field-operator diffusion step.
+
+    `execution="jax"` runs it on the embedded backend with JAX arrays under `jax.jit`, on the
+    default JAX device; the constant fields are computed with `--backend` and then converted.
+    `execution="backend"` runs it on `--backend`.
+    """
+    setup = _setup(
+        geometry_field_source,
+        grid_manager,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+    )
+    mesh = setup["mesh"]
+    if mesh.limited_area:
+        pytest.skip("'DiffusionGlobal' does not support limited area grids.")
+    prognostic_fields = ("rho", "w", "vn", "exner", "theta_v")
+    constants = {
+        k: setup[k]
+        for k in ("metric_state", "interpolation_state", "edge_geometry", "cell_geometry")
+    }
+    vertical_grid = setup["vertical_grid"]
+
+    if execution == "jax":
+        jax = pytest.importorskip("jax")
+        jnp = jax.numpy
+        mesh = dataclasses.replace(
+            mesh, connectivities={k: _to_jax(v, jnp) for k, v in mesh.connectivities.items()}
+        )
+        constants = {k: _to_jax(v, jnp) for k, v in constants.items()}
+        vertical_grid = v_grid.VerticalGrid(
+            config=vertical_grid.config,
+            vct_a=_to_jax(vertical_grid.vct_a, jnp),
+            vct_b=_to_jax(vertical_grid.vct_b, jnp),
+        )
+        allocator, backend = jnp, None
+    else:
+        backend = model_options.customize_backend(None, backend_like)
+        allocator = model_backends.get_allocator(backend_like)
+
+    granule = diffusion_global.DiffusionGlobal(
+        grid=mesh,
+        config=setup["config"],
+        params=setup["diffusion_parameters"],
+        vertical_grid=vertical_grid,
+        metric_state=constants["metric_state"],
+        interpolation_state=constants["interpolation_state"],
+        edge_params=constants["edge_geometry"],
+        cell_params=constants["cell_geometry"],
+        allocator=allocator,
+        ndyn_substeps=5,
+        backend=backend,
+    )
+    dtime = setup["dtime"]
+
+    if execution == "jax":
+        prognostic_input = {
+            k: _to_jax(getattr(setup["prognostic_state"], k), jnp) for k in prognostic_fields
+        }
+
+        def step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
+            new = granule.run(prognostic_state=prognostics.PrognosticState(**fields), dtime=dtime)
+            return {k: getattr(new, k) for k in prognostic_fields}
+
+        jitted = jax.jit(step)
+        jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray)
+        benchmark(lambda: jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray))
+    else:
+        granule.run(prognostic_state=setup["prognostic_state"], dtime=dtime)
+        benchmark(granule.run, setup["prognostic_state"], dtime)

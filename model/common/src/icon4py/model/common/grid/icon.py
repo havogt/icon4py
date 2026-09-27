@@ -206,6 +206,35 @@ def icon_grid(
     )
 
 
+def with_skip_values_replaced(grid: IconGrid) -> IconGrid:
+    """
+    The grid with every skip value in its connectivities replaced by a valid neighbor.
+
+    Unlike `keep_skip_values=False` on construction, the static fields can still be computed on the
+    original grid: on a distributed grid the replacement also rewrites the pentagon rows, where it
+    duplicates a neighbor and makes, for example, the RBF vector interpolation matrix singular.
+    """
+    connectivities = {
+        name: (
+            c
+            if c.skip_value is None
+            else gtx.as_connectivity(
+                c.domain,
+                c.codomain,
+                base._replace_skip_values(c.domain.dims, c.ndarray.copy()),
+                skip_value=None,
+                allocator=data_alloc.array_namespace(c.ndarray),
+            )
+        )
+        for name, c in grid.connectivities.items()
+    }
+    return dataclasses.replace(
+        grid,
+        config=dataclasses.replace(grid.config, keep_skip_values=False),
+        connectivities=connectivities,
+    )
+
+
 def get_start_and_end_index(
     constructor: Callable[
         [gtx.Dimension], tuple[dict[h_grid.Domain, gtx.int32], dict[h_grid.Domain, gtx.int32]]
