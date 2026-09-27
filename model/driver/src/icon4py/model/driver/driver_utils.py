@@ -561,13 +561,12 @@ def initialize_global_granules(
     """
     jnp = jax_utils.import_jax().numpy
     states = jax_utils.to_jax(create_dynamics_states(static_field_factories))
-    connectivities = grid.connectivities
     if grid.config.distributed:
         # The factories need the skip values at the rank rim. Embedded field operators cannot
         # restrict a neighbor table that has them, and the global steps never read that far.
-        connectivities = {k: jax_utils.without_skip_values(v) for k, v in connectivities.items()}
+        grid = icon_grid.with_skip_values_replaced(grid)
     jax_grid = dataclasses.replace(
-        grid, connectivities={k: jax_utils.to_jax(v) for k, v in connectivities.items()}
+        grid, connectivities={k: jax_utils.to_jax(v) for k, v in grid.connectivities.items()}
     )
     jax_vertical_grid = v_grid.VerticalGrid(
         config=vertical_grid.config,
