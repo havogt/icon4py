@@ -110,12 +110,15 @@ requires-python = ">=3.12"
 version = "0.4.1"
 
 [project.optional-dependencies]
-all = ["icon4py[distributed,fortran,io,testing,profiling]"]
+all = ["icon4py[distributed,fortran,io,jax,testing,profiling]"]
 cuda12 = ["icon4py-common[cuda12]"]
 cuda13 = ["icon4py-common[cuda13]"]
 distributed = ["icon4py-common[distributed]"]
 fortran = ["icon4py-bindings~=0.4.1"]
 io = ["icon4py-common[io]"]
+jax = ["icon4py-common[jax]"]
+jax-cuda12 = ["icon4py-common[jax-cuda12]"]
+jax-cuda13 = ["icon4py-common[jax-cuda13]"]
 profiling = ['viztracer>=1.1.0']
 rocm7 = ["icon4py-common[rocm7]"]
 testing = ["icon4py-testing"]
@@ -409,7 +412,14 @@ packages = []
 
 # -- uv: packages & workspace --
 [tool.uv]
-conflicts = [[{extra = "cuda12"}, {extra = "cuda13"}, {extra = "rocm7"}]]
+conflicts = [
+  [{extra = "cuda12"}, {extra = "cuda13"}, {extra = "rocm7"}],
+  [{extra = "jax-cuda12"}, {extra = "jax-cuda13"}],
+  [{extra = "jax-cuda12"}, {extra = "cuda13"}],
+  [{extra = "jax-cuda12"}, {extra = "rocm7"}],
+  [{extra = "jax-cuda13"}, {extra = "cuda12"}],
+  [{extra = "jax-cuda13"}, {extra = "rocm7"}]
+]
 
 [[tool.uv.index]]
 explicit = true

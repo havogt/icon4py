@@ -64,6 +64,9 @@ io = [
   "xarray[complete]>=2024.10.0,<2026.4",
   "zarr>=3.0"
 ]
+jax = ['gt4py[jax]', 'jax==0.11.2']
+jax-cuda12 = ['icon4py-common[cuda12,jax]', 'jax[cuda12]==0.11.2']
+jax-cuda13 = ['icon4py-common[cuda13,jax]', 'jax[cuda13]==0.11.2']
 rocm7 = ['cupy-rocm-7-0>=14.1.1', 'gt4py[rocm7]']  # include fix for cupy issue https://github.com/cupy/cupy/issues/9742
 
 [project.urls]
