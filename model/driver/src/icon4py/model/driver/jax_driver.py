@@ -158,19 +158,25 @@ def _constants_of(granule: Any) -> dict[str, Any]:
     }
 
 
-def exchange_collective(owned: Any, send: Any, recv: Any, num_local: int) -> Any:
+def exchange_collective(
+    owned: Any, send: Any, recv: Any, num_local: int, finite_padding: bool = False
+) -> Any:
     """
     The local rows of the padded layout from the `owned` ones, the halo received from the owners.
 
     Runs inside `shard_map` over the mesh axis of the ranks; `send` and `recv` are this rank's
-    `spmd_layout.PaddedLayout` tables of the dimension.
+    `spmd_layout.PaddedLayout` tables of the dimension. The halo rows the exchange leaves unfilled
+    are NaN, or with `finite_padding` copies of row 0: never read, but NaN there turns into NaN in
+    gradients.
     """
     jax = jax_utils.import_jax()
-    # The halo padding rows the exchange leaves unfilled are copies of row 0: never read, but NaN
-    # or inf there would turn into NaN in gradients.
-    local = jax.numpy.concatenate(
-        [owned, jax.numpy.broadcast_to(owned[0], (num_local - owned.shape[0], *owned.shape[1:]))]
+    shape = (num_local - owned.shape[0], *owned.shape[1:])
+    padding = (
+        jax.numpy.broadcast_to(owned[0], shape)
+        if finite_padding
+        else jax.numpy.full(shape, jax.numpy.nan, owned.dtype)
     )
+    local = jax.numpy.concatenate([owned, padding])
     received = jax.lax.all_to_all(owned[send], _MESH_AXIS, 0, 0)
     return local.at[recv].set(received, mode="drop")
 
@@ -185,6 +191,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         constants_as_arguments: bool = True,
         jit_time_step: bool = False,
         layout: spmd_layout.PaddedLayout | None = None,
+        finite_halo_padding: bool = False,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -207,6 +214,9 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 assert owner_mask[:num_owned].all(), f"the owned {dim.value}s are not first"
                 self._num_owned[dim] = num_owned
         self._layout = layout
+        # NaN in the halo rows no exchange fills makes a missing exchange show; for gradients they
+        # must be finite
+        self.finite_halo_padding = finite_halo_padding
         if layout is not None:
             if not (jit_time_step and constants_as_arguments):
                 raise ValueError(
@@ -286,8 +296,8 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         """
         An owned-size field extended to the local size with a NaN halo; others as they are.
 
-        In one SPMD program the halo repeats the last owned row instead: NaN there would turn into
-        NaN in gradients.
+        With `finite_halo_padding` the halo repeats the last owned row instead: NaN there would turn
+        into NaN in gradients.
         """
         dim = field.domain.dims[0]
         num_owned, num_local = self._num_owned[dim], self._num_local[dim]
@@ -298,7 +308,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         return gtx.as_field(
             self._local_domain(field),
             jnp.pad(field.ndarray, padding, mode="edge")
-            if self._layout is not None
+            if self.finite_halo_padding
             else jnp.pad(field.ndarray, padding, constant_values=jnp.nan),
             allocator=jnp,
         )
@@ -406,6 +416,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             tables["send"],
             tables["recv"],
             self._num_local[dim],
+            self.finite_halo_padding,
         )
 
     def _exchange_in_callback(
