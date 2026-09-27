@@ -131,5 +131,7 @@ def compute_zdiff_gradp(  # noqa: PLR0912 [too-many-branches]
 
     exchange.exchange(dims.EdgeDim, zdiff_gradp[:, 0, :], stream=decomposition.BLOCK)
     exchange.exchange(dims.EdgeDim, zdiff_gradp[:, 1, :], stream=decomposition.BLOCK)
+    exchange.exchange(dims.EdgeDim, vertoffset_gradp[:, 0, :], stream=decomposition.BLOCK)
+    exchange.exchange(dims.EdgeDim, vertoffset_gradp[:, 1, :], stream=decomposition.BLOCK)
 
     return zdiff_gradp, vertoffset_gradp
