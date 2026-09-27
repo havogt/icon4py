@@ -415,6 +415,23 @@ _SUBSTEP_ARGS: dict[str, Any] = dict(
 )
 
 
+def _move_factory_fields_to_host(*sources: Any) -> None:
+    """Replace the device fields cached by the factories with host copies and free the device pool."""
+    for source in sources:
+        for provider in {id(p): p for p in source._providers.values()}.values():
+            fields = getattr(provider, "_fields", None)
+            if not isinstance(fields, dict):
+                continue
+            for name, field in fields.items():
+                if isinstance(field, gtx.Field) and not isinstance(field.ndarray, np.ndarray):
+                    fields[name] = gtx.as_field(field.domain, field.asnumpy())
+    try:
+        import cupy  # noqa: PLC0415 [import-outside-top-level]
+    except ImportError:
+        return
+    cupy.get_default_memory_pool().free_all_blocks()
+
+
 def _solve_nonhydro_global_jax_step(
     geometry_field_source: grid_geometry.GridGeometry,
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
@@ -424,6 +441,7 @@ def _solve_nonhydro_global_jax_step(
     *,
     at_first_substep: bool,
     at_last_substep: bool,
+    free_backend_constants: bool = False,
 ) -> tuple[Any, dict[str, gtx.Field]]:
     """
     The jitted `SolveNonhydroGlobal` substep on JAX arrays on the default JAX device, and its
@@ -453,6 +471,13 @@ def _solve_nonhydro_global_jax_step(
         allocator=jnp,
     )
 
+    if free_backend_constants:
+        # The factories keep the backend's copy of every constant alive for the session; on the
+        # largest grids that copy and the JAX one do not fit on one GPU together.
+        del setup
+        _move_factory_fields_to_host(
+            geometry_field_source, interpolation_field_source, metrics_field_source
+        )
     prep_adv, diagnostic_state_nh, prognostic_states = states
     prep_adv, diagnostic_state_nh = _to_jax(prep_adv, jnp), _to_jax(diagnostic_state_nh, jnp)
     intermediate_state = solver.initial_intermediate_state()
@@ -506,6 +531,7 @@ def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positio
         _states(grid_manager.grid, model_backends.get_allocator(backend_like)),
         at_first_substep=at_first_substep,
         at_last_substep=at_last_substep,
+        free_backend_constants=True,
     )
     start = time.perf_counter()
     step(prognostic_input)
