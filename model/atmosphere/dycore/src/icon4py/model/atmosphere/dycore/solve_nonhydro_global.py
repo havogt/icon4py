@@ -11,7 +11,9 @@ The nonhydrostatic solver for grids without lateral boundaries.
 The same substep as `solve_nonhydro.SolveNonhydro.time_step`, as one field operator, and
 stateless: the step returns new states and never writes into its inputs.
 
-The step does no halo exchange. Incremental analysis update is not supported.
+The step does no halo exchange: on a distributed grid its inputs must already be valid on every halo
+point it reads, and it computes its outputs on the owned points only. Incremental analysis update is
+not supported.
 """
 
 from __future__ import annotations
@@ -71,8 +73,6 @@ class SolveNonhydroGlobal:
     ) -> None:
         if grid.limited_area:
             raise ValueError("'SolveNonhydroGlobal' does not support limited area grids.")
-        if grid.config.distributed:
-            raise ValueError("'SolveNonhydroGlobal' does not support distributed grids.")
         if config.iau_init:
             raise ValueError("'SolveNonhydroGlobal' does not support incremental analysis update.")
         assert cell_geometry.mean_cell_area is not None
@@ -118,11 +118,9 @@ class SolveNonhydroGlobal:
         )
 
     def _determine_horizontal_domains(self) -> None:
-        # Every horizontal domain of the program-based solver covers the whole grid here.
         def interior(dim: gtx.Dimension) -> tuple[gtx.int32, gtx.int32]:
             domain = h_grid.domain(dim)(h_grid.Zone.INTERIOR)
             start, end = self._grid.start_index(domain), self._grid.end_index(domain)
-            assert (start, end) == (0, self._grid.size[dim])
             return gtx.int32(start), gtx.int32(end)
 
         self._cells = interior(dims.CellDim)
