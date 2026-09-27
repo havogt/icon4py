@@ -97,6 +97,16 @@ def main(
             ),
         ),
     ] = driver_utils.HaloExchange.HOST,
+    jax_exchange_read_fields_only: Annotated[
+        bool,
+        typer.Option(
+            "--jax-exchange-read-fields-only/--no-jax-exchange-read-fields-only",
+            help=(
+                "With --jax on several ranks, exchange only the fields the next step reads outside "
+                "the owned points."
+            ),
+        ),
+    ] = False,
     n_time_steps: Annotated[
         int | None,
         typer.Option(
@@ -157,6 +167,7 @@ def main(
         backend=backend,
         jax=jax,
         jax_halo_exchange=jax_halo_exchange,
+        jax_exchange_read_fields_only=jax_exchange_read_fields_only,
     )
 
 

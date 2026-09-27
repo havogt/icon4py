@@ -43,6 +43,33 @@ log = logging.getLogger(__name__)
 
 _PROGNOSTICS = ("rho", "w", "vn", "exner", "theta_v")
 _TENDENCY_PAIRS = ("normal_wind_advective_tendency", "vertical_wind_advective_tendency")
+_SUBSTEP_GROUPS = ("prognostic", "diagnostic", "intermediate", "prep_adv")
+
+#: The state fields the global dynamical core and diffusion steps read outside the owned points,
+#: from `required_indices` of `_solve_nonhydro_global_step` and `_diffusion_global_step`. A
+#: predictor-corrector pair counts as one field: the driver swaps its elements between the
+#: exchange and the step.
+_DYCORE_HALO_READS = frozenset(
+    {
+        "prognostic.vn",
+        "prognostic.w",
+        "prognostic.rho",
+        "prognostic.exner",
+        "prognostic.theta_v",
+        "diagnostic.tangential_wind",
+        "diagnostic.contravariant_correction_at_cells_on_half_levels",
+        "diagnostic.theta_v_at_cells_on_half_levels",
+        "diagnostic.perturbed_exner_at_cells_on_model_levels",
+        "diagnostic.rho_at_cells_on_half_levels",
+        "diagnostic.exner_tendency_due_to_slow_physics",
+        "diagnostic.normal_wind_tendency_due_to_slow_physics_process",
+        "intermediate.tangential_wind_on_half_levels",
+        "intermediate.contravariant_correction_at_edges_on_model_levels",
+        "diagnostic.normal_wind_advective_tendency",
+        "diagnostic.vertical_wind_advective_tendency",
+    }
+)
+_DIFFUSION_HALO_READS = frozenset({"prognostic.vn", "prognostic.w", "prognostic.theta_v"})
 
 
 def _shallow_dict(obj: Any) -> dict[str, Any]:
@@ -70,6 +97,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         *,
         global_granules: driver_utils.GlobalGranules,
         halo_exchange: driver_utils.HaloExchange = driver_utils.HaloExchange.HOST,
+        exchange_read_fields_only: bool = False,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -96,24 +124,31 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             raise NotImplementedError("The JAX driver does not transport tracers.")
         self.global_granules = global_granules
         self.halo_exchange = driver_utils.HaloExchange(halo_exchange)
+        self.exchange_read_fields_only = exchange_read_fields_only
         self._stream: Any = None
         self._in_flight: tuple[Any, list] | None = None
         self.on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None
         self._jax = jax_utils.import_jax()
         self._jitted: dict[tuple, Callable] = {}
 
-    def _with_halo(self, tree: Any) -> Any:
+    def _with_halo(self, tree: dict[str, Any], reads: frozenset[str] | None = None) -> dict:
         """
         New local fields from the owned points of the fields in `tree`, with the halo exchanged.
 
-        Works on owned-size and local-size fields alike; anything else is passed through.
+        `tree` maps state groups to their fields. With `reads`, only the fields named in it (as
+        `group.field`) are exchanged, the other ones get a NaN halo; local-size fields not in
+        `reads` are passed through. Anything else is passed through.
         """
         if not self._distributed:
             return tree
         jax = self._jax
-        leaves, treedef = jax.tree_util.tree_flatten(
+        paths_and_leaves, treedef = jax.tree_util.tree_flatten_with_path(
             tree, is_leaf=lambda x: isinstance(x, gtx.Field)
         )
+        leaves = [leaf for _, leaf in paths_and_leaves]
+        read = [
+            reads is None or f"{path[0].key}.{path[1].key}" in reads for path, _ in paths_and_leaves
+        ]
         mode = self.halo_exchange
         on_device = mode != driver_utils.HaloExchange.HOST
         xp = data_alloc.array_ns(on_device)
@@ -122,10 +157,27 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             buffers: dict[int, tuple[gtx_common.Domain, Any]] = {}
             # views of the JAX arrays the device copies read from; they must outlive the copies
             views = []
+            padded = {}
             for i, leaf in enumerate(leaves):
                 if isinstance(leaf, gtx.Field) and leaf.domain.dims[0] in self._num_owned:
                     dim = leaf.domain.dims[0]
                     num_owned, num_local = self._num_owned[dim], self.grid.size[dim]
+                    domain = leaf.domain.replace(
+                        dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, num_local)))
+                    )
+                    if not read[i]:
+                        if leaf.ndarray.shape[0] == num_owned:
+                            padded[i] = gtx.as_field(
+                                domain,
+                                jax.numpy.pad(
+                                    leaf.ndarray,
+                                    [(0, num_local - num_owned)]
+                                    + [(0, 0)] * (leaf.ndarray.ndim - 1),
+                                    constant_values=jax.numpy.nan,
+                                ),
+                                allocator=jax.numpy,
+                            )
+                        continue
                     # NaN marks every halo point the exchange leaves unfilled
                     buffer = xp.full(
                         (num_local, *leaf.ndarray.shape[1:]), xp.nan, dtype=leaf.dtype.scalar_type
@@ -135,9 +187,6 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                         buffer[:num_owned] = views[-1]
                     else:
                         buffer[:num_owned] = xp.asarray(leaf.ndarray[:num_owned])
-                    domain = leaf.domain.replace(
-                        dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, num_local)))
-                    )
                     buffers[i] = (domain, buffer)
             if stream is not None:
                 self._hold_until_done(stream.record(), views)
@@ -159,10 +208,13 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             new_leaves = [
                 gtx.as_field(buffers[i][0], to_jax(buffers[i][1]), allocator=jax.numpy)
                 if i in buffers
-                else leaf
+                else padded.get(i, leaf)
                 for i, leaf in enumerate(leaves)
             ]
         return jax.tree_util.tree_unflatten(treedef, new_leaves)
+
+    def _reads(self, fields: frozenset[str]) -> frozenset[str] | None:
+        return fields if self.exchange_read_fields_only else None
 
     def _device_stream(self) -> Any:
         if self._stream is None:
@@ -239,12 +291,19 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         assert solve_nonhydro is not None
         time_vars = self.model_time_variables
 
-        prognostic, diagnostic, prep_adv = self._with_halo(
-            (
-                {k: jax_utils.to_jax(getattr(ds.prognostics.current, k)) for k in _PROGNOSTICS},
-                _diagnostic_to_dict(jax_utils.to_jax(ds.solve_nonhydro_diagnostic)),
-                _shallow_dict(jax_utils.to_jax(ds.prep_advection_prognostic)),
-            )
+        state = self._with_halo(
+            {
+                "prognostic": {
+                    k: jax_utils.to_jax(getattr(ds.prognostics.current, k)) for k in _PROGNOSTICS
+                },
+                "diagnostic": _diagnostic_to_dict(jax_utils.to_jax(ds.solve_nonhydro_diagnostic)),
+                "prep_adv": _shallow_dict(jax_utils.to_jax(ds.prep_advection_prognostic)),
+            }
+        )
+        prognostic, diagnostic, prep_adv = (
+            state["prognostic"],
+            state["diagnostic"],
+            state["prep_adv"],
         )
         diagnostic_state = _diagnostic_from_dict(diagnostic)
         intermediate = solve_nonhydro.initial_intermediate_state()._asdict()
@@ -276,10 +335,26 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                         second_order_divdamp_factor,
                     )
                 )
-                prognostic, diagnostic, intermediate, prep_adv = self._with_halo(
-                    substep(
-                        prognostic, _diagnostic_to_dict(diagnostic_state), intermediate, prep_adv
-                    )
+                state = self._with_halo(
+                    dict(
+                        zip(
+                            _SUBSTEP_GROUPS,
+                            substep(
+                                prognostic,
+                                _diagnostic_to_dict(diagnostic_state),
+                                intermediate,
+                                prep_adv,
+                            ),
+                        )
+                    ),
+                    reads=self._reads(
+                        _DYCORE_HALO_READS | _DIFFUSION_HALO_READS
+                        if self._is_last_substep(dyn_substep)
+                        else _DYCORE_HALO_READS
+                    ),
+                )
+                prognostic, diagnostic, intermediate, prep_adv = (
+                    state[group] for group in _SUBSTEP_GROUPS
                 )
                 diagnostic_state = _diagnostic_from_dict(diagnostic)
 
@@ -288,8 +363,13 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 and self.global_granules.diffusion.config.apply_to_horizontal_wind
             ):
                 prognostic = self._with_halo(
-                    self._jitted_diffusion(float(time_vars.dtime_in_seconds))(prognostic)
-                )
+                    {
+                        "prognostic": self._jitted_diffusion(float(time_vars.dtime_in_seconds))(
+                            prognostic
+                        )
+                    },
+                    reads=self._reads(_DYCORE_HALO_READS),
+                )["prognostic"]
             self._jax.block_until_ready(prognostic["vn"].ndarray)
 
             time_vars.is_first_step_in_simulation = False
