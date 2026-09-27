@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 import gt4py.next as gtx
 import gt4py.next.typing as gtx_typing
+from gt4py.next import common as gtx_common
 
 from icon4py.model.atmosphere.diffusion import diffusion, diffusion_global, diffusion_states
 from icon4py.model.atmosphere.dycore import (
@@ -38,17 +39,20 @@ from icon4py.model.common import (
     model_backends,
     time,
     type_alias as ta,
+    utils as common_utils,
 )
 from icon4py.model.common.decomposition import (
     decomposer as decomp,
     definitions as decomposition_defs,
 )
 from icon4py.model.common.grid import (
+    base as grid_base,
     geometry as grid_geometry,
     geometry_attributes as geometry_meta,
     geometry_config as geometry_configuration,
     grid_manager as gm,
     gridfile,
+    horizontal as h_grid,
     icon as icon_grid,
     states as grid_states,
     vertical as v_grid,
@@ -57,7 +61,13 @@ from icon4py.model.common.interpolation import interpolation_attributes, interpo
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import factory as states_factory, static_fields, tracer_states
 from icon4py.model.common.utils import data_allocation as data_alloc
-from icon4py.model.driver import config as driver_config, driver_constants, driver_states, jax_utils
+from icon4py.model.driver import (
+    config as driver_config,
+    driver_constants,
+    driver_states,
+    jax_utils,
+    spmd_layout,
+)
 
 
 log = logging.getLogger(__name__)
@@ -558,25 +568,114 @@ class HaloExchange(enum.StrEnum):
 JAX_EXTRA_HALO_RINGS = 2
 
 
+def _pad_field(field: gtx.Field, layout: spmd_layout.PaddedLayout) -> gtx.Field:
+    dim = field.domain.dims[0]
+    if dim not in layout.padded_local:
+        return field
+    domain = field.domain.replace(
+        dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, layout.padded_local[dim])))
+    )
+    return gtx.as_field(domain, spmd_layout.pad_rows(layout, dim, field.asnumpy()))
+
+
+def pad_fields(obj: Any, layout: spmd_layout.PaddedLayout) -> Any:
+    """
+    The fields in `obj` with their horizontal dimension re-laid out as `layout` pads it.
+
+    Tuples, dicts, predictor-corrector pairs and dataclasses are padded member by member;
+    anything else is returned as is.
+    """
+    if isinstance(obj, gtx.Field) and not isinstance(obj, gtx_common.Connectivity):
+        return _pad_field(obj, layout)
+    if isinstance(obj, common_utils.PredictorCorrectorPair):
+        return common_utils.PredictorCorrectorPair(*(pad_fields(x, layout) for x in obj))
+    if isinstance(obj, tuple):
+        return tuple(pad_fields(x, layout) for x in obj)
+    if isinstance(obj, dict):
+        return {k: pad_fields(v, layout) for k, v in obj.items()}
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.replace(
+            obj,
+            **{
+                f.name: pad_fields(getattr(obj, f.name), layout)
+                for f in dataclasses.fields(obj)
+                if f.init
+            },
+        )
+    return obj
+
+
+def padded_grid(grid: icon_grid.IconGrid, layout: spmd_layout.PaddedLayout) -> icon_grid.IconGrid:
+    """
+    `grid` in the layout of `layout`: every rank has the same sizes and owned ranges.
+
+    Only the zones the global steps use are defined: the interior, which is the owned points
+    including their padding, and the end.
+    """
+    connectivities: dict[str, Any] = {}
+    for name, connectivity in grid.connectivities.items():
+        from_dim, local_dim = connectivity.domain.dims
+        to_dim = connectivity.codomain
+        connectivities[name] = gtx.as_connectivity(
+            [from_dim, local_dim],
+            to_dim,
+            spmd_layout.pad_connectivity(layout, from_dim, to_dim, connectivity.asnumpy()),  # type: ignore[arg-type]  # NDArray is a union
+            skip_value=connectivity.skip_value,
+        )
+
+    def start_index(domain: h_grid.Domain) -> gtx.int32:
+        if domain.zone not in (h_grid.Zone.INTERIOR, h_grid.Zone.END):
+            raise NotImplementedError(f"{domain} is not defined on a padded grid.")
+        return gtx.int32(0)
+
+    def end_index(domain: h_grid.Domain) -> gtx.int32:
+        if domain.zone == h_grid.Zone.INTERIOR:
+            return gtx.int32(layout.padded_owned[domain.dim])
+        if domain.zone == h_grid.Zone.END:
+            return gtx.int32(layout.padded_local[domain.dim])
+        raise NotImplementedError(f"{domain} is not defined on a padded grid.")
+
+    size = layout.padded_local
+    return dataclasses.replace(
+        grid,
+        config=dataclasses.replace(
+            grid.config,
+            horizontal_config=grid_base.HorizontalGridSize(
+                num_vertices=size[dims.VertexDim],
+                num_edges=size[dims.EdgeDim],
+                num_cells=size[dims.CellDim],
+            ),
+        ),
+        connectivities=connectivities,
+        start_index=start_index,
+        end_index=end_index,
+    )
+
+
 def initialize_global_granules(
     *,
     config: driver_config.ExperimentConfig,
     grid: icon_grid.IconGrid,
     vertical_grid: v_grid.VerticalGrid,
     static_field_factories: static_fields.StaticFieldFactories,
+    layout: spmd_layout.PaddedLayout | None = None,
 ) -> GlobalGranules:
     """
     The single-field-operator diffusion and dynamical core steps, on JAX arrays.
 
     The static states are built from the factories as for `initialize_granules` and then
-    converted to JAX once.
+    converted to JAX once; with `layout`, on the grid and fields padded to it.
     """
     jnp = jax_utils.import_jax().numpy
-    states = jax_utils.to_jax(create_dynamics_states(static_field_factories))
+    states = create_dynamics_states(static_field_factories)
     if grid.config.distributed:
         # The factories need the skip values at the rank rim. Embedded field operators cannot
         # restrict a neighbor table that has them, and the global steps never read that far.
         grid = icon_grid.with_skip_values_replaced(grid)
+    if layout is not None:
+        states = pad_fields(states, layout)
+        grid = padded_grid(grid, layout)
+    states = jax_utils.to_jax(states)
     jax_grid = dataclasses.replace(
         grid, connectivities={k: jax_utils.to_jax(v) for k, v in grid.connectivities.items()}
     )

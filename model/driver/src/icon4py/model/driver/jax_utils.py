@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import dataclasses
+import socket
 import types
 from typing import Any
 
@@ -25,6 +26,28 @@ def import_jax() -> types.ModuleType:
 
     jax.config.update("jax_enable_x64", True)
     return jax
+
+
+def initialize_distributed(comm: Any) -> None:
+    """
+    Join every rank of the MPI communicator `comm` into one multi-process JAX runtime.
+
+    Must run before JAX creates any array. The collectives between the CPU devices of the
+    processes go through gloo.
+    """
+    jax = import_jax()
+    jax.config.update("jax_cpu_collectives_implementation", "gloo")
+    address = None
+    if comm.rank == 0:
+        with socket.socket() as sock:
+            sock.bind(("", 0))
+            address = f"{socket.gethostname()}:{sock.getsockname()[1]}"
+    jax.distributed.initialize(
+        coordinator_address=comm.bcast(address, root=0),
+        num_processes=comm.size,
+        process_id=comm.rank,
+        local_device_ids=[0],
+    )
 
 
 def to_jax(obj: Any) -> Any:
