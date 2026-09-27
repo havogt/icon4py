@@ -158,6 +158,29 @@ def _constants_of(granule: Any) -> dict[str, Any]:
     }
 
 
+def exchange_collective(
+    owned: Any, send: Any, recv: Any, num_local: int, finite_padding: bool = False
+) -> Any:
+    """
+    The local rows of the padded layout from the `owned` ones, the halo received from the owners.
+
+    Runs inside `shard_map` over the mesh axis of the ranks; `send` and `recv` are this rank's
+    `spmd_layout.PaddedLayout` tables of the dimension. The halo rows the exchange leaves unfilled
+    are NaN, or with `finite_padding` copies of row 0: never read, but NaN there turns into NaN in
+    gradients.
+    """
+    jax = jax_utils.import_jax()
+    shape = (num_local - owned.shape[0], *owned.shape[1:])
+    padding = (
+        jax.numpy.broadcast_to(owned[0], shape)
+        if finite_padding
+        else jax.numpy.full(shape, jax.numpy.nan, owned.dtype)
+    )
+    local = jax.numpy.concatenate([owned, padding])
+    received = jax.lax.all_to_all(owned[send], _MESH_AXIS, 0, 0)
+    return local.at[recv].set(received, mode="drop")
+
+
 class JaxIcon4pyDriver(driver.Icon4pyDriver):
     def __init__(
         self,
@@ -168,6 +191,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         constants_as_arguments: bool = True,
         jit_time_step: bool = False,
         layout: spmd_layout.PaddedLayout | None = None,
+        finite_halo_padding: bool = False,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -190,6 +214,9 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 assert owner_mask[:num_owned].all(), f"the owned {dim.value}s are not first"
                 self._num_owned[dim] = num_owned
         self._layout = layout
+        # NaN in the halo rows no exchange fills makes a missing exchange show; for gradients they
+        # must be finite
+        self.finite_halo_padding = finite_halo_padding
         if layout is not None:
             if not (jit_time_step and constants_as_arguments):
                 raise ValueError(
@@ -266,19 +293,23 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         )
 
     def _nan_padded(self, field: gtx.Field) -> gtx.Field:
-        """An owned-size field extended to the local size with a NaN halo; others as they are."""
+        """
+        An owned-size field extended to the local size with a NaN halo; others as they are.
+
+        With `finite_halo_padding` the halo repeats the last owned row instead: NaN there would turn
+        into NaN in gradients.
+        """
         dim = field.domain.dims[0]
         num_owned, num_local = self._num_owned[dim], self._num_local[dim]
         if field.ndarray.shape[0] != num_owned:
             return field
         jnp = self._jax.numpy
+        padding = [(0, num_local - num_owned)] + [(0, 0)] * (field.ndarray.ndim - 1)
         return gtx.as_field(
             self._local_domain(field),
-            jnp.pad(
-                field.ndarray,
-                [(0, num_local - num_owned)] + [(0, 0)] * (field.ndarray.ndim - 1),
-                constant_values=jnp.nan,
-            ),
+            jnp.pad(field.ndarray, padding, mode="edge")
+            if self.finite_halo_padding
+            else jnp.pad(field.ndarray, padding, constant_values=jnp.nan),
             allocator=jnp,
         )
 
@@ -377,25 +408,16 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         return new_leaves
 
     def _exchange_collective(self, field: gtx.Field) -> Any:
-        """The field on the local points of the padded layout, its halo received from the owners."""
-        jax = self._jax
         dim = field.domain.dims[0]
         assert self._traced_tables is not None
         tables = self._traced_tables[dim.value]
-        owned = field.ndarray[: self._num_owned[dim]]
-        local = jax.numpy.concatenate(
-            [
-                owned,
-                # NaN marks every halo point the exchange leaves unfilled
-                jax.numpy.full(
-                    (self._num_local[dim] - owned.shape[0], *owned.shape[1:]),
-                    jax.numpy.nan,
-                    owned.dtype,
-                ),
-            ]
+        return exchange_collective(
+            field.ndarray[: self._num_owned[dim]],
+            tables["send"],
+            tables["recv"],
+            self._num_local[dim],
+            self.finite_halo_padding,
         )
-        received = jax.lax.all_to_all(owned[tables["send"]], _MESH_AXIS, 0, 0)
-        return local.at[tables["recv"]].set(received, mode="drop")
 
     def _exchange_in_callback(
         self,
@@ -676,14 +698,12 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             return tree
         return self._jax.tree_util.tree_map(lambda x: x.addressable_shards[0].data, tree)
 
-    def time_integration(self, ds: driver_states.DriverStates) -> None:
-        assert self.config.nonhydrostatic is not None
+    def _prepare(self, ds: driver_states.DriverStates) -> tuple[dict, dict, dict, dict, dict]:
+        """The state of `ds` and the constants as the jitted steps take them."""
         assert ds.solve_nonhydro_diagnostic is not None
         assert ds.prep_advection_prognostic is not None
         solve_nonhydro = self.global_granules.solve_nonhydro
         assert solve_nonhydro is not None
-        time_vars = self.model_time_variables
-
         state: dict[str, Any] = {
             "prognostic": {k: getattr(ds.prognostics.current, k) for k in _PROGNOSTICS},
             "diagnostic": ds.solve_nonhydro_diagnostic,
@@ -716,11 +736,13 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             )
         else:
             state = self._with_halo(state)
-        prognostic, diagnostic, prep_adv = (
-            state["prognostic"],
-            state["diagnostic"],
-            state["prep_adv"],
-        )
+        return state["prognostic"], state["diagnostic"], intermediate, state["prep_adv"], constants
+
+    def time_integration(self, ds: driver_states.DriverStates) -> None:
+        assert self.config.nonhydrostatic is not None
+        time_vars = self.model_time_variables
+
+        prognostic, diagnostic, intermediate, prep_adv, constants = self._prepare(ds)
         diagnostic_state = _diagnostic_from_dict(diagnostic)
 
         wall_clock_starting_time = datetime.datetime.now()
