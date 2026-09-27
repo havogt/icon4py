@@ -14,12 +14,13 @@ transport, no physics, no output.
 
 On a distributed grid the steps return their outputs on the owned points only. Between two jitted
 steps the driver builds new local fields from them, with the halo filled by a halo exchange on the
-host, or with `device_halo_exchange` on the device from CuPy buffers. The halo must be deep enough
-for one step: `driver_utils.JAX_EXTRA_HALO_RINGS`.
+host or, from CuPy buffers, on the device (`driver_utils.HaloExchange`). The halo must be deep
+enough for one step: `driver_utils.JAX_EXTRA_HALO_RINGS`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime
 import logging
@@ -42,6 +43,33 @@ log = logging.getLogger(__name__)
 
 _PROGNOSTICS = ("rho", "w", "vn", "exner", "theta_v")
 _TENDENCY_PAIRS = ("normal_wind_advective_tendency", "vertical_wind_advective_tendency")
+_SUBSTEP_GROUPS = ("prognostic", "diagnostic", "intermediate", "prep_adv")
+
+#: The state fields the global dynamical core and diffusion steps read outside the owned points,
+#: from `required_indices` of `_solve_nonhydro_global_step` and `_diffusion_global_step`. A
+#: predictor-corrector pair counts as one field: the driver swaps its elements between the
+#: exchange and the step.
+_DYCORE_HALO_READS = frozenset(
+    {
+        "prognostic.vn",
+        "prognostic.w",
+        "prognostic.rho",
+        "prognostic.exner",
+        "prognostic.theta_v",
+        "diagnostic.tangential_wind",
+        "diagnostic.contravariant_correction_at_cells_on_half_levels",
+        "diagnostic.theta_v_at_cells_on_half_levels",
+        "diagnostic.perturbed_exner_at_cells_on_model_levels",
+        "diagnostic.rho_at_cells_on_half_levels",
+        "diagnostic.exner_tendency_due_to_slow_physics",
+        "diagnostic.normal_wind_tendency_due_to_slow_physics_process",
+        "intermediate.tangential_wind_on_half_levels",
+        "intermediate.contravariant_correction_at_edges_on_model_levels",
+        "diagnostic.normal_wind_advective_tendency",
+        "diagnostic.vertical_wind_advective_tendency",
+    }
+)
+_DIFFUSION_HALO_READS = frozenset({"prognostic.vn", "prognostic.w", "prognostic.theta_v"})
 
 
 def _shallow_dict(obj: Any) -> dict[str, Any]:
@@ -68,7 +96,8 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         self,
         *,
         global_granules: driver_utils.GlobalGranules,
-        device_halo_exchange: bool = False,
+        halo_exchange: driver_utils.HaloExchange = driver_utils.HaloExchange.HOST,
+        exchange_read_fields_only: bool = False,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -94,66 +123,109 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         if self.config.tracer_config is not None and self.config.tracer_config.nactive > 0:
             raise NotImplementedError("The JAX driver does not transport tracers.")
         self.global_granules = global_granules
-        self.device_halo_exchange = device_halo_exchange
+        self.halo_exchange = driver_utils.HaloExchange(halo_exchange)
+        self.exchange_read_fields_only = exchange_read_fields_only
+        self._stream: Any = None
+        self._in_flight: tuple[Any, list] | None = None
         self.on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None
         self._jax = jax_utils.import_jax()
         self._jitted: dict[tuple, Callable] = {}
 
-    def _with_halo(self, tree: Any) -> Any:
+    def _with_halo(self, tree: dict[str, Any], reads: frozenset[str] | None = None) -> dict:
         """
         New local fields from the owned points of the fields in `tree`, with the halo exchanged.
 
-        Works on owned-size and local-size fields alike; anything else is passed through.
+        `tree` maps state groups to their fields. With `reads`, only the fields named in it (as
+        `group.field`) are exchanged, the other ones get a NaN halo; local-size fields not in
+        `reads` are passed through. Anything else is passed through.
         """
         if not self._distributed:
             return tree
         jax = self._jax
-        leaves, treedef = jax.tree_util.tree_flatten(
+        paths_and_leaves, treedef = jax.tree_util.tree_flatten_with_path(
             tree, is_leaf=lambda x: isinstance(x, gtx.Field)
         )
-        xp = data_alloc.array_ns(self.device_halo_exchange)
-        buffers: dict[int, tuple[gtx_common.Domain, Any]] = {}
-        # the JAX arrays the device copies read from must outlive the copies
-        sources = []
-        for i, leaf in enumerate(leaves):
-            if isinstance(leaf, gtx.Field) and leaf.domain.dims[0] in self._num_owned:
-                dim = leaf.domain.dims[0]
-                num_owned, num_local = self._num_owned[dim], self.grid.size[dim]
-                # NaN marks every halo point the exchange leaves unfilled
-                buffer = xp.full(
-                    (num_local, *leaf.ndarray.shape[1:]), xp.nan, dtype=leaf.dtype.scalar_type
-                )
-                if self.device_halo_exchange:
-                    sources.append(leaf.ndarray[:num_owned])
-                    buffer[:num_owned] = xp.from_dlpack(sources[-1])
-                else:
-                    buffer[:num_owned] = xp.asarray(leaf.ndarray[:num_owned])
-                domain = leaf.domain.replace(
-                    dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, num_local)))
-                )
-                buffers[i] = (domain, buffer)
-        if self.device_halo_exchange:
-            # GHEX starts after the default stream only; the copies are on CuPy's current stream
-            xp.cuda.get_current_stream().synchronize()
-        for dim in self._num_owned:
-            dim_buffers = [b for d, b in buffers.values() if d.dims[0] == dim]
-            if dim_buffers:
-                if self.device_halo_exchange:
-                    self.exchange.exchange(dim, *dim_buffers, stream=decomposition_defs.BLOCK)
-                else:
-                    self.exchange.exchange(dim, *dim_buffers)
-        if self.device_halo_exchange:
-            # GHEX unpacks on its own streams; JAX must not see a buffer before they are done
-            xp.cuda.runtime.deviceSynchronize()
-            del sources
-        to_jax = jax.numpy.from_dlpack if self.device_halo_exchange else jax.numpy.asarray
-        new_leaves = [
-            gtx.as_field(buffers[i][0], to_jax(buffers[i][1]), allocator=jax.numpy)
-            if i in buffers
-            else leaf
-            for i, leaf in enumerate(leaves)
+        leaves = [leaf for _, leaf in paths_and_leaves]
+        read = [
+            reads is None or f"{path[0].key}.{path[1].key}" in reads for path, _ in paths_and_leaves
         ]
+        mode = self.halo_exchange
+        on_device = mode != driver_utils.HaloExchange.HOST
+        xp = data_alloc.array_ns(on_device)
+        stream = self._device_stream() if mode == driver_utils.HaloExchange.DEVICE_STREAM else None
+        with stream if stream is not None else contextlib.nullcontext():
+            buffers: dict[int, tuple[gtx_common.Domain, Any]] = {}
+            # views of the JAX arrays the device copies read from; they must outlive the copies
+            views = []
+            padded = {}
+            for i, leaf in enumerate(leaves):
+                if isinstance(leaf, gtx.Field) and leaf.domain.dims[0] in self._num_owned:
+                    dim = leaf.domain.dims[0]
+                    num_owned, num_local = self._num_owned[dim], self.grid.size[dim]
+                    domain = leaf.domain.replace(
+                        dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, num_local)))
+                    )
+                    if not read[i]:
+                        if leaf.ndarray.shape[0] == num_owned:
+                            padded[i] = gtx.as_field(
+                                domain,
+                                jax.numpy.pad(
+                                    leaf.ndarray,
+                                    [(0, num_local - num_owned)]
+                                    + [(0, 0)] * (leaf.ndarray.ndim - 1),
+                                    constant_values=jax.numpy.nan,
+                                ),
+                                allocator=jax.numpy,
+                            )
+                        continue
+                    # NaN marks every halo point the exchange leaves unfilled
+                    buffer = xp.full(
+                        (num_local, *leaf.ndarray.shape[1:]), xp.nan, dtype=leaf.dtype.scalar_type
+                    )
+                    if on_device:
+                        views.append(xp.from_dlpack(leaf.ndarray[:num_owned]))
+                        buffer[:num_owned] = views[-1]
+                    else:
+                        buffer[:num_owned] = xp.asarray(leaf.ndarray[:num_owned])
+                    buffers[i] = (domain, buffer)
+            if stream is not None:
+                self._hold_until_done(stream.record(), views)
+            elif on_device:
+                # GHEX starts after the default stream only; the copies are on CuPy's current stream
+                xp.cuda.get_current_stream().synchronize()
+            exchange_stream = {"stream": stream if stream is not None else decomposition_defs.BLOCK}
+            for dim in self._num_owned:
+                dim_buffers = [b for d, b in buffers.values() if d.dims[0] == dim]
+                if dim_buffers:
+                    self.exchange.exchange(
+                        dim, *dim_buffers, **(exchange_stream if on_device else {})
+                    )
+            if on_device and stream is None:
+                # GHEX unpacks on its own streams; JAX must not see a buffer before they are done
+                xp.cuda.runtime.deviceSynchronize()
+            # with `stream` current, DLPack makes JAX wait for the exchange on `stream`
+            to_jax = jax.numpy.from_dlpack if on_device else jax.numpy.asarray
+            new_leaves = [
+                gtx.as_field(buffers[i][0], to_jax(buffers[i][1]), allocator=jax.numpy)
+                if i in buffers
+                else padded.get(i, leaf)
+                for i, leaf in enumerate(leaves)
+            ]
         return jax.tree_util.tree_unflatten(treedef, new_leaves)
+
+    def _reads(self, fields: frozenset[str]) -> frozenset[str] | None:
+        return fields if self.exchange_read_fields_only else None
+
+    def _device_stream(self) -> Any:
+        if self._stream is None:
+            self._stream = data_alloc.array_ns(True).cuda.Stream(non_blocking=True)
+        return self._stream
+
+    def _hold_until_done(self, event: Any, views: list) -> None:
+        """Keep `views` alive until `event` has happened, which the next call makes sure of."""
+        if self._in_flight is not None:
+            self._in_flight[0].synchronize()
+        self._in_flight = (event, views)
 
     def _jitted_substep(self, key: tuple) -> Callable:
         if key not in self._jitted:
@@ -219,12 +291,19 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         assert solve_nonhydro is not None
         time_vars = self.model_time_variables
 
-        prognostic, diagnostic, prep_adv = self._with_halo(
-            (
-                {k: jax_utils.to_jax(getattr(ds.prognostics.current, k)) for k in _PROGNOSTICS},
-                _diagnostic_to_dict(jax_utils.to_jax(ds.solve_nonhydro_diagnostic)),
-                _shallow_dict(jax_utils.to_jax(ds.prep_advection_prognostic)),
-            )
+        state = self._with_halo(
+            {
+                "prognostic": {
+                    k: jax_utils.to_jax(getattr(ds.prognostics.current, k)) for k in _PROGNOSTICS
+                },
+                "diagnostic": _diagnostic_to_dict(jax_utils.to_jax(ds.solve_nonhydro_diagnostic)),
+                "prep_adv": _shallow_dict(jax_utils.to_jax(ds.prep_advection_prognostic)),
+            }
+        )
+        prognostic, diagnostic, prep_adv = (
+            state["prognostic"],
+            state["diagnostic"],
+            state["prep_adv"],
         )
         diagnostic_state = _diagnostic_from_dict(diagnostic)
         intermediate = solve_nonhydro.initial_intermediate_state()._asdict()
@@ -256,10 +335,26 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                         second_order_divdamp_factor,
                     )
                 )
-                prognostic, diagnostic, intermediate, prep_adv = self._with_halo(
-                    substep(
-                        prognostic, _diagnostic_to_dict(diagnostic_state), intermediate, prep_adv
-                    )
+                state = self._with_halo(
+                    dict(
+                        zip(
+                            _SUBSTEP_GROUPS,
+                            substep(
+                                prognostic,
+                                _diagnostic_to_dict(diagnostic_state),
+                                intermediate,
+                                prep_adv,
+                            ),
+                        )
+                    ),
+                    reads=self._reads(
+                        _DYCORE_HALO_READS | _DIFFUSION_HALO_READS
+                        if self._is_last_substep(dyn_substep)
+                        else _DYCORE_HALO_READS
+                    ),
+                )
+                prognostic, diagnostic, intermediate, prep_adv = (
+                    state[group] for group in _SUBSTEP_GROUPS
                 )
                 diagnostic_state = _diagnostic_from_dict(diagnostic)
 
@@ -268,8 +363,13 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 and self.global_granules.diffusion.config.apply_to_horizontal_wind
             ):
                 prognostic = self._with_halo(
-                    self._jitted_diffusion(float(time_vars.dtime_in_seconds))(prognostic)
-                )
+                    {
+                        "prognostic": self._jitted_diffusion(float(time_vars.dtime_in_seconds))(
+                            prognostic
+                        )
+                    },
+                    reads=self._reads(_DYCORE_HALO_READS),
+                )["prognostic"]
             self._jax.block_until_ready(prognostic["vn"].ndarray)
 
             time_vars.is_first_step_in_simulation = False

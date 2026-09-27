@@ -88,13 +88,22 @@ def main(
             ),
         ),
     ] = False,
-    jax_device_halo_exchange: Annotated[
+    jax_halo_exchange: Annotated[
+        driver_utils.HaloExchange,
+        typer.Option(
+            help=(
+                "With --jax on several ranks, where to exchange the halos: through host memory, "
+                "or on the GPU from CuPy buffers (needs GHEX with GPU support)."
+            ),
+        ),
+    ] = driver_utils.HaloExchange.HOST,
+    jax_exchange_read_fields_only: Annotated[
         bool,
         typer.Option(
-            "--jax-device-halo-exchange/--no-jax-device-halo-exchange",
+            "--jax-exchange-read-fields-only/--no-jax-exchange-read-fields-only",
             help=(
-                "With --jax on several ranks, exchange the halos on the GPU from CuPy buffers "
-                "instead of through host memory (needs GHEX with GPU support)."
+                "With --jax on several ranks, exchange only the fields the next step reads outside "
+                "the owned points."
             ),
         ),
     ] = False,
@@ -157,7 +166,8 @@ def main(
         process_props=process_props,
         backend=backend,
         jax=jax,
-        jax_device_halo_exchange=jax_device_halo_exchange,
+        jax_halo_exchange=jax_halo_exchange,
+        jax_exchange_read_fields_only=jax_exchange_read_fields_only,
     )
 
 

@@ -40,6 +40,7 @@ def run_jw_gathered(
     tmp_path: pathlib.Path,
     num_steps: int,
     extra_halo_rings: int,
+    exchange_read_fields_only: bool = False,
 ) -> list[dict[str, np.ndarray]] | None:
     """
     Run the JAX driver on JW for `num_steps` steps and return the prognostic fields after every
@@ -86,6 +87,7 @@ def run_jw_gathered(
         process_props=process_props,
         backend=None,
         jax=True,
+        jax_exchange_read_fields_only=exchange_read_fields_only,
         on_step_end=record,
     )
 
@@ -130,6 +132,7 @@ def test_parallel_driver_jax(
         tmp_path,
         num_steps=len(_JW_STEP_DATES_EXIT),
         extra_halo_rings=driver_utils.JAX_EXTRA_HALO_RINGS,
+        exchange_read_fields_only=True,
     )
     failures = []
     if computed is not None:
