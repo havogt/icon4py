@@ -14,12 +14,13 @@ transport, no physics, no output.
 
 On a distributed grid the steps return their outputs on the owned points only. Between two jitted
 steps the driver builds new local fields from them, with the halo filled by a halo exchange on the
-host, or with `device_halo_exchange` on the device from CuPy buffers. The halo must be deep enough
-for one step: `driver_utils.JAX_EXTRA_HALO_RINGS`.
+host or, from CuPy buffers, on the device (`driver_utils.HaloExchange`). The halo must be deep
+enough for one step: `driver_utils.JAX_EXTRA_HALO_RINGS`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime
 import logging
@@ -68,7 +69,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         self,
         *,
         global_granules: driver_utils.GlobalGranules,
-        device_halo_exchange: bool = False,
+        halo_exchange: driver_utils.HaloExchange = driver_utils.HaloExchange.HOST,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -94,7 +95,9 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         if self.config.tracer_config is not None and self.config.tracer_config.nactive > 0:
             raise NotImplementedError("The JAX driver does not transport tracers.")
         self.global_granules = global_granules
-        self.device_halo_exchange = device_halo_exchange
+        self.halo_exchange = driver_utils.HaloExchange(halo_exchange)
+        self._stream: Any = None
+        self._in_flight: tuple[Any, list] | None = None
         self.on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None
         self._jax = jax_utils.import_jax()
         self._jitted: dict[tuple, Callable] = {}
@@ -111,49 +114,66 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         leaves, treedef = jax.tree_util.tree_flatten(
             tree, is_leaf=lambda x: isinstance(x, gtx.Field)
         )
-        xp = data_alloc.array_ns(self.device_halo_exchange)
-        buffers: dict[int, tuple[gtx_common.Domain, Any]] = {}
-        # the JAX arrays the device copies read from must outlive the copies
-        sources = []
-        for i, leaf in enumerate(leaves):
-            if isinstance(leaf, gtx.Field) and leaf.domain.dims[0] in self._num_owned:
-                dim = leaf.domain.dims[0]
-                num_owned, num_local = self._num_owned[dim], self.grid.size[dim]
-                # NaN marks every halo point the exchange leaves unfilled
-                buffer = xp.full(
-                    (num_local, *leaf.ndarray.shape[1:]), xp.nan, dtype=leaf.dtype.scalar_type
-                )
-                if self.device_halo_exchange:
-                    sources.append(leaf.ndarray[:num_owned])
-                    buffer[:num_owned] = xp.from_dlpack(sources[-1])
-                else:
-                    buffer[:num_owned] = xp.asarray(leaf.ndarray[:num_owned])
-                domain = leaf.domain.replace(
-                    dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, num_local)))
-                )
-                buffers[i] = (domain, buffer)
-        if self.device_halo_exchange:
-            # GHEX starts after the default stream only; the copies are on CuPy's current stream
-            xp.cuda.get_current_stream().synchronize()
-        for dim in self._num_owned:
-            dim_buffers = [b for d, b in buffers.values() if d.dims[0] == dim]
-            if dim_buffers:
-                if self.device_halo_exchange:
-                    self.exchange.exchange(dim, *dim_buffers, stream=decomposition_defs.BLOCK)
-                else:
-                    self.exchange.exchange(dim, *dim_buffers)
-        if self.device_halo_exchange:
-            # GHEX unpacks on its own streams; JAX must not see a buffer before they are done
-            xp.cuda.runtime.deviceSynchronize()
-            del sources
-        to_jax = jax.numpy.from_dlpack if self.device_halo_exchange else jax.numpy.asarray
-        new_leaves = [
-            gtx.as_field(buffers[i][0], to_jax(buffers[i][1]), allocator=jax.numpy)
-            if i in buffers
-            else leaf
-            for i, leaf in enumerate(leaves)
-        ]
+        mode = self.halo_exchange
+        on_device = mode != driver_utils.HaloExchange.HOST
+        xp = data_alloc.array_ns(on_device)
+        stream = self._device_stream() if mode == driver_utils.HaloExchange.DEVICE_STREAM else None
+        with stream if stream is not None else contextlib.nullcontext():
+            buffers: dict[int, tuple[gtx_common.Domain, Any]] = {}
+            # views of the JAX arrays the device copies read from; they must outlive the copies
+            views = []
+            for i, leaf in enumerate(leaves):
+                if isinstance(leaf, gtx.Field) and leaf.domain.dims[0] in self._num_owned:
+                    dim = leaf.domain.dims[0]
+                    num_owned, num_local = self._num_owned[dim], self.grid.size[dim]
+                    # NaN marks every halo point the exchange leaves unfilled
+                    buffer = xp.full(
+                        (num_local, *leaf.ndarray.shape[1:]), xp.nan, dtype=leaf.dtype.scalar_type
+                    )
+                    if on_device:
+                        views.append(xp.from_dlpack(leaf.ndarray[:num_owned]))
+                        buffer[:num_owned] = views[-1]
+                    else:
+                        buffer[:num_owned] = xp.asarray(leaf.ndarray[:num_owned])
+                    domain = leaf.domain.replace(
+                        dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, num_local)))
+                    )
+                    buffers[i] = (domain, buffer)
+            if stream is not None:
+                self._hold_until_done(stream.record(), views)
+            elif on_device:
+                # GHEX starts after the default stream only; the copies are on CuPy's current stream
+                xp.cuda.get_current_stream().synchronize()
+            exchange_stream = {"stream": stream if stream is not None else decomposition_defs.BLOCK}
+            for dim in self._num_owned:
+                dim_buffers = [b for d, b in buffers.values() if d.dims[0] == dim]
+                if dim_buffers:
+                    self.exchange.exchange(
+                        dim, *dim_buffers, **(exchange_stream if on_device else {})
+                    )
+            if on_device and stream is None:
+                # GHEX unpacks on its own streams; JAX must not see a buffer before they are done
+                xp.cuda.runtime.deviceSynchronize()
+            # with `stream` current, DLPack makes JAX wait for the exchange on `stream`
+            to_jax = jax.numpy.from_dlpack if on_device else jax.numpy.asarray
+            new_leaves = [
+                gtx.as_field(buffers[i][0], to_jax(buffers[i][1]), allocator=jax.numpy)
+                if i in buffers
+                else leaf
+                for i, leaf in enumerate(leaves)
+            ]
         return jax.tree_util.tree_unflatten(treedef, new_leaves)
+
+    def _device_stream(self) -> Any:
+        if self._stream is None:
+            self._stream = data_alloc.array_ns(True).cuda.Stream(non_blocking=True)
+        return self._stream
+
+    def _hold_until_done(self, event: Any, views: list) -> None:
+        """Keep `views` alive until `event` has happened, which the next call makes sure of."""
+        if self._in_flight is not None:
+            self._in_flight[0].synchronize()
+        self._in_flight = (event, views)
 
     def _jitted_substep(self, key: tuple) -> Callable:
         if key not in self._jitted:

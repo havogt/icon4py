@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import dataclasses
+import enum
 import logging
 import os
 import pathlib
@@ -539,6 +540,17 @@ def initialize_granules(
 class GlobalGranules:
     diffusion: diffusion_global.DiffusionGlobal | None = None
     solve_nonhydro: solve_nonhydro_global.SolveNonhydroGlobal | None = None
+
+
+class HaloExchange(enum.StrEnum):
+    """Where the JAX driver exchanges the halos between its jitted steps."""
+
+    #: through host memory
+    HOST = "host"
+    #: on the GPU, blocking until the exchange is done
+    DEVICE_BLOCKING = "device-blocking"
+    #: on the GPU, on a stream that the next jitted step waits for
+    DEVICE_STREAM = "device-stream"
 
 
 #: Halo rings beyond the ICON-like one (a ring: the cells sharing a vertex with the local cells)

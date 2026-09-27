@@ -88,16 +88,15 @@ def main(
             ),
         ),
     ] = False,
-    jax_device_halo_exchange: Annotated[
-        bool,
+    jax_halo_exchange: Annotated[
+        driver_utils.HaloExchange,
         typer.Option(
-            "--jax-device-halo-exchange/--no-jax-device-halo-exchange",
             help=(
-                "With --jax on several ranks, exchange the halos on the GPU from CuPy buffers "
-                "instead of through host memory (needs GHEX with GPU support)."
+                "With --jax on several ranks, where to exchange the halos: through host memory, "
+                "or on the GPU from CuPy buffers (needs GHEX with GPU support)."
             ),
         ),
-    ] = False,
+    ] = driver_utils.HaloExchange.HOST,
     n_time_steps: Annotated[
         int | None,
         typer.Option(
@@ -157,7 +156,7 @@ def main(
         process_props=process_props,
         backend=backend,
         jax=jax,
-        jax_device_halo_exchange=jax_device_halo_exchange,
+        jax_halo_exchange=jax_halo_exchange,
     )
 
 
