@@ -107,6 +107,16 @@ def main(
             ),
         ),
     ] = False,
+    jax_constants_as_arguments: Annotated[
+        bool,
+        typer.Option(
+            "--jax-constants-as-arguments/--no-jax-constants-as-arguments",
+            help=(
+                "With --jax, pass the static fields and connectivities to the jitted steps as "
+                "arguments instead of compiling them in as constants."
+            ),
+        ),
+    ] = True,
     n_time_steps: Annotated[
         int | None,
         typer.Option(
@@ -168,6 +178,7 @@ def main(
         jax=jax,
         jax_halo_exchange=jax_halo_exchange,
         jax_exchange_read_fields_only=jax_exchange_read_fields_only,
+        jax_constants_as_arguments=jax_constants_as_arguments,
     )
 
 
