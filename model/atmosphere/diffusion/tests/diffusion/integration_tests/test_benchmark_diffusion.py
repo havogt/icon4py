@@ -414,6 +414,7 @@ def test_diffusion_global_jax_matches_backend(
 
 _TORUS_SEED = 20260927
 _DIFFUSION_TORUS_HALO = 4
+_TORUS_PAIRS = (("reordered", "icon"), ("structured", "icon"), ("structured", "reordered"))
 
 
 def _diffusion_torus_calls(  # noqa: PLR0917 [too-many-positional-arguments]
@@ -486,7 +487,11 @@ def test_diffusion_global_torus_layouts_match(  # noqa: PLR0917 [too-many-positi
         monkeypatch,
         structured_torus.LAYOUTS,
     )
-    structured_torus.check_layouts(calls, ("vn", "w", "theta_v", "exner"))
+    structured_torus.check_layouts(
+        calls,
+        ("vn", "w", "theta_v", "exner"),
+        rtol={pair: 1e-12 for pair in _TORUS_PAIRS},
+    )
 
 
 @pytest.mark.benchmark

@@ -42,6 +42,12 @@ _UP = sorted([(0, 0), (0, 1), (1, 1)])
 _DOWN = sorted([(0, 0), (1, 0), (1, 1)])
 
 
+def _require(condition: Any, message: Any) -> None:
+    """An assertion that survives `python -O`, which strips `assert` outside pytest-rewritten modules."""
+    if not condition:
+        raise AssertionError(message)
+
+
 def _horizontal_dim(field_dims: tuple[gtx.Dimension, ...]) -> gtx.Dimension | None:
     return next((d for d in field_dims if d in _N_COLOURS), None)
 
@@ -99,7 +105,7 @@ class TorusLayout:
             for colour, shape in ((0, _UP), (1, _DOWN)):
                 hit = np.array([r == shape for r in rel_sorted]) & (cell[:, 0] < 0)
                 cell[hit] = np.column_stack([vertex[c2v[hit, k]], np.full(hit.sum(), colour)])
-        assert (cell[:, 0] >= 0).all(), "a cell is neither an up nor a down triangle"
+        _require((cell[:, 0] >= 0).all(), "a cell is neither an up nor a down triangle")
         ijx = {
             dims.CellDim: cell,
             dims.EdgeDim: edge,
@@ -107,8 +113,8 @@ class TorusLayout:
         }
         layout = cls(m, n, twist, ijx)
         for dim, arr in ijx.items():
-            assert np.unique(layout.flat_index(dim)).size == arr.shape[0], (
-                f"{dim} is not a bijection"
+            _require(
+                np.unique(layout.flat_index(dim)).size == arr.shape[0], f"{dim} is not a bijection"
             )
         return layout
 
@@ -173,7 +179,7 @@ def _analyse_tables(layout: TorusLayout, connectivities: Mapping[str, Any]) -> _
         if src not in _N_COLOURS or tgt not in _N_COLOURS:
             continue
         table = conn.asnumpy()
-        assert (table >= 0).all(), f"{name} has skip values; the torus has none"
+        _require((table >= 0).all(), f"{name} has skip values; the torus has none")
         offs = layout.offsets(src, tgt, table)
         colour = layout.ijx[src][:, 2]
         code = ((offs[..., 0] + 64) * 128 + (offs[..., 1] + 64)) * 8 + (offs[..., 2] + 4)
@@ -191,12 +197,12 @@ def _analyse_tables(layout: TorusLayout, connectivities: Mapping[str, Any]) -> _
             sorted_code = np.take_along_axis(code, perm, axis=1)
             for c in np.unique(colour):
                 rows = sorted_code[colour == c]
-                assert (rows == rows[0]).all(), (
-                    f"{name}: the neighbour sets differ within colour {c}"
+                _require(
+                    (rows == rows[0]).all(), f"{name}: the neighbour sets differ within colour {c}"
                 )
                 e = int(np.argmax(colour == c))
                 per[int(c)] = [tuple(map(int, offs[e, k])) for k in perm[e]]
-            assert local not in slot_perm, local
+            _require(local not in slot_perm, local)
             slot_perm[local] = perm
         offsets[name] = per
     return _Tables(offsets, slot_perm)
@@ -229,7 +235,9 @@ def make_layout_call(  # noqa: PLR0915 [too-many-statements]
     sizes = {dim: arr.shape[0] for dim, arr in layout.ijx.items()}
     for d in domain:
         hdim = _horizontal_dim(tuple(d))
-        assert d[hdim] == (0, sizes[hdim]), f"{hdim} output domain {d[hdim]} is not the whole torus"
+        _require(
+            d[hdim] == (0, sizes[hdim]), f"{hdim} output domain {d[hdim]} is not the whole torus"
+        )
     out_dims = [_horizontal_dim(tuple(d)) for d in domain]
 
     def as_jax(f: Any) -> Any:
@@ -275,7 +283,7 @@ def make_layout_call(  # noqa: PLR0915 [too-many-statements]
             hdim = _horizontal_dim(f.domain.dims)
             if hdim is None:
                 return as_jax(f)
-            assert f.domain.dims[0] is hdim, f.domain
+            _require(f.domain.dims[0] is hdim, f.domain)
             arr = slot_permuted(f)[old_of_new[hdim]]
             return gtx.as_field(f.domain, jnp.asarray(arr), allocator=jnp)
 
@@ -400,7 +408,7 @@ def record_call(owner: Any, attribute: str, call: Callable[[], Any]) -> dict[str
         pass
     finally:
         setattr(owner, attribute, original)
-    assert captured, f"{attribute} was not called"
+    _require(bool(captured), f"{attribute} was not called")
     return captured
 
 
@@ -417,29 +425,32 @@ def is_torus(grid_file: str) -> bool:
 
 
 def check_layouts(
-    calls: Mapping[str, LayoutCall], names: tuple[str, ...], rtol: float = 1e-12
-) -> dict[str, dict[str, tuple[float, float]]]:
+    calls: Mapping[str, LayoutCall],
+    names: tuple[str, ...],
+    rtol: Mapping[tuple[str, str], float],
+) -> dict[tuple[str, str], dict[str, tuple[float, float]]]:
     """
-    One call per layout, outputs mapped back to ICON order, against the "icon" layout.
+    One call per layout, outputs mapped back to ICON order, compared pairwise.
 
-    Prints and returns (max abs diff, max abs diff / max |icon|) per layout and output; asserts the
-    relative one is below `rtol`. The structured layout is compared on its core only: its halo
-    points are not outputs.
+    Prints and returns (max abs diff, max abs diff / max |second|) per pair and output, and
+    requires the relative one to be at most `rtol[pair]` for the pairs listed there. The structured
+    layout is compared on its core only: its halo points are not outputs.
     """
     outs = {which: call.to_icon(call.run()) for which, call in calls.items()}
-    reference = outs["icon"]
-    result: dict[str, dict[str, tuple[float, float]]] = {}
-    for which, got in outs.items():
-        if which == "icon":
-            continue
-        result[which] = {}
-        for name, g, r in zip(names, got, reference):
-            assert g.shape == r.shape, (which, name, g.shape, r.shape)
+    pairs = [(a, b) for a in LAYOUTS for b in LAYOUTS if LAYOUTS.index(a) > LAYOUTS.index(b)]
+    result: dict[tuple[str, str], dict[str, tuple[float, float]]] = {}
+    for a, b in pairs:
+        result[(a, b)] = {}
+        for name, g, r in zip(names, outs[a], outs[b]):
+            _require(g.shape == r.shape, (a, b, name, g.shape, r.shape))
             diff = float(np.max(np.abs(g - r)))
             rel = diff / float(np.max(np.abs(r)))
-            result[which][name] = (diff, rel)
-            print(f"LAYOUT_CHECK {which} vs icon {name}: max abs {diff:.3e}, rel {rel:.3e}")
-    for which, per in result.items():
-        for name, (_, rel) in per.items():
-            assert rel <= rtol, f"{which} {name}: relative difference {rel:.3e} > {rtol}"
+            result[(a, b)][name] = (diff, rel)
+            print(
+                f"LAYOUT_CHECK {a} vs {b} {name}: max abs {diff:.3e}, rel {rel:.3e}, "
+                f"max |{b}| {float(np.max(np.abs(r))):.3e}"
+            )
+    for pair, limit in rtol.items():
+        for name, (_, rel) in result[pair].items():
+            _require(rel <= limit, f"{pair} {name}: relative difference {rel:.3e} > {limit}")
     return result

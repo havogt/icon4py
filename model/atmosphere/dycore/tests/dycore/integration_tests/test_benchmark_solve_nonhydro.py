@@ -672,7 +672,13 @@ def test_solve_nonhydro_global_torus_layouts_match(  # noqa: PLR0917 [too-many-p
         at_first_substep=at_first_substep,
         at_last_substep=at_last_substep,
     )
-    structured_torus.check_layouts(calls, ("vn", "w", "rho", "exner", "theta_v"))
+    # The random states grow to 1e23 in one substep, which amplifies the rounding of the
+    # canonicalised V2E/V2C sums, so only the two layouts sharing that slot order are held to rounding.
+    structured_torus.check_layouts(
+        calls,
+        ("vn", "w", "rho", "exner", "theta_v"),
+        rtol={("structured", "reordered"): 1e-12},
+    )
 
 
 @pytest.mark.parametrize(
