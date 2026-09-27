@@ -158,6 +158,27 @@ def _constants_of(granule: Any) -> dict[str, Any]:
     }
 
 
+def exchange_collective(owned: Any, send: Any, recv: Any, num_local: int) -> Any:
+    """
+    The local rows of the padded layout from the `owned` ones, the halo received from the owners.
+
+    Runs inside `shard_map` over the mesh axis of the ranks; `send` and `recv` are this rank's
+    `spmd_layout.PaddedLayout` tables of the dimension.
+    """
+    jax = jax_utils.import_jax()
+    local = jax.numpy.concatenate(
+        [
+            owned,
+            # NaN marks every halo point the exchange leaves unfilled
+            jax.numpy.full(
+                (num_local - owned.shape[0], *owned.shape[1:]), jax.numpy.nan, owned.dtype
+            ),
+        ]
+    )
+    received = jax.lax.all_to_all(owned[send], _MESH_AXIS, 0, 0)
+    return local.at[recv].set(received, mode="drop")
+
+
 class JaxIcon4pyDriver(driver.Icon4pyDriver):
     def __init__(
         self,
@@ -377,25 +398,15 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         return new_leaves
 
     def _exchange_collective(self, field: gtx.Field) -> Any:
-        """The field on the local points of the padded layout, its halo received from the owners."""
-        jax = self._jax
         dim = field.domain.dims[0]
         assert self._traced_tables is not None
         tables = self._traced_tables[dim.value]
-        owned = field.ndarray[: self._num_owned[dim]]
-        local = jax.numpy.concatenate(
-            [
-                owned,
-                # NaN marks every halo point the exchange leaves unfilled
-                jax.numpy.full(
-                    (self._num_local[dim] - owned.shape[0], *owned.shape[1:]),
-                    jax.numpy.nan,
-                    owned.dtype,
-                ),
-            ]
+        return exchange_collective(
+            field.ndarray[: self._num_owned[dim]],
+            tables["send"],
+            tables["recv"],
+            self._num_local[dim],
         )
-        received = jax.lax.all_to_all(owned[tables["send"]], _MESH_AXIS, 0, 0)
-        return local.at[tables["recv"]].set(received, mode="drop")
 
     def _exchange_in_callback(
         self,
