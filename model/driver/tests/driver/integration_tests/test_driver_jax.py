@@ -44,6 +44,7 @@ _FIELDS = ("vn", "w", "rho", "exner", "theta_v")
         ),
     ],
 )
+@pytest.mark.parametrize("jit_time_step", [False, True])
 def test_driver_jax(
     experiment_description: test_defs.ExperimentDescription,
     timeloop_date_init: str,
@@ -53,6 +54,7 @@ def test_driver_jax(
     process_props: decomp_defs.ProcessProperties,
     backend: gtx_typing.Backend | None,
     data_provider: sb.IconSerialDataProvider,
+    jit_time_step: bool,
 ) -> None:
     """
     The driver with the global steps under jax.jit, validated after every time step against
@@ -89,6 +91,7 @@ def test_driver_jax(
         process_props=process_props,
         backend=None,
         jax=True,
+        jax_jit_time_step=jit_time_step,
         on_step_end=record,
     )
 
