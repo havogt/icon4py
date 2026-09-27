@@ -117,6 +117,17 @@ def main(
             ),
         ),
     ] = True,
+    jax_jit_time_step: Annotated[
+        bool,
+        typer.Option(
+            "--jax-jit-time-step/--no-jax-jit-time-step",
+            help=(
+                "With --jax, jit the whole time step including its halo exchanges instead of each "
+                "substep on its own; the exchanges then run on the device of the JAX backend, "
+                "whatever --jax-halo-exchange says."
+            ),
+        ),
+    ] = False,
     n_time_steps: Annotated[
         int | None,
         typer.Option(
@@ -179,6 +190,7 @@ def main(
         jax_halo_exchange=jax_halo_exchange,
         jax_exchange_read_fields_only=jax_exchange_read_fields_only,
         jax_constants_as_arguments=jax_constants_as_arguments,
+        jax_jit_time_step=jax_jit_time_step,
     )
 
 

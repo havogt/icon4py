@@ -38,9 +38,11 @@ _JW_STEP_DATES_EXIT = (
 def run_jw_gathered(
     process_props: decomp_defs.ProcessProperties,
     tmp_path: pathlib.Path,
+    *,
     num_steps: int,
     extra_halo_rings: int,
     exchange_read_fields_only: bool = False,
+    jit_time_step: bool = False,
 ) -> list[dict[str, np.ndarray]] | None:
     """
     Run the JAX driver on JW for `num_steps` steps and return the prognostic fields after every
@@ -88,6 +90,7 @@ def run_jw_gathered(
         backend=None,
         jax=True,
         jax_exchange_read_fields_only=exchange_read_fields_only,
+        jax_jit_time_step=jit_time_step,
         on_step_end=record,
     )
 
@@ -117,9 +120,11 @@ def run_jw_gathered(
 @pytest.mark.mpi
 @pytest.mark.embedded_only
 @pytest.mark.parametrize("process_props", [True], indirect=True)
+@pytest.mark.parametrize("jit_time_step", [False, True])
 def test_parallel_driver_jax(
     tmp_path: pathlib.Path,
     process_props: decomp_defs.ProcessProperties,
+    jit_time_step: bool,
 ) -> None:
     """
     The JAX driver on JW on several ranks: the assembled global fields after every time step
@@ -133,6 +138,7 @@ def test_parallel_driver_jax(
         num_steps=len(_JW_STEP_DATES_EXIT),
         extra_halo_rings=driver_utils.JAX_EXTRA_HALO_RINGS,
         exchange_read_fields_only=True,
+        jit_time_step=jit_time_step,
     )
     failures = []
     if computed is not None:

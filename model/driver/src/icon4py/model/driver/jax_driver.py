@@ -14,8 +14,10 @@ transport, no physics, no output.
 
 On a distributed grid the steps return their outputs on the owned points only. Between two jitted
 steps the driver builds new local fields from them, with the halo filled by a halo exchange on the
-host or, from CuPy buffers, on the device (`driver_utils.HaloExchange`). The halo must be deep
-enough for one step: `driver_utils.JAX_EXTRA_HALO_RINGS`.
+host or, from CuPy buffers, on the device (`driver_utils.HaloExchange`); with `jit_time_step` the
+whole time step is one jitted function, and the exchange a `buffer_callback` inside it, on XLA's
+stream on a GPU, whatever `halo_exchange` says. The halo must be deep enough for one step:
+`driver_utils.JAX_EXTRA_HALO_RINGS`.
 """
 
 from __future__ import annotations
@@ -163,6 +165,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         halo_exchange: driver_utils.HaloExchange = driver_utils.HaloExchange.HOST,
         exchange_read_fields_only: bool = False,
         constants_as_arguments: bool = True,
+        jit_time_step: bool = False,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -199,6 +202,16 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             )
         }
         self._traces = 0
+        self.jit_time_step = jit_time_step
+        if jit_time_step and self._distributed:
+            from mpi4py import MPI  # noqa: PLC0415 [import-outside-top-level]
+
+            # XLA may run the exchange callbacks on its own thread
+            if MPI.Query_thread() < MPI.THREAD_SERIALIZED:
+                log.warning(
+                    "MPI is initialized below MPI_THREAD_SERIALIZED, but the halo exchanges inside "
+                    "the jitted time step may call MPI from another thread than the main one."
+                )
         self._stream: Any = None
         self._in_flight: tuple[Any, list] | None = None
         self.on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None
@@ -223,45 +236,67 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         read = [
             reads is None or f"{path[0].key}.{path[1].key}" in reads for path, _ in paths_and_leaves
         ]
+        traced = any(
+            isinstance(leaf, gtx.Field) and isinstance(leaf.ndarray, jax.core.Tracer)
+            for leaf in leaves
+        )
+        with_halo = self._with_halo_traced if traced else self._with_halo_eager
+        return jax.tree_util.tree_unflatten(treedef, with_halo(leaves, read))
+
+    def _is_horizontal(self, leaf: Any) -> bool:
+        return isinstance(leaf, gtx.Field) and leaf.domain.dims[0] in self._num_owned
+
+    def _local_domain(self, field: gtx.Field) -> gtx_common.Domain:
+        dim = field.domain.dims[0]
+        return field.domain.replace(
+            dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, self.grid.size[dim])))
+        )
+
+    def _nan_padded(self, field: gtx.Field) -> gtx.Field:
+        """An owned-size field extended to the local size with a NaN halo; others as they are."""
+        dim = field.domain.dims[0]
+        num_owned, num_local = self._num_owned[dim], self.grid.size[dim]
+        if field.ndarray.shape[0] != num_owned:
+            return field
+        jnp = self._jax.numpy
+        return gtx.as_field(
+            self._local_domain(field),
+            jnp.pad(
+                field.ndarray,
+                [(0, num_local - num_owned)] + [(0, 0)] * (field.ndarray.ndim - 1),
+                constant_values=jnp.nan,
+            ),
+            allocator=jnp,
+        )
+
+    def _with_halo_eager(self, leaves: list, read: list[bool]) -> list:
+        jax = self._jax
         mode = self.halo_exchange
         on_device = mode != driver_utils.HaloExchange.HOST
         xp = data_alloc.array_ns(on_device)
         stream = self._device_stream() if mode == driver_utils.HaloExchange.DEVICE_STREAM else None
+        new_leaves = list(leaves)
         with stream if stream is not None else contextlib.nullcontext():
-            buffers: dict[int, tuple[gtx_common.Domain, Any]] = {}
+            buffers: dict[int, Any] = {}
             # views of the JAX arrays the device copies read from; they must outlive the copies
             views = []
-            padded = {}
             for i, leaf in enumerate(leaves):
-                if isinstance(leaf, gtx.Field) and leaf.domain.dims[0] in self._num_owned:
-                    dim = leaf.domain.dims[0]
-                    num_owned, num_local = self._num_owned[dim], self.grid.size[dim]
-                    domain = leaf.domain.replace(
-                        dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, num_local)))
-                    )
-                    if not read[i]:
-                        if leaf.ndarray.shape[0] == num_owned:
-                            padded[i] = gtx.as_field(
-                                domain,
-                                jax.numpy.pad(
-                                    leaf.ndarray,
-                                    [(0, num_local - num_owned)]
-                                    + [(0, 0)] * (leaf.ndarray.ndim - 1),
-                                    constant_values=jax.numpy.nan,
-                                ),
-                                allocator=jax.numpy,
-                            )
-                        continue
-                    # NaN marks every halo point the exchange leaves unfilled
-                    buffer = xp.full(
-                        (num_local, *leaf.ndarray.shape[1:]), xp.nan, dtype=leaf.dtype.scalar_type
-                    )
-                    if on_device:
-                        views.append(xp.from_dlpack(leaf.ndarray[:num_owned]))
-                        buffer[:num_owned] = views[-1]
-                    else:
-                        buffer[:num_owned] = xp.asarray(leaf.ndarray[:num_owned])
-                    buffers[i] = (domain, buffer)
+                if not self._is_horizontal(leaf):
+                    continue
+                if not read[i]:
+                    new_leaves[i] = self._nan_padded(leaf)
+                    continue
+                num_owned = self._num_owned[leaf.domain.dims[0]]
+                # NaN marks every halo point the exchange leaves unfilled
+                buffer = xp.full(
+                    self._local_domain(leaf).shape, xp.nan, dtype=leaf.dtype.scalar_type
+                )
+                if on_device:
+                    views.append(xp.from_dlpack(leaf.ndarray[:num_owned]))
+                    buffer[:num_owned] = views[-1]
+                else:
+                    buffer[:num_owned] = xp.asarray(leaf.ndarray[:num_owned])
+                buffers[i] = buffer
             if stream is not None:
                 self._hold_until_done(stream.record(), views)
             elif on_device:
@@ -269,7 +304,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 xp.cuda.get_current_stream().synchronize()
             exchange_stream = {"stream": stream if stream is not None else decomposition_defs.BLOCK}
             for dim in self._num_owned:
-                dim_buffers = [b for d, b in buffers.values() if d.dims[0] == dim]
+                dim_buffers = [b for i, b in buffers.items() if leaves[i].domain.dims[0] == dim]
                 if dim_buffers:
                     self.exchange.exchange(
                         dim, *dim_buffers, **(exchange_stream if on_device else {})
@@ -279,13 +314,80 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 xp.cuda.runtime.deviceSynchronize()
             # with `stream` current, DLPack makes JAX wait for the exchange on `stream`
             to_jax = jax.numpy.from_dlpack if on_device else jax.numpy.asarray
-            new_leaves = [
-                gtx.as_field(buffers[i][0], to_jax(buffers[i][1]), allocator=jax.numpy)
-                if i in buffers
-                else padded.get(i, leaf)
-                for i, leaf in enumerate(leaves)
-            ]
-        return jax.tree_util.tree_unflatten(treedef, new_leaves)
+            for i, buffer in buffers.items():
+                new_leaves[i] = gtx.as_field(
+                    self._local_domain(leaves[i]), to_jax(buffer), allocator=jax.numpy
+                )
+        return new_leaves
+
+    def _with_halo_traced(self, leaves: list, read: list[bool]) -> list:
+        """`_with_halo` inside a jitted function: all exchanged fields go through one callback."""
+        from jax.experimental import (  # type: ignore[import-not-found]  # noqa: PLC0415 [import-outside-top-level]
+            buffer_callback,
+        )
+
+        jax = self._jax
+        new_leaves = list(leaves)
+        exchanged = []
+        for i, leaf in enumerate(leaves):
+            if not self._is_horizontal(leaf):
+                continue
+            if read[i]:
+                exchanged.append(i)
+            else:
+                new_leaves[i] = self._nan_padded(leaf)
+        if not exchanged:
+            return new_leaves
+        field_dims = tuple(leaves[i].domain.dims[0] for i in exchanged)
+        owned = [leaves[i].ndarray[: self._num_owned[dim]] for i, dim in zip(exchanged, field_dims)]
+        exchange = buffer_callback.buffer_callback(
+            functools.partial(
+                self._exchange_in_callback, field_dims, jax.default_backend() == "gpu"
+            ),
+            [
+                jax.ShapeDtypeStruct((self.grid.size[dim], *array.shape[1:]), array.dtype)
+                for dim, array in zip(field_dims, owned)
+            ],
+            # every rank has to issue every exchange
+            has_side_effect=True,
+        )
+        for i, array in zip(exchanged, exchange(*owned)):
+            new_leaves[i] = gtx.as_field(self._local_domain(leaves[i]), array, allocator=jax.numpy)
+        return new_leaves
+
+    def _exchange_in_callback(
+        self,
+        field_dims: tuple[gtx.Dimension, ...],
+        on_gpu: bool,
+        context: Any,
+        outs: list,
+        *owned: Any,
+    ) -> None:
+        from jax.experimental import buffer_callback  # noqa: PLC0415 [import-outside-top-level]
+
+        # an exchange that ran at another stage too would not be matched by the other ranks
+        if context.stage != buffer_callback.ExecutionStage.EXECUTE:
+            return
+        xp = data_alloc.array_ns(on_gpu)
+        stream = xp.cuda.ExternalStream(context.stream) if on_gpu else None
+        with stream if stream is not None else contextlib.nullcontext():
+            buffers = []
+            for dim, out, array in zip(field_dims, outs, owned):
+                buffer = xp.asarray(out)
+                num_owned = self._num_owned[dim]
+                buffer[:num_owned] = xp.asarray(array)
+                # NaN marks every halo point the exchange leaves unfilled
+                buffer[num_owned:] = xp.nan
+                buffers.append(buffer)
+            for dim in self._num_owned:
+                dim_buffers = [b for d, b in zip(field_dims, buffers) if d == dim]
+                if not dim_buffers:
+                    continue
+                self.exchange.exchange(
+                    dim,
+                    *dim_buffers,
+                    stream=stream if stream is not None else decomposition_defs.BLOCK,
+                )
 
     def _reads(self, fields: frozenset[str]) -> frozenset[str] | None:
         return fields if self.exchange_read_fields_only else None
@@ -347,9 +449,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                     _shallow_dict(new_prep_adv),
                 )
 
-            self._jitted[key] = functools.partial(
-                self._jax.jit(substep), self._constants["solve_nonhydro"]
-            )
+            self._jitted[key] = self._jax.jit(substep)
         return self._jitted[key]
 
     def _jitted_diffusion(self, dtime: float) -> Callable:
@@ -366,8 +466,93 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 )
                 return {k: getattr(new, k) for k in _PROGNOSTICS}
 
-            self._jitted[key] = functools.partial(self._jax.jit(run), self._constants["diffusion"])
+            self._jitted[key] = self._jax.jit(run)
         return self._jitted[key]
+
+    def _time_step(
+        self,
+        constants: dict[str, Any],
+        prognostic: dict,
+        diagnostic: dict,
+        intermediate: dict,
+        prep_adv: dict,
+        *,
+        key: tuple,
+    ) -> tuple[dict, dict, dict, dict]:
+        (
+            at_initial_timestep,
+            substep_dtime,
+            ndyn_substeps_var,
+            second_order_divdamp_factor,
+            dtime,
+        ) = key
+        diagnostic_state = _diagnostic_from_dict(diagnostic)
+        for dyn_substep in range(ndyn_substeps_var):
+            if not self.jit_time_step:
+                self._compute_statistics(dyn_substep, prognostics.PrognosticState(**prognostic))
+            at_first_substep = self._is_first_substep(dyn_substep)
+            at_last_substep = dyn_substep == ndyn_substeps_var - 1
+            self._update_time_levels_for_velocity_tendencies(
+                diagnostic_state,
+                at_first_substep=at_first_substep,
+                at_initial_timestep=at_initial_timestep,
+            )
+            substep = self._jitted_substep(
+                (
+                    at_first_substep,
+                    at_last_substep,
+                    at_initial_timestep,
+                    substep_dtime,
+                    ndyn_substeps_var,
+                    second_order_divdamp_factor,
+                )
+            )
+            state = self._with_halo(
+                dict(
+                    zip(
+                        _SUBSTEP_GROUPS,
+                        substep(
+                            constants["solve_nonhydro"],
+                            prognostic,
+                            _diagnostic_to_dict(diagnostic_state),
+                            intermediate,
+                            prep_adv,
+                        ),
+                    )
+                ),
+                reads=self._reads(
+                    _DYCORE_HALO_READS | _DIFFUSION_HALO_READS
+                    if at_last_substep
+                    else _DYCORE_HALO_READS
+                ),
+            )
+            prognostic, diagnostic, intermediate, prep_adv = (
+                state[group] for group in _SUBSTEP_GROUPS
+            )
+            diagnostic_state = _diagnostic_from_dict(diagnostic)
+
+        if (
+            self.global_granules.diffusion is not None
+            and self.global_granules.diffusion.config.apply_to_horizontal_wind
+        ):
+            prognostic = self._with_halo(
+                {"prognostic": self._jitted_diffusion(dtime)(constants["diffusion"], prognostic)},
+                reads=self._reads(_DYCORE_HALO_READS),
+            )["prognostic"]
+        return prognostic, _diagnostic_to_dict(diagnostic_state), intermediate, prep_adv
+
+    def _jitted_time_step(self, key: tuple) -> Callable:
+        if ("time_step", *key) not in self._jitted:
+            closed_over = self._constants["solve_nonhydro"] is None
+            self._jitted[("time_step", *key)] = self._jax.jit(
+                functools.partial(self._time_step, key=key),
+                # folding the operations on closed-over static fields across a whole time step
+                # takes XLA minutes
+                compiler_options=(
+                    {"xla_disable_hlo_passes": "constant_folding"} if closed_over else None
+                ),
+            )
+        return self._jitted[("time_step", *key)]
 
     def time_integration(self, ds: driver_states.DriverStates) -> None:
         assert self.config.nonhydrostatic is not None
@@ -403,59 +588,26 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             time_vars.advance_simulation_datetime()
             second_order_divdamp_factor = float(self._second_order_divdamp_factor())
 
-            for dyn_substep in range(time_vars.ndyn_substeps_var):
-                self._compute_statistics(dyn_substep, prognostics.PrognosticState(**prognostic))
-                at_first_substep = self._is_first_substep(dyn_substep)
-                self._update_time_levels_for_velocity_tendencies(
-                    diagnostic_state,
-                    at_first_substep=at_first_substep,
-                    at_initial_timestep=time_vars.is_first_step_in_simulation,
-                )
-                substep = self._jitted_substep(
-                    (
-                        at_first_substep,
-                        self._is_last_substep(dyn_substep),
-                        time_vars.is_first_step_in_simulation,
-                        float(time_vars.substep_timestep),
-                        time_vars.ndyn_substeps_var,
-                        second_order_divdamp_factor,
-                    )
-                )
-                state = self._with_halo(
-                    dict(
-                        zip(
-                            _SUBSTEP_GROUPS,
-                            substep(
-                                prognostic,
-                                _diagnostic_to_dict(diagnostic_state),
-                                intermediate,
-                                prep_adv,
-                            ),
-                        )
-                    ),
-                    reads=self._reads(
-                        _DYCORE_HALO_READS | _DIFFUSION_HALO_READS
-                        if self._is_last_substep(dyn_substep)
-                        else _DYCORE_HALO_READS
-                    ),
-                )
-                prognostic, diagnostic, intermediate, prep_adv = (
-                    state[group] for group in _SUBSTEP_GROUPS
-                )
-                diagnostic_state = _diagnostic_from_dict(diagnostic)
-
-            if (
-                self.global_granules.diffusion is not None
-                and self.global_granules.diffusion.config.apply_to_horizontal_wind
-            ):
-                prognostic = self._with_halo(
-                    {
-                        "prognostic": self._jitted_diffusion(float(time_vars.dtime_in_seconds))(
-                            prognostic
-                        )
-                    },
-                    reads=self._reads(_DYCORE_HALO_READS),
-                )["prognostic"]
+            key = (
+                time_vars.is_first_step_in_simulation,
+                float(time_vars.substep_timestep),
+                time_vars.ndyn_substeps_var,
+                second_order_divdamp_factor,
+                float(time_vars.dtime_in_seconds),
+            )
+            if self.jit_time_step:
+                self._compute_statistics(0, prognostics.PrognosticState(**prognostic))
+                step = self._jitted_time_step(key)
+            else:
+                step = functools.partial(self._time_step, key=key)
+            prognostic, diagnostic, intermediate, prep_adv = step(
+                self._constants,
+                prognostic,
+                _diagnostic_to_dict(diagnostic_state),
+                intermediate,
+                prep_adv,
+            )
+            diagnostic_state = _diagnostic_from_dict(diagnostic)
             self._jax.block_until_ready(prognostic["vn"].ndarray)
 
             time_vars.is_first_step_in_simulation = False

@@ -702,12 +702,15 @@ def initialize_driver(
     jax_halo_exchange: driver_utils.HaloExchange = driver_utils.HaloExchange.HOST,
     jax_exchange_read_fields_only: bool = False,
     jax_constants_as_arguments: bool = True,
+    jax_jit_time_step: bool = False,
 ) -> Icon4pyDriver:
     """
     Set up the driver.
 
     With `jax`, the setup runs on the embedded backend and the time loop runs the
-    single-field-operator global diffusion and dynamical core steps on JAX arrays under jax.jit.
+    single-field-operator global diffusion and dynamical core steps on JAX arrays under jax.jit,
+    each substep on its own or, with `jax_jit_time_step`, the whole time step with its halo
+    exchanges.
     """
     if jax and backend is not None:
         raise ValueError("The JAX driver sets up on the embedded backend: pass backend=None.")
@@ -769,6 +772,7 @@ def initialize_driver(
             halo_exchange=jax_halo_exchange,
             exchange_read_fields_only=jax_exchange_read_fields_only,
             constants_as_arguments=jax_constants_as_arguments,
+            jit_time_step=jax_jit_time_step,
             global_granules=driver_utils.initialize_global_granules(
                 config=config,
                 grid=grid_manager.grid,
@@ -839,6 +843,7 @@ def run_driver(
     jax_halo_exchange: driver_utils.HaloExchange = driver_utils.HaloExchange.HOST,
     jax_exchange_read_fields_only: bool = False,
     jax_constants_as_arguments: bool = True,
+    jax_jit_time_step: bool = False,
     on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None,
 ) -> tuple[driver_states.DriverStates, Icon4pyDriver]:
     icon4py_driver = initialize_driver(
@@ -850,6 +855,7 @@ def run_driver(
         jax_halo_exchange=jax_halo_exchange,
         jax_exchange_read_fields_only=jax_exchange_read_fields_only,
         jax_constants_as_arguments=jax_constants_as_arguments,
+        jax_jit_time_step=jax_jit_time_step,
     )
     allocator = model_backends.get_allocator(backend)
     prognostic_state_now = prognostics.initialize_prognostic_state(
