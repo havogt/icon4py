@@ -365,10 +365,17 @@ def make_layout_call(  # noqa: PLR0915 [too-many-statements]
     else:
         raise ValueError(which)
 
-    jitted = jax.jit(lambda a: op(**a, domain=out_domain, offset_provider=provider))
+    fields = {k: v for k, v in args.items() if isinstance(v, gtx.Field)}
+    # 0-d arrays from the recording backend (e.g. cupy) are scalars of the operator
+    scalars = {
+        k: v.item() if getattr(v, "shape", None) == () else v
+        for k, v in args.items()
+        if not isinstance(v, gtx.Field)
+    }
+    jitted = jax.jit(lambda f: op(**f, **scalars, domain=out_domain, offset_provider=provider))
 
     def run() -> tuple[Any, ...]:
-        return jax.block_until_ready(jitted(args))
+        return jax.block_until_ready(jitted(fields))
 
     return LayoutCall(run, to_icon, extent)
 
