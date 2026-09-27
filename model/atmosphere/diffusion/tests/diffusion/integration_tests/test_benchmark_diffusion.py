@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import dataclasses
+import time
 from typing import TYPE_CHECKING, Any
 
 import gt4py.next as gtx
+import numpy as np
 import pytest
 from gt4py.next import common as gtx_common
 
@@ -243,41 +245,28 @@ def _to_jax(obj: Any, jnp: Any) -> Any:
     return obj
 
 
-@pytest.mark.benchmark
-@pytest.mark.benchmark_only
-@pytest.mark.parametrize("execution", ["jax", "backend"])
-def test_diffusion_global_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
-    geometry_field_source: grid_geometry.GridGeometry,
-    grid_manager: gm.GridManager,
-    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
-    metrics_field_source: metrics_factory.MetricsFieldsFactory,
-    backend_like: model_backends.BackendLike,
-    execution: str,
-    benchmark: Any,
-) -> None:
-    """
-    Benchmark `DiffusionGlobal`, the fused single-field-operator diffusion step.
+_PROGNOSTIC_FIELDS = ("rho", "w", "vn", "exner", "theta_v")
 
-    `execution="jax"` runs it on the embedded backend with JAX arrays under `jax.jit`, on the
-    default JAX device; the constant fields are computed with `--backend` and then converted.
-    `execution="backend"` runs it on `--backend`.
+
+def _diffusion_global_step(
+    setup: dict[str, Any], execution: str, backend_like: model_backends.BackendLike
+) -> tuple[Any, dict[str, gtx.Field]]:
     """
-    setup = _setup(
-        geometry_field_source,
-        grid_manager,
-        interpolation_field_source,
-        metrics_field_source,
-        backend_like,
-    )
+    The `DiffusionGlobal` step and its prognostic input.
+
+    With `execution="jax"` the step is jitted and works on JAX arrays on the default JAX device;
+    the constant fields are computed with `backend_like` and then converted. With
+    `execution="backend"` it runs on `backend_like`.
+    """
     mesh = setup["mesh"]
     if mesh.limited_area:
         pytest.skip("'DiffusionGlobal' does not support limited area grids.")
-    prognostic_fields = ("rho", "w", "vn", "exner", "theta_v")
     constants = {
         k: setup[k]
         for k in ("metric_state", "interpolation_state", "edge_geometry", "cell_geometry")
     }
     vertical_grid = setup["vertical_grid"]
+    prognostic_input = {k: getattr(setup["prognostic_state"], k) for k in _PROGNOSTIC_FIELDS}
 
     if execution == "jax":
         jax = pytest.importorskip("jax")
@@ -291,6 +280,7 @@ def test_diffusion_global_benchmark(  # noqa: PLR0917 [too-many-positional-argum
             vct_a=_to_jax(vertical_grid.vct_a, jnp),
             vct_b=_to_jax(vertical_grid.vct_b, jnp),
         )
+        prognostic_input = {k: _to_jax(v, jnp) for k, v in prognostic_input.items()}
         allocator, backend = jnp, None
     else:
         backend = model_options.customize_backend(None, backend_like)
@@ -311,18 +301,101 @@ def test_diffusion_global_benchmark(  # noqa: PLR0917 [too-many-positional-argum
     )
     dtime = setup["dtime"]
 
+    def step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
+        new = granule.run(prognostic_state=prognostics.PrognosticState(**fields), dtime=dtime)
+        return {k: getattr(new, k) for k in _PROGNOSTIC_FIELDS}
+
     if execution == "jax":
-        prognostic_input = {
-            k: _to_jax(getattr(setup["prognostic_state"], k), jnp) for k in prognostic_fields
-        }
-
-        def step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
-            new = granule.run(prognostic_state=prognostics.PrognosticState(**fields), dtime=dtime)
-            return {k: getattr(new, k) for k in prognostic_fields}
-
         jitted = jax.jit(step)
-        jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray)
-        benchmark(lambda: jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray))
-    else:
-        granule.run(prognostic_state=setup["prognostic_state"], dtime=dtime)
-        benchmark(granule.run, setup["prognostic_state"], dtime)
+        return lambda fields: jax.block_until_ready(jitted(fields)), prognostic_input
+    return step, prognostic_input
+
+
+@pytest.mark.benchmark
+@pytest.mark.benchmark_only
+@pytest.mark.parametrize("execution", ["jax", "backend"])
+def test_diffusion_global_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    execution: str,
+    benchmark: Any,
+) -> None:
+    """
+    Benchmark `DiffusionGlobal`, the fused single-field-operator diffusion step.
+
+    The first call, which compiles, is timed on its own in `extra_info["first_call_s"]`.
+    """
+    setup = _setup(
+        geometry_field_source,
+        grid_manager,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+    )
+    step, prognostic_input = _diffusion_global_step(setup, execution, backend_like)
+    start = time.perf_counter()
+    step(prognostic_input)
+    benchmark.extra_info["first_call_s"] = time.perf_counter() - start
+    benchmark(step, prognostic_input)
+
+
+def test_diffusion_global_jax_matches_backend(
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+) -> None:
+    """`DiffusionGlobal` under `jax.jit` against `DiffusionGlobal` and `Diffusion` on `--backend`."""
+    setup = _setup(
+        geometry_field_source,
+        grid_manager,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+    )
+    jax_step, jax_input = _diffusion_global_step(setup, "jax", backend_like)
+    backend_step, backend_input = _diffusion_global_step(setup, "backend", backend_like)
+    computed = {k: v.asnumpy() for k, v in jax_step(jax_input).items()}
+    references = {
+        "global": {k: v.asnumpy() for k, v in backend_step(backend_input).items()},
+    }
+    granule = diffusion.Diffusion(
+        grid=setup["mesh"],
+        config=setup["config"],
+        params=setup["diffusion_parameters"],
+        vertical_grid=setup["vertical_grid"],
+        metric_state=setup["metric_state"],
+        interpolation_state=setup["interpolation_state"],
+        edge_params=setup["edge_geometry"],
+        cell_params=setup["cell_geometry"],
+        backend=backend_like,
+        exchange=decomp_defs.SingleNodeExchange(),
+        ndyn_substeps=5,
+        max_nudging_coefficient=0.375,
+    )
+    granule.run(setup["diagnostic_state"], setup["prognostic_state"], setup["dtime"])
+    references["granule"] = {
+        k: getattr(setup["prognostic_state"], k).asnumpy() for k in _PROGNOSTIC_FIELDS
+    }
+    for reference_name, reference in references.items():
+        for name in _PROGNOSTIC_FIELDS:
+            diff = np.abs(computed[name] - reference[name])
+            print(
+                f"jax vs {reference_name} {name}: max abs {np.nanmax(diff):.3e}, "
+                f"max |ref| {np.nanmax(np.abs(reference[name])):.3e}, "
+                f"nan {int(np.isnan(computed[name]).sum())}/{int(np.isnan(reference[name]).sum())}"
+            )
+    for reference_name, reference in references.items():
+        for name in _PROGNOSTIC_FIELDS:
+            np.testing.assert_allclose(
+                computed[name],
+                reference[name],
+                rtol=1e-10,
+                atol=1e-12,
+                equal_nan=True,
+                err_msg=f"{name} against {reference_name}",
+            )

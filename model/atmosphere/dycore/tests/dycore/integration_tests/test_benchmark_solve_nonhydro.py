@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import time
 from typing import TYPE_CHECKING, Any
 
 import gt4py.next as gtx
+import numpy as np
 import pytest
 from gt4py.next import common as gtx_common
 
@@ -399,26 +401,28 @@ def _to_jax(obj: Any, jnp: Any) -> Any:
     return obj
 
 
-@pytest.mark.parametrize(
-    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+_PROGNOSTIC_FIELDS = ("rho", "w", "vn", "exner", "theta_v")
+_SUBSTEP_ARGS: dict[str, Any] = dict(
+    second_order_divdamp_factor=0.02,
+    ndyn_substeps_var=5,
+    at_initial_timestep=False,
+    prepare_fluxes_for_advection=True,
 )
-@pytest.mark.benchmark
-@pytest.mark.benchmark_only
-def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positional-arguments]
+
+
+def _solve_nonhydro_global_jax_step(
     geometry_field_source: grid_geometry.GridGeometry,
-    grid_manager: gm.GridManager,
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
     metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    states: tuple[Any, Any, Any],
+    *,
     at_first_substep: bool,
     at_last_substep: bool,
-    backend_like: model_backends.BackendLike,
-    benchmark: Any,
-) -> None:
+) -> tuple[Any, dict[str, gtx.Field]]:
     """
-    Benchmark `SolveNonhydroGlobal`, the fused single-field-operator substep, under `jax.jit`.
-
-    It runs on the embedded backend with JAX arrays on the default JAX device; the constant
-    fields are computed with `--backend` and then converted.
+    The jitted `SolveNonhydroGlobal` substep on JAX arrays on the default JAX device, and its
+    prognostic input; the constant fields are computed with `backend_like` and then converted.
     """
     jax = pytest.importorskip("jax")
     jnp = jax.numpy
@@ -444,15 +448,13 @@ def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positio
         allocator=jnp,
     )
 
-    prep_adv, diagnostic_state_nh, prognostic_states = _states(
-        mesh, model_backends.get_allocator(backend_like)
-    )
+    prep_adv, diagnostic_state_nh, prognostic_states = states
     prep_adv, diagnostic_state_nh = _to_jax(prep_adv, jnp), _to_jax(diagnostic_state_nh, jnp)
     intermediate_state = solver.initial_intermediate_state()
-    prognostic_fields = ("rho", "w", "vn", "exner", "theta_v")
     prognostic_input = {
-        k: _to_jax(getattr(prognostic_states.current, k), jnp) for k in prognostic_fields
+        k: _to_jax(getattr(prognostic_states.current, k), jnp) for k in _PROGNOSTIC_FIELDS
     }
+    dtime = 10.0 if mesh.limited_area else 90.0
 
     def step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
         new, *_ = solver.time_step(
@@ -460,16 +462,107 @@ def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positio
             prognostic_state=prognostics.PrognosticState(**fields),
             intermediate_state=intermediate_state,
             prep_adv=prep_adv,
-            second_order_divdamp_factor=0.02,
-            dtime=90.0,
-            ndyn_substeps_var=5,
-            at_initial_timestep=False,
-            prepare_fluxes_for_advection=True,
+            dtime=dtime,
             at_first_substep=at_first_substep,
             at_last_substep=at_last_substep,
+            **_SUBSTEP_ARGS,
         )
-        return {k: getattr(new, k) for k in prognostic_fields}
+        return {k: getattr(new, k) for k in _PROGNOSTIC_FIELDS}
 
     jitted = jax.jit(step)
-    jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray)
-    benchmark(lambda: jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray))
+    return lambda fields: jax.block_until_ready(jitted(fields)), prognostic_input
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+@pytest.mark.benchmark
+@pytest.mark.benchmark_only
+def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    backend_like: model_backends.BackendLike,
+    benchmark: Any,
+) -> None:
+    """
+    Benchmark `SolveNonhydroGlobal`, the fused single-field-operator substep, under `jax.jit`.
+
+    The first call, which compiles, is timed on its own in `extra_info["first_call_s"]`.
+    """
+    step, prognostic_input = _solve_nonhydro_global_jax_step(
+        geometry_field_source,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        _states(grid_manager.grid, model_backends.get_allocator(backend_like)),
+        at_first_substep=at_first_substep,
+        at_last_substep=at_last_substep,
+    )
+    start = time.perf_counter()
+    step(prognostic_input)
+    benchmark.extra_info["first_call_s"] = time.perf_counter() - start
+    benchmark(step, prognostic_input)
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+def test_solve_nonhydro_global_jax_matches_granule(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    backend_like: model_backends.BackendLike,
+) -> None:
+    """`SolveNonhydroGlobal` under `jax.jit` against a fresh `SolveNonhydro` on `--backend`."""
+    mesh = grid_manager.grid
+    states = _states(mesh, model_backends.get_allocator(backend_like))
+    step, prognostic_input = _solve_nonhydro_global_jax_step(
+        geometry_field_source,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        states,
+        at_first_substep=at_first_substep,
+        at_last_substep=at_last_substep,
+    )
+    computed = {k: v.asnumpy() for k, v in step(prognostic_input).items()}
+
+    setup = _setup(
+        geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
+    )
+    granule = solve_nh.SolveNonhydro(
+        grid=setup.pop("mesh"),
+        **setup,
+        exchange=decomposition.SingleNodeExchange(),
+        backend=backend_like,
+        max_nudging_coefficient=0.375,
+    )
+    prep_adv, diagnostic_state_nh, prognostic_states = states
+    granule.time_step(
+        diagnostic_state_nh=diagnostic_state_nh,
+        prognostic_states=prognostic_states,
+        prep_adv=prep_adv,
+        dtime=90.0,
+        at_first_substep=at_first_substep,
+        at_last_substep=at_last_substep,
+        **_SUBSTEP_ARGS,
+    )
+    reference = {k: getattr(prognostic_states.next, k).asnumpy() for k in _PROGNOSTIC_FIELDS}
+    for name in _PROGNOSTIC_FIELDS:
+        diff = np.abs(computed[name] - reference[name])
+        print(
+            f"jax vs granule {name}: max abs {np.nanmax(diff):.3e}, "
+            f"max |ref| {np.nanmax(np.abs(reference[name])):.3e}, "
+            f"nan {int(np.isnan(computed[name]).sum())}/{int(np.isnan(reference[name]).sum())}"
+        )
+    for name in _PROGNOSTIC_FIELDS:
+        np.testing.assert_allclose(
+            computed[name], reference[name], rtol=1e-10, atol=1e-12, equal_nan=True, err_msg=name
+        )
