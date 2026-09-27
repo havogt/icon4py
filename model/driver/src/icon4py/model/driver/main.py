@@ -128,6 +128,16 @@ def main(
             ),
         ),
     ] = False,
+    jax_spmd: Annotated[
+        bool,
+        typer.Option(
+            "--jax-spmd/--no-jax-spmd",
+            help=(
+                "With --jax on several ranks, run the whole time step as one SPMD program over all "
+                "ranks (jax.distributed), with the halo exchanges as JAX collectives."
+            ),
+        ),
+    ] = False,
     n_time_steps: Annotated[
         int | None,
         typer.Option(
@@ -191,6 +201,7 @@ def main(
         jax_exchange_read_fields_only=jax_exchange_read_fields_only,
         jax_constants_as_arguments=jax_constants_as_arguments,
         jax_jit_time_step=jax_jit_time_step,
+        jax_spmd=jax_spmd,
     )
 
 

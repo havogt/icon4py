@@ -43,6 +43,7 @@ def run_jw_gathered(
     extra_halo_rings: int,
     exchange_read_fields_only: bool = False,
     jit_time_step: bool = False,
+    spmd: bool = False,
 ) -> list[dict[str, np.ndarray]] | None:
     """
     Run the JAX driver on JW for `num_steps` steps and return the prognostic fields after every
@@ -91,6 +92,7 @@ def run_jw_gathered(
         jax=True,
         jax_exchange_read_fields_only=exchange_read_fields_only,
         jax_jit_time_step=jit_time_step,
+        jax_spmd=spmd,
         on_step_end=record,
     )
 
@@ -140,6 +142,14 @@ def test_parallel_driver_jax(
         exchange_read_fields_only=True,
         jit_time_step=jit_time_step,
     )
+    check_against_savepoints(process_props, computed)
+
+
+def check_against_savepoints(
+    process_props: decomp_defs.ProcessProperties,
+    computed: list[dict[str, np.ndarray]] | None,
+) -> None:
+    """On all ranks: fail if the fields assembled on rank 0 are outside `test_driver`'s tolerances."""
     failures = []
     if computed is not None:
         experiment = test_defs.Experiments.JW

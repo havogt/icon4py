@@ -58,6 +58,7 @@ from icon4py.model.driver import (
     driver_io,
     driver_states,
     driver_utils,
+    jax_utils,
 )
 
 
@@ -703,6 +704,7 @@ def initialize_driver(
     jax_exchange_read_fields_only: bool = False,
     jax_constants_as_arguments: bool = True,
     jax_jit_time_step: bool = False,
+    jax_spmd: bool = False,
 ) -> Icon4pyDriver:
     """
     Set up the driver.
@@ -765,19 +767,33 @@ def initialize_driver(
     )
     driver_class: Callable[..., Icon4pyDriver] = Icon4pyDriver
     if jax:
-        from icon4py.model.driver import jax_driver  # noqa: PLC0415 [import-outside-top-level]
+        from icon4py.model.driver import (  # noqa: PLC0415 [import-outside-top-level]
+            jax_driver,
+            spmd_layout,
+        )
+
+        layout = None
+        if jax_spmd and not process_props.is_single_rank():
+            layout = spmd_layout.build_padded_layout(
+                decomposition_info,
+                process_props.rank,
+                process_props.comm_size,
+                process_props.comm.allgather,
+            )
 
         driver_class = functools.partial(
             jax_driver.JaxIcon4pyDriver,
             halo_exchange=jax_halo_exchange,
             exchange_read_fields_only=jax_exchange_read_fields_only,
             constants_as_arguments=jax_constants_as_arguments,
-            jit_time_step=jax_jit_time_step,
+            jit_time_step=jax_jit_time_step or jax_spmd,
+            layout=layout,
             global_granules=driver_utils.initialize_global_granules(
                 config=config,
                 grid=grid_manager.grid,
                 vertical_grid=vertical_grid,
                 static_field_factories=static_field_factories,
+                layout=layout,
             ),
         )
         granules = driver_utils.Granules()
@@ -844,8 +860,11 @@ def run_driver(
     jax_exchange_read_fields_only: bool = False,
     jax_constants_as_arguments: bool = True,
     jax_jit_time_step: bool = False,
+    jax_spmd: bool = False,
     on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None,
 ) -> tuple[driver_states.DriverStates, Icon4pyDriver]:
+    if jax_spmd and not process_props.is_single_rank():
+        jax_utils.initialize_distributed(process_props.comm)
     icon4py_driver = initialize_driver(
         config=config,
         grid_manager=grid_manager,
@@ -856,6 +875,7 @@ def run_driver(
         jax_exchange_read_fields_only=jax_exchange_read_fields_only,
         jax_constants_as_arguments=jax_constants_as_arguments,
         jax_jit_time_step=jax_jit_time_step,
+        jax_spmd=jax_spmd,
     )
     allocator = model_backends.get_allocator(backend)
     prognostic_state_now = prognostics.initialize_prognostic_state(

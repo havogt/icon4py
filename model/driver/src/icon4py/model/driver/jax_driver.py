@@ -41,7 +41,7 @@ from icon4py.model.common.decomposition import definitions as decomposition_defs
 from icon4py.model.common.grid import base as grid_base
 from icon4py.model.common.states import nonhydro_states, prognostic_state as prognostics
 from icon4py.model.common.utils import data_allocation as data_alloc
-from icon4py.model.driver import driver, driver_states, driver_utils, jax_utils
+from icon4py.model.driver import driver, driver_states, driver_utils, jax_utils, spmd_layout
 
 
 log = logging.getLogger(__name__)
@@ -49,6 +49,7 @@ log = logging.getLogger(__name__)
 _PROGNOSTICS = ("rho", "w", "vn", "exner", "theta_v")
 _TENDENCY_PAIRS = ("normal_wind_advective_tendency", "vertical_wind_advective_tendency")
 _SUBSTEP_GROUPS = ("prognostic", "diagnostic", "intermediate", "prep_adv")
+_MESH_AXIS = "rank"
 
 #: The state fields the global dynamical core and diffusion steps read outside the owned points,
 #: from `required_indices` of `_solve_nonhydro_global_step` and `_diffusion_global_step`. A
@@ -166,10 +167,12 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         exchange_read_fields_only: bool = False,
         constants_as_arguments: bool = True,
         jit_time_step: bool = False,
+        layout: spmd_layout.PaddedLayout | None = None,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
         self._distributed = not kwargs["process_props"].is_single_rank()
+        self._num_local = {dim: self.grid.size[dim] for dim in dims.horizontal_dims()}
         if self._distributed:
             info = self.decomposition_info
             if not (
@@ -186,6 +189,16 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 num_owned = int(owner_mask.sum())
                 assert owner_mask[:num_owned].all(), f"the owned {dim.value}s are not first"
                 self._num_owned[dim] = num_owned
+        self._layout = layout
+        if layout is not None:
+            if not (jit_time_step and constants_as_arguments):
+                raise ValueError(
+                    "One SPMD program needs the whole time step jitted and the static fields "
+                    "passed as arguments."
+                )
+            self._num_owned = dict(layout.padded_owned)
+            self._num_local = dict(layout.padded_local)
+        self._traced_tables: dict[str, Any] | None = None
         if self.io_monitor is not None or self.tendencies is not None:
             raise NotImplementedError("The JAX driver does not write output or apply tendencies.")
         if self.config.tracer_config is not None and self.config.tracer_config.nactive > 0:
@@ -203,7 +216,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         }
         self._traces = 0
         self.jit_time_step = jit_time_step
-        if jit_time_step and self._distributed:
+        if jit_time_step and self._distributed and layout is None:
             from mpi4py import MPI  # noqa: PLC0415 [import-outside-top-level]
 
             # XLA may run the exchange callbacks on its own thread
@@ -249,13 +262,13 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
     def _local_domain(self, field: gtx.Field) -> gtx_common.Domain:
         dim = field.domain.dims[0]
         return field.domain.replace(
-            dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, self.grid.size[dim])))
+            dim, gtx_common.NamedRange(dim, gtx_common.unit_range((0, self._num_local[dim])))
         )
 
     def _nan_padded(self, field: gtx.Field) -> gtx.Field:
         """An owned-size field extended to the local size with a NaN halo; others as they are."""
         dim = field.domain.dims[0]
-        num_owned, num_local = self._num_owned[dim], self.grid.size[dim]
+        num_owned, num_local = self._num_owned[dim], self._num_local[dim]
         if field.ndarray.shape[0] != num_owned:
             return field
         jnp = self._jax.numpy
@@ -338,6 +351,14 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 new_leaves[i] = self._nan_padded(leaf)
         if not exchanged:
             return new_leaves
+        if self._layout is not None:
+            for i in exchanged:
+                new_leaves[i] = gtx.as_field(
+                    self._local_domain(leaves[i]),
+                    self._exchange_collective(leaves[i]),
+                    allocator=jax.numpy,
+                )
+            return new_leaves
         field_dims = tuple(leaves[i].domain.dims[0] for i in exchanged)
         owned = [leaves[i].ndarray[: self._num_owned[dim]] for i, dim in zip(exchanged, field_dims)]
         exchange = buffer_callback.buffer_callback(
@@ -345,7 +366,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 self._exchange_in_callback, field_dims, jax.default_backend() == "gpu"
             ),
             [
-                jax.ShapeDtypeStruct((self.grid.size[dim], *array.shape[1:]), array.dtype)
+                jax.ShapeDtypeStruct((self._num_local[dim], *array.shape[1:]), array.dtype)
                 for dim, array in zip(field_dims, owned)
             ],
             # every rank has to issue every exchange
@@ -354,6 +375,27 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         for i, array in zip(exchanged, exchange(*owned)):
             new_leaves[i] = gtx.as_field(self._local_domain(leaves[i]), array, allocator=jax.numpy)
         return new_leaves
+
+    def _exchange_collective(self, field: gtx.Field) -> Any:
+        """The field on the local points of the padded layout, its halo received from the owners."""
+        jax = self._jax
+        dim = field.domain.dims[0]
+        assert self._traced_tables is not None
+        tables = self._traced_tables[dim.value]
+        owned = field.ndarray[: self._num_owned[dim]]
+        local = jax.numpy.concatenate(
+            [
+                owned,
+                # NaN marks every halo point the exchange leaves unfilled
+                jax.numpy.full(
+                    (self._num_local[dim] - owned.shape[0], *owned.shape[1:]),
+                    jax.numpy.nan,
+                    owned.dtype,
+                ),
+            ]
+        )
+        received = jax.lax.all_to_all(owned[tables["send"]], _MESH_AXIS, 0, 0)
+        return local.at[tables["recv"]].set(received, mode="drop")
 
     def _exchange_in_callback(
         self,
@@ -486,6 +528,8 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             second_order_divdamp_factor,
             dtime,
         ) = key
+        if self._layout is not None:
+            self._traced_tables = constants["halo_tables"]
         diagnostic_state = _diagnostic_from_dict(diagnostic)
         for dyn_substep in range(ndyn_substeps_var):
             if not self.jit_time_step:
@@ -554,6 +598,84 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             )
         return self._jitted[("time_step", *key)]
 
+    def _jitted_spmd_time_step(self, key: tuple, args: tuple) -> tuple[Callable, Any]:
+        """
+        The jitted time step as one SPMD program over all ranks, on the flattened `args`.
+
+        Returns the program and the tree structure of the state it returns.
+        """
+        jax = self._jax
+        leaves, treedef = jax.tree_util.tree_flatten(args)
+        state_treedef = jax.tree_util.tree_structure(args[1:])
+        specs = [
+            jax.sharding.PartitionSpec()
+            if leaf.ndim == 0
+            else jax.sharding.PartitionSpec(_MESH_AXIS)
+            for leaf in leaves
+        ]
+        num_constants = len(jax.tree_util.tree_leaves(args[0]))
+        if ("spmd_time_step", *key) not in self._jitted:
+
+            def body(*leaves: Any) -> list:
+                constants, *state = jax.tree_util.tree_unflatten(treedef, leaves)
+                # The connectivities differ between the ranks, so domain inference must not read
+                # a table: without the handle to one it takes every neighbor as present, which
+                # the padded layout makes true.
+                constants = jax.tree_util.tree_map(
+                    lambda c: (
+                        type(c)(c.domain, c.ndarray, c.codomain, c.skip_value, None)  # type: ignore[call-arg]  # the JAX connectivity has a table handle
+                        if isinstance(c, gtx_common.Connectivity)
+                        else c
+                    ),
+                    constants,
+                    is_leaf=lambda x: isinstance(x, gtx_common.Connectivity),
+                )
+                prognostic, diagnostic, intermediate, prep_adv = self._time_step(
+                    constants, *state, key=key
+                )
+                diagnostic["max_vertical_cfl"] = jax.lax.pmax(
+                    diagnostic["max_vertical_cfl"], _MESH_AXIS
+                )
+                return jax.tree_util.tree_leaves((prognostic, diagnostic, intermediate, prep_adv))
+
+            self._jitted[("spmd_time_step", *key)] = jax.jit(
+                jax.shard_map(
+                    body,
+                    mesh=self._mesh,
+                    in_specs=tuple(specs),
+                    out_specs=specs[num_constants:],
+                    # gt4py's embedded scan starts its carry from a value that does not vary
+                    # between the ranks, while its body's output does
+                    check_vma=False,
+                )
+            )
+        return self._jitted[("spmd_time_step", *key)], state_treedef
+
+    def _to_global(self, tree: Any) -> Any:
+        """Process-local arrays to arrays over all ranks: split along the first axis, 0-d replicated."""
+        jax = self._jax
+        sharding = jax.sharding.NamedSharding(self._mesh, jax.sharding.PartitionSpec(_MESH_AXIS))
+        replicated = jax.sharding.NamedSharding(self._mesh, jax.sharding.PartitionSpec())
+
+        assert self._layout is not None
+        num_ranks = self._layout.num_ranks
+
+        def to_global(x: Any) -> Any:
+            x = self._xp.asarray(x)
+            if x.ndim == 0:
+                return jax.make_array_from_process_local_data(replicated, x, ())
+            return jax.make_array_from_process_local_data(
+                sharding, x, (num_ranks * x.shape[0], *x.shape[1:])
+            )
+
+        return jax.tree_util.tree_map(to_global, tree)
+
+    def _local(self, tree: Any) -> Any:
+        """This rank's part of `tree`: its shard of the arrays over all ranks."""
+        if self._layout is None:
+            return tree
+        return self._jax.tree_util.tree_map(lambda x: x.addressable_shards[0].data, tree)
+
     def time_integration(self, ds: driver_states.DriverStates) -> None:
         assert self.config.nonhydrostatic is not None
         assert ds.solve_nonhydro_diagnostic is not None
@@ -562,22 +684,44 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         assert solve_nonhydro is not None
         time_vars = self.model_time_variables
 
-        state = self._with_halo(
-            {
-                "prognostic": {
-                    k: jax_utils.to_jax(getattr(ds.prognostics.current, k)) for k in _PROGNOSTICS
-                },
-                "diagnostic": _diagnostic_to_dict(jax_utils.to_jax(ds.solve_nonhydro_diagnostic)),
-                "prep_adv": _shallow_dict(jax_utils.to_jax(ds.prep_advection_prognostic)),
-            }
-        )
+        state: dict[str, Any] = {
+            "prognostic": {k: getattr(ds.prognostics.current, k) for k in _PROGNOSTICS},
+            "diagnostic": ds.solve_nonhydro_diagnostic,
+            "prep_adv": ds.prep_advection_prognostic,
+        }
+        if self._layout is not None:
+            state = driver_utils.pad_fields(state, self._layout)
+        state = {
+            "prognostic": {k: jax_utils.to_jax(v) for k, v in state["prognostic"].items()},
+            "diagnostic": _diagnostic_to_dict(jax_utils.to_jax(state["diagnostic"])),
+            "prep_adv": _shallow_dict(jax_utils.to_jax(state["prep_adv"])),
+        }
+        intermediate = solve_nonhydro.initial_intermediate_state()._asdict()
+        constants = self._constants
+        if self._layout is not None:
+            self._mesh = self._jax.make_mesh((self._layout.num_ranks,), (_MESH_AXIS,))
+            # the halos of the initial state are the ones the setup computed
+            state, intermediate = self._to_global((state, intermediate))
+            constants = self._to_global(
+                {
+                    **self._constants,
+                    "halo_tables": {
+                        dim.value: {
+                            "send": self._layout.send_index[dim],
+                            "recv": self._layout.recv_index[dim],
+                        }
+                        for dim in self._layout.padded_local
+                    },
+                }
+            )
+        else:
+            state = self._with_halo(state)
         prognostic, diagnostic, prep_adv = (
             state["prognostic"],
             state["diagnostic"],
             state["prep_adv"],
         )
         diagnostic_state = _diagnostic_from_dict(diagnostic)
-        intermediate = solve_nonhydro.initial_intermediate_state()._asdict()
 
         wall_clock_starting_time = datetime.datetime.now()
         for time_step in range(time_vars.n_time_steps):
@@ -595,27 +739,34 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 second_order_divdamp_factor,
                 float(time_vars.dtime_in_seconds),
             )
-            if self.jit_time_step:
-                self._compute_statistics(0, prognostics.PrognosticState(**prognostic))
-                step = self._jitted_time_step(key)
-            else:
-                step = functools.partial(self._time_step, key=key)
-            prognostic, diagnostic, intermediate, prep_adv = step(
-                self._constants,
+            args = (
+                constants,
                 prognostic,
                 _diagnostic_to_dict(diagnostic_state),
                 intermediate,
                 prep_adv,
             )
+            if self._layout is not None:
+                spmd_step, state_treedef = self._jitted_spmd_time_step(key, args)
+                prognostic, diagnostic, intermediate, prep_adv = self._jax.tree_util.tree_unflatten(
+                    state_treedef, spmd_step(*self._jax.tree_util.tree_leaves(args))
+                )
+            else:
+                if self.jit_time_step:
+                    self._compute_statistics(0, prognostics.PrognosticState(**prognostic))
+                    step = self._jitted_time_step(key)
+                else:
+                    step = functools.partial(self._time_step, key=key)
+                prognostic, diagnostic, intermediate, prep_adv = step(*args)
             diagnostic_state = _diagnostic_from_dict(diagnostic)
             self._jax.block_until_ready(prognostic["vn"].ndarray)
 
             time_vars.is_first_step_in_simulation = False
             self._adjust_ndyn_substeps_var(diagnostic_state)
             if self.on_step_end is not None:
-                self.on_step_end(time_step, prognostics.PrognosticState(**prognostic))
+                self.on_step_end(time_step, prognostics.PrognosticState(**self._local(prognostic)))
 
-        ds.prognostics.first = prognostics.PrognosticState(**prognostic)  # type: ignore[method-assign]  # Pair.first is a named_property with a setter
+        ds.prognostics.first = prognostics.PrognosticState(**self._local(prognostic))  # type: ignore[method-assign]  # Pair.first is a named_property with a setter
         log.info(
             f"JAX time loop: {time_vars.n_time_steps} steps in "
             f"{(datetime.datetime.now() - wall_clock_starting_time).total_seconds():.1f} s, "
