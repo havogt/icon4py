@@ -20,6 +20,7 @@ from gt4py.next import common as gtx_common
 import icon4py.model.common.dimension as dims
 import icon4py.model.common.grid.states as grid_states
 from icon4py.model.atmosphere.diffusion import diffusion, diffusion_global, diffusion_states
+from icon4py.model.atmosphere.diffusion.stencils import diffusion_global_step
 from icon4py.model.common import constants, model_backends, model_options
 from icon4py.model.common.decomposition import definitions as decomp_defs
 from icon4py.model.common.grid import (
@@ -32,6 +33,7 @@ from icon4py.model.common.interpolation import interpolation_attributes, interpo
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import prognostic_state as prognostics
 from icon4py.model.common.utils import data_allocation as data_alloc
+from icon4py.model.testing import structured_torus
 from icon4py.model.testing.fixtures.benchmark import (
     geometry_field_source,
     interpolation_field_source,
@@ -248,15 +250,15 @@ def _to_jax(obj: Any, jnp: Any) -> Any:
 _PROGNOSTIC_FIELDS = ("rho", "w", "vn", "exner", "theta_v")
 
 
-def _diffusion_global_step(
+def _diffusion_global_granule(
     setup: dict[str, Any], execution: str, backend_like: model_backends.BackendLike
-) -> tuple[Any, dict[str, gtx.Field]]:
+) -> tuple[diffusion_global.DiffusionGlobal, dict[str, gtx.Field]]:
     """
-    The `DiffusionGlobal` step and its prognostic input.
+    The `DiffusionGlobal` granule and its prognostic input.
 
-    With `execution="jax"` the step is jitted and works on JAX arrays on the default JAX device;
-    the constant fields are computed with `backend_like` and then converted. With
-    `execution="backend"` it runs on `backend_like`.
+    With `execution="jax"` it works on JAX arrays on the default JAX device; the constant fields
+    are computed with `backend_like` and then converted. With `execution="backend"` it runs on
+    `backend_like`.
     """
     mesh = setup["mesh"]
     if mesh.limited_area:
@@ -299,6 +301,14 @@ def _diffusion_global_step(
         ndyn_substeps=5,
         backend=backend,
     )
+    return granule, prognostic_input
+
+
+def _diffusion_global_step(
+    setup: dict[str, Any], execution: str, backend_like: model_backends.BackendLike
+) -> tuple[Any, dict[str, gtx.Field]]:
+    """The `DiffusionGlobal` step, jitted with `execution="jax"`, and its prognostic input."""
+    granule, prognostic_input = _diffusion_global_granule(setup, execution, backend_like)
     dtime = setup["dtime"]
 
     def step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
@@ -306,6 +316,7 @@ def _diffusion_global_step(
         return {k: getattr(new, k) for k in _PROGNOSTIC_FIELDS}
 
     if execution == "jax":
+        jax = pytest.importorskip("jax")
         jitted = jax.jit(step)
         return lambda fields: jax.block_until_ready(jitted(fields)), prognostic_input
     return step, prognostic_input
@@ -399,3 +410,110 @@ def test_diffusion_global_jax_matches_backend(
                 equal_nan=True,
                 err_msg=f"{name} against {reference_name}",
             )
+
+
+_TORUS_SEED = 20260927
+_DIFFUSION_TORUS_HALO = 4
+
+
+def _diffusion_torus_calls(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    monkeypatch: pytest.MonkeyPatch,
+    layouts: tuple[str, ...],
+) -> dict[str, structured_torus.LayoutCall]:
+    """
+    The fused diffusion call in each torus layout, on the same random inputs drawn from `_TORUS_SEED`.
+
+    The arguments are those `DiffusionGlobal.run` passes to the fused operator on `--backend`.
+    """
+    pytest.importorskip("jax")
+    if not structured_torus.is_torus(grid_manager.file_path):
+        pytest.skip("needs a torus grid file")
+    rng = np.random.default_rng(_TORUS_SEED)
+    with monkeypatch.context() as m:
+        m.setattr(np.random, "default_rng", lambda *_: rng)
+        setup = _setup(
+            geometry_field_source,
+            grid_manager,
+            interpolation_field_source,
+            metrics_field_source,
+            backend_like,
+        )
+    granule, prognostic_input = _diffusion_global_granule(setup, "backend", backend_like)
+    kwargs = structured_torus.record_call(
+        granule,
+        "_diffusion_global_step",
+        lambda: granule.run(
+            prognostic_state=prognostics.PrognosticState(**prognostic_input), dtime=setup["dtime"]
+        ),
+    )
+    domain = kwargs.pop("domain")
+    connectivities = kwargs.pop("offset_provider")
+    layout = structured_torus.torus_layout(grid_manager.file_path)
+    return {
+        which: structured_torus.make_layout_call(
+            diffusion_global_step._diffusion_global_step,
+            kwargs,
+            domain=domain,
+            connectivities=connectivities,
+            layout=layout,
+            which=which,
+            halo=_DIFFUSION_TORUS_HALO,
+        )
+        for which in layouts
+    }
+
+
+def test_diffusion_global_torus_layouts_match(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fused diffusion call in the reordered and structured layouts against ICON order, after one call."""
+    calls = _diffusion_torus_calls(
+        geometry_field_source,
+        grid_manager,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        monkeypatch,
+        structured_torus.LAYOUTS,
+    )
+    structured_torus.check_layouts(calls, ("vn", "w", "theta_v", "exner"))
+
+
+@pytest.mark.benchmark
+@pytest.mark.benchmark_only
+@pytest.mark.parametrize("layout", structured_torus.LAYOUTS)
+def test_diffusion_global_torus_layout_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    monkeypatch: pytest.MonkeyPatch,
+    layout: str,
+    benchmark: Any,
+) -> None:
+    """The fused diffusion call under `jax.jit` in one torus layout; the first call is timed on its own."""
+    call = _diffusion_torus_calls(
+        geometry_field_source,
+        grid_manager,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        monkeypatch,
+        (layout,),
+    )[layout]
+    benchmark.extra_info["extent"] = call.extent
+    start = time.perf_counter()
+    call.run()
+    benchmark.extra_info["first_call_s"] = time.perf_counter() - start
+    benchmark(call.run)

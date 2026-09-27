@@ -29,7 +29,8 @@ from icon4py.model.atmosphere.dycore import (
     solve_nonhydro as solve_nh,
     solve_nonhydro_global,
 )
-from icon4py.model.common import model_backends, utils as common_utils
+from icon4py.model.atmosphere.dycore.stencils import solve_nonhydro_global_step
+from icon4py.model.common import model_backends, model_options, utils as common_utils
 from icon4py.model.common.decomposition import definitions as decomposition
 from icon4py.model.common.grid import (
     geometry as grid_geometry,
@@ -41,6 +42,7 @@ from icon4py.model.common.interpolation import interpolation_attributes, interpo
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import factory, nonhydro_states, prognostic_state as prognostics
 from icon4py.model.common.utils import data_allocation as data_alloc
+from icon4py.model.testing import structured_torus
 from icon4py.model.testing.fixtures.benchmark import (
     geometry_field_source,
     interpolation_field_source,
@@ -569,3 +571,142 @@ def test_solve_nonhydro_global_jax_matches_granule(  # noqa: PLR0917 [too-many-p
         np.testing.assert_allclose(
             computed[name], reference[name], rtol=1e-10, atol=1e-12, equal_nan=True, err_msg=name
         )
+
+
+_TORUS_SEED = 20260927
+_SOLVER_TORUS_HALO = 9
+
+
+def _solve_nonhydro_torus_calls(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    monkeypatch: pytest.MonkeyPatch,
+    layouts: tuple[str, ...],
+    *,
+    at_first_substep: bool,
+    at_last_substep: bool,
+) -> dict[str, structured_torus.LayoutCall]:
+    """
+    The fused solve_nonhydro substep in each torus layout, on the same random states drawn from
+    `_TORUS_SEED`.
+
+    The arguments are those `SolveNonhydroGlobal.time_step` passes to the fused operator on
+    `--backend`.
+    """
+    pytest.importorskip("jax")
+    if not structured_torus.is_torus(grid_manager.file_path):
+        pytest.skip("needs a torus grid file")
+    mesh = grid_manager.grid
+    allocator = model_backends.get_allocator(backend_like)
+    setup = _setup(
+        geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
+    )
+    setup.pop("mesh")
+    setup.pop("owner_mask")
+    solver = solve_nonhydro_global.SolveNonhydroGlobal(
+        grid=mesh,
+        **setup,
+        allocator=allocator,
+        backend=model_options.customize_backend(None, backend_like),
+    )
+    rng = np.random.default_rng(_TORUS_SEED)
+    with monkeypatch.context() as m:
+        m.setattr(np.random, "default_rng", lambda *_: rng)
+        prep_adv, diagnostic_state_nh, prognostic_states = _states(mesh, allocator)
+    kwargs = structured_torus.record_call(
+        solver,
+        "_solve_nonhydro_global_step",
+        lambda: solver.time_step(
+            diagnostic_state_nh=diagnostic_state_nh,
+            prognostic_state=prognostic_states.current,
+            intermediate_state=solver.initial_intermediate_state(),
+            prep_adv=prep_adv,
+            dtime=90.0,
+            at_first_substep=at_first_substep,
+            at_last_substep=at_last_substep,
+            **_SUBSTEP_ARGS,
+        ),
+    )
+    domain = kwargs.pop("domain")
+    connectivities = kwargs.pop("offset_provider")
+    layout = structured_torus.torus_layout(grid_manager.file_path)
+    return {
+        which: structured_torus.make_layout_call(
+            solve_nonhydro_global_step._solve_nonhydro_global_step,
+            kwargs,
+            domain=domain,
+            connectivities=connectivities,
+            layout=layout,
+            which=which,
+            halo=_SOLVER_TORUS_HALO,
+        )
+        for which in layouts
+    }
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+def test_solve_nonhydro_global_torus_layouts_match(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    monkeypatch: pytest.MonkeyPatch,
+    at_first_substep: bool,
+    at_last_substep: bool,
+) -> None:
+    """The fused substep in the reordered and structured layouts against ICON order, after one call."""
+    calls = _solve_nonhydro_torus_calls(
+        geometry_field_source,
+        grid_manager,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        monkeypatch,
+        structured_torus.LAYOUTS,
+        at_first_substep=at_first_substep,
+        at_last_substep=at_last_substep,
+    )
+    structured_torus.check_layouts(calls, ("vn", "w", "rho", "exner", "theta_v"))
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+@pytest.mark.parametrize("layout", structured_torus.LAYOUTS)
+@pytest.mark.benchmark
+@pytest.mark.benchmark_only
+def test_solve_nonhydro_global_torus_layout_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+    monkeypatch: pytest.MonkeyPatch,
+    layout: str,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    benchmark: Any,
+) -> None:
+    """The fused substep under `jax.jit` in one torus layout; the first call is timed on its own."""
+    call = _solve_nonhydro_torus_calls(
+        geometry_field_source,
+        grid_manager,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        monkeypatch,
+        (layout,),
+        at_first_substep=at_first_substep,
+        at_last_substep=at_last_substep,
+    )[layout]
+    benchmark.extra_info["extent"] = call.extent
+    start = time.perf_counter()
+    call.run()
+    benchmark.extra_info["first_call_s"] = time.perf_counter() - start
+    benchmark(call.run)
