@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -36,12 +37,13 @@ from icon4py.model.common.grid import (
     geometry as grid_geometry,
     geometry_attributes as geometry_meta,
     grid_manager as gm,
+    icon as icon_grid,
     vertical as v_grid,
 )
 from icon4py.model.common.interpolation import interpolation_attributes, interpolation_factory
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import factory, nonhydro_states, prognostic_state as prognostics
-from icon4py.model.common.utils import data_allocation as data_alloc
+from icon4py.model.common.utils import data_allocation as data_alloc, device_utils
 from icon4py.model.testing import structured_torus
 from icon4py.model.testing.fixtures.benchmark import (
     geometry_field_source,
@@ -537,6 +539,92 @@ def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positio
     step(prognostic_input)
     benchmark.extra_info["first_call_s"] = time.perf_counter() - start
     benchmark(step, prognostic_input)
+
+
+#: The integer and boolean arguments of the fused step: level indices, options and flags.
+_SOLVE_NONHYDRO_GLOBAL_STATIC_PARAMS = (
+    "at_first_substep",
+    "at_last_substep",
+    "skip_compute_predictor_vertical_advection",
+    "prepare_fluxes_for_advection",
+    "apply_2nd_order_divergence_damping",
+    "apply_4th_order_divergence_damping",
+    "igradp_method",
+    "rayleigh_type",
+    "divdamp_type",
+    "divdamp_order",
+    "nlev",
+    "nflatlev",
+    "nflat_gradp",
+    "start_of_ddz_of_exner_extrapolation",
+    "start_of_d2dz2_of_exner_extrapolation",
+    "end_index_of_damping_layer",
+    "kstart_moist",
+)
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+@pytest.mark.benchmark
+@pytest.mark.benchmark_only
+def test_benchmark_solve_nonhydro_global_backend(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    backend_like: model_backends.BackendLike,
+    benchmark: Any,
+) -> None:
+    """
+    Benchmark `SolveNonhydroGlobal`, the fused single-field-operator substep, on `--backend`, with
+    static domains and static integer and boolean arguments.
+
+    The first call, which compiles, is timed on its own in `extra_info["first_call_s"]`.
+    """
+    setup = _setup(
+        geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
+    )
+    mesh = setup.pop("mesh")
+    if mesh.limited_area:
+        pytest.skip("'SolveNonhydroGlobal' does not support limited area grids.")
+    setup.pop("owner_mask")
+    allocator = model_backends.get_allocator(backend_like)
+    if os.environ.get("ICON4PY_BENCH_REPLACE_SKIP_VALUES", "1") == "1":
+        # gt4py's static domain inference takes min/max over the neighbour tables including their
+        # skip values (gt4py-f103).
+        mesh = icon_grid.with_skip_values_replaced(mesh, allocator=allocator)
+    solver = solve_nonhydro_global.SolveNonhydroGlobal(
+        grid=mesh,
+        **setup,
+        allocator=allocator,
+        backend=model_options.customize_backend(None, backend_like),
+    )
+    solver._solve_nonhydro_global_step = solver._solve_nonhydro_global_step.with_compilation_options(
+        static_domains=True, static_params=_SOLVE_NONHYDRO_GLOBAL_STATIC_PARAMS
+    )
+    prep_adv, diagnostic_state_nh, prognostic_states = _states(mesh, allocator)
+    intermediate_state = solver.initial_intermediate_state()
+
+    def step() -> None:
+        solver.time_step(
+            diagnostic_state_nh=diagnostic_state_nh,
+            prognostic_state=prognostic_states.current,
+            intermediate_state=intermediate_state,
+            prep_adv=prep_adv,
+            dtime=90.0,
+            at_first_substep=at_first_substep,
+            at_last_substep=at_last_substep,
+            **_SUBSTEP_ARGS,
+        )
+        device_utils.sync(allocator)
+
+    start = time.perf_counter()
+    step()
+    benchmark.extra_info["first_call_s"] = time.perf_counter() - start
+    benchmark(step)
 
 
 @pytest.mark.parametrize(
