@@ -214,7 +214,7 @@ def test_with_skip_values_replaced_matches_replacement_on_construction(
         grid_description, keep_skip_values=False, backend=backend
     ).grid
 
-    replaced = icon.with_skip_values_replaced(grid)
+    replaced = icon.with_skip_values_replaced(grid, allocator=backend)
 
     assert not replaced.config.keep_skip_values
     assert replaced.connectivities.keys() == expected.connectivities.keys()
@@ -223,6 +223,7 @@ def test_with_skip_values_replaced_matches_replacement_on_construction(
         np.testing.assert_array_equal(
             connectivity.asnumpy(), expected.get_connectivity(name).asnumpy(), err_msg=name
         )
+        assert connectivity.ndarray.strides == expected.get_connectivity(name).ndarray.strides, name
     assert np.any(grid.get_connectivity("E2C").asnumpy() == gridfile.GridFile.INVALID_INDEX)
 
 

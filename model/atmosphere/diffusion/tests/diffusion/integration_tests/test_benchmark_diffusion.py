@@ -289,9 +289,9 @@ def _diffusion_global_granule(
     else:
         # gt4py's static domain inference takes min/max over the neighbour tables including their skip
         # values, which gives a negative edge range through V2E on the pentagons (gt4py-f103).
-        mesh = icon_grid.with_skip_values_replaced(mesh)
         backend = model_options.customize_backend(None, backend_like)
         allocator = model_backends.get_allocator(backend_like)
+        mesh = icon_grid.with_skip_values_replaced(mesh, allocator=allocator)
 
     granule = diffusion_global.DiffusionGlobal(
         grid=mesh,

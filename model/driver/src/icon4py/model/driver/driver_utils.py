@@ -680,7 +680,7 @@ def initialize_global_granules(
     if grid.config.distributed:
         # The factories need the skip values at the rank rim. Embedded field operators cannot
         # restrict a neighbor table that has them, and the global steps never read that far.
-        grid = icon_grid.with_skip_values_replaced(grid)
+        grid = icon_grid.with_skip_values_replaced(grid, allocator=None)
     if layout is not None:
         states = pad_fields(states, layout)
         grid = padded_grid(grid, layout)
