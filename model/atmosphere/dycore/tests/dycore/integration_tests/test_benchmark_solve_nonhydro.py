@@ -602,8 +602,13 @@ def test_benchmark_solve_nonhydro_global_backend(  # noqa: PLR0917 [too-many-pos
         allocator=allocator,
         backend=model_options.customize_backend(None, backend_like),
     )
+    options: dict[str, Any] = {}
+    if os.environ.get("ICON4PY_BENCH_STATIC_DOMAINS", "1") == "1":
+        options["static_domains"] = True
+    if os.environ.get("ICON4PY_BENCH_STATIC_SIZES", "1") == "1":
+        options["static_params"] = _SOLVE_NONHYDRO_GLOBAL_STATIC_PARAMS
     solver._solve_nonhydro_global_step = solver._solve_nonhydro_global_step.with_compilation_options(
-        static_domains=True, static_params=_SOLVE_NONHYDRO_GLOBAL_STATIC_PARAMS
+        **options
     )
     prep_adv, diagnostic_state_nh, prognostic_states = _states(mesh, allocator)
     intermediate_state = solver.initial_intermediate_state()
