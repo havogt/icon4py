@@ -32,7 +32,7 @@ from icon4py.model.common.grid import (
 from icon4py.model.common.interpolation import interpolation_attributes, interpolation_factory
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import prognostic_state as prognostics
-from icon4py.model.common.utils import data_allocation as data_alloc
+from icon4py.model.common.utils import data_allocation as data_alloc, device_utils
 from icon4py.model.testing import structured_torus
 from icon4py.model.testing.fixtures.benchmark import (
     geometry_field_source,
@@ -319,7 +319,14 @@ def _diffusion_global_step(
         jax = pytest.importorskip("jax")
         jitted = jax.jit(step)
         return lambda fields: jax.block_until_ready(jitted(fields)), prognostic_input
-    return step, prognostic_input
+    allocator = model_backends.get_allocator(backend_like)
+
+    def synced_step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
+        out = step(fields)
+        device_utils.sync(allocator)
+        return out
+
+    return synced_step, prognostic_input
 
 
 @pytest.mark.benchmark
