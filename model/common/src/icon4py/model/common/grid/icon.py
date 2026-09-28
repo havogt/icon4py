@@ -221,7 +221,7 @@ def with_skip_values_replaced(grid: IconGrid) -> IconGrid:
             else gtx.as_connectivity(
                 c.domain,
                 c.codomain,
-                base._replace_skip_values(c.domain.dims, c.ndarray.copy()),
+                base._replace_skip_values(c.domain.dims, c.ndarray.copy(order="K")),
                 skip_value=None,
                 allocator=data_alloc.array_namespace(c.ndarray),
             )
