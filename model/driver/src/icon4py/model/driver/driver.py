@@ -705,6 +705,7 @@ def initialize_driver(
     jax_constants_as_arguments: bool = True,
     jax_jit_time_step: bool = False,
     jax_spmd: bool = False,
+    jax_spmd_transport: driver_utils.SpmdTransport = driver_utils.SpmdTransport.ALL_TO_ALL,
 ) -> Icon4pyDriver:
     """
     Set up the driver.
@@ -788,6 +789,7 @@ def initialize_driver(
             constants_as_arguments=jax_constants_as_arguments,
             jit_time_step=jax_jit_time_step or jax_spmd,
             layout=layout,
+            spmd_transport=jax_spmd_transport,
             global_granules=driver_utils.initialize_global_granules(
                 config=config,
                 grid=grid_manager.grid,
@@ -861,6 +863,7 @@ def run_driver(
     jax_constants_as_arguments: bool = True,
     jax_jit_time_step: bool = False,
     jax_spmd: bool = False,
+    jax_spmd_transport: driver_utils.SpmdTransport = driver_utils.SpmdTransport.ALL_TO_ALL,
     on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None,
 ) -> tuple[driver_states.DriverStates, Icon4pyDriver]:
     if jax_spmd and not process_props.is_single_rank():
@@ -876,6 +879,7 @@ def run_driver(
         jax_constants_as_arguments=jax_constants_as_arguments,
         jax_jit_time_step=jax_jit_time_step,
         jax_spmd=jax_spmd,
+        jax_spmd_transport=jax_spmd_transport,
     )
     allocator = model_backends.get_allocator(backend)
     prognostic_state_now = prognostics.initialize_prognostic_state(

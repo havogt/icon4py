@@ -10,6 +10,7 @@ import concurrent.futures
 import dataclasses
 import functools
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import gt4py.next as gtx
@@ -100,21 +101,37 @@ def _to_global(global_index: np.ndarray, table: np.ndarray) -> np.ndarray:
     return np.where(table < 0, -1, global_index[table])
 
 
-def _halo_mismatches(
+_EXCHANGES = {
+    "all_to_all": spmd_layout.exchange_numpy,
+    "coloured": spmd_layout.exchange_coloured_numpy,
+}
+
+
+def _owned_only(
     managers: list[gm.GridManager],
     layouts: list[spmd_layout.PaddedLayout],
     dim: gtx.Dimension,
-    num_global: int,
-) -> int:
-    """Number of real rows that differ from a global field after exchanging only its owned values."""
-    g = np.random.default_rng(42).random(num_global)
+    g: np.ndarray,
+) -> list[np.ndarray]:
     local = []
     for manager, layout in zip(managers, layouts, strict=True):
         values = g[_global_index(manager, dim)]
         values[layout.num_owned[dim] :] = np.nan
         local.append(values)
-    padded = [spmd_layout.pad_rows(lt, dim, a) for lt, a in zip(layouts, local, strict=True)]
-    exchanged = spmd_layout.exchange_numpy(layouts, padded, dim)
+    return [spmd_layout.pad_rows(lt, dim, a) for lt, a in zip(layouts, local, strict=True)]
+
+
+def _halo_mismatches(
+    managers: list[gm.GridManager],
+    layouts: list[spmd_layout.PaddedLayout],
+    dim: gtx.Dimension,
+    num_global: int,
+    exchange: Callable[..., list[np.ndarray]],
+) -> int:
+    """Number of real rows that differ from a global field after exchanging only its owned values."""
+    g = np.random.default_rng(42).random(num_global)
+    padded = _owned_only(managers, layouts, dim, g)
+    exchanged = exchange(layouts, padded, dim)
 
     mismatches = 0
     for manager, layout, before, after in zip(managers, layouts, padded, exchanged, strict=True):
@@ -157,32 +174,101 @@ def test_layout_invariants(ranks: Any, dim: gtx.Dimension) -> None:
         is_padding[padded_index] = False
         assert (source_index[is_padding] == 0).all()
         assert (layout.send_index[dim] < layout.padded_owned[dim]).all()
+        assert layout.send_round[dim].shape == (
+            len(layout.rounds),
+            layout.send_index[dim].shape[1],
+        )
+        assert layout.recv_round[dim].shape == layout.send_round[dim].shape
+
+
+@pytest.mark.datatest
+def test_colouring(ranks: Any) -> None:
+    _, layouts = ranks
+    rounds = layouts[0].rounds
+    assert all(lt.rounds == rounds for lt in layouts)
+    # (source, destination) of every transfer of a halo point in any dimension
+    needed = {
+        (p, layout.rank)
+        for layout in layouts
+        for dim in layout.recv_index
+        for p in range(layout.num_ranks)
+        if (layout.recv_index[dim][p] < layout.padded_local[dim]).any()
+    }
+    assert all(source != destination for source, destination in needed)
+    pairs = [pair for perm in rounds for pair in perm]
+    assert len(pairs) == len(set(pairs))
+    assert set(pairs) == needed | {(d, s) for s, d in needed}
+    for k, perm in enumerate(rounds):
+        sources = [s for s, _ in perm]
+        destinations = [d for _, d in perm]
+        assert len(set(sources)) == len(sources)
+        assert set(sources) == set(destinations)
+        partner = dict(perm)
+        assert all(partner[partner[r]] == r for r in partner)
+        for layout in layouts:
+            for dim in layout.send_index:
+                if layout.rank in partner:
+                    p = partner[layout.rank]
+                    np.testing.assert_array_equal(
+                        layout.send_round[dim][k], layout.send_index[dim][p]
+                    )
+                    np.testing.assert_array_equal(
+                        layout.recv_round[dim][k], layout.recv_index[dim][p]
+                    )
+                else:
+                    assert (layout.send_round[dim][k] == 0).all()
+                    assert (layout.recv_round[dim][k] == layout.padded_local[dim]).all()
 
 
 @pytest.mark.datatest
 @pytest.mark.parametrize("dim", list(dims.horizontal_dims()), ids=lambda d: d.value)
+@pytest.mark.parametrize("exchange", _EXCHANGES)
 def test_exchange_matches_global_field(
+    ranks: Any, global_grid: icon.IconGrid, dim: gtx.Dimension, exchange: str
+) -> None:
+    managers, layouts = ranks
+    assert (
+        _halo_mismatches(managers, layouts, dim, global_grid.size[dim], _EXCHANGES[exchange]) == 0
+    )
+
+
+@pytest.mark.datatest
+@pytest.mark.parametrize("dim", list(dims.horizontal_dims()), ids=lambda d: d.value)
+def test_coloured_exchange_equals_all_to_all(
     ranks: Any, global_grid: icon.IconGrid, dim: gtx.Dimension
 ) -> None:
     managers, layouts = ranks
-    assert _halo_mismatches(managers, layouts, dim, global_grid.size[dim]) == 0
+    g = np.random.default_rng(7).random(global_grid.size[dim])
+    padded = _owned_only(managers, layouts, dim, g)
+    for coloured, all_to_all in zip(
+        spmd_layout.exchange_coloured_numpy(layouts, padded, dim),
+        spmd_layout.exchange_numpy(layouts, padded, dim),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(coloured, all_to_all)
 
 
 @pytest.mark.datatest
 @pytest.mark.parametrize("dim", list(dims.horizontal_dims()), ids=lambda d: d.value)
+@pytest.mark.parametrize("exchange", _EXCHANGES)
 def test_exchange_detects_corrupted_recv_index(
-    ranks: Any, global_grid: icon.IconGrid, dim: gtx.Dimension
+    ranks: Any, global_grid: icon.IconGrid, dim: gtx.Dimension, exchange: str
 ) -> None:
     managers, layouts = ranks
     target = layouts[1]
-    recv = target.recv_index[dim].copy()
-    valid = np.flatnonzero(recv[0] < target.padded_local[dim])
-    assert valid.size >= 2
-    recv[0, valid[:2]] = recv[0, valid[1::-1]]
-    corrupted = dataclasses.replace(target, recv_index={**target.recv_index, dim: recv})
+    field = "recv_index" if exchange == "all_to_all" else "recv_round"
+    recv = getattr(target, field)[dim].copy()
+    row = next(i for i, r in enumerate(recv) if (r < target.padded_local[dim]).sum() >= 2)
+    valid = np.flatnonzero(recv[row] < target.padded_local[dim])
+    recv[row, valid[:2]] = recv[row, valid[1::-1]]
+    corrupted = dataclasses.replace(target, **{field: {**getattr(target, field), dim: recv}})
     assert (
         _halo_mismatches(
-            managers, [layouts[0], corrupted, *layouts[2:]], dim, global_grid.size[dim]
+            managers,
+            [layouts[0], corrupted, *layouts[2:]],
+            dim,
+            global_grid.size[dim],
+            _EXCHANGES[exchange],
         )
         > 0
     )

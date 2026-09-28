@@ -138,6 +138,15 @@ def main(
             ),
         ),
     ] = False,
+    jax_spmd_transport: Annotated[
+        driver_utils.SpmdTransport,
+        typer.Option(
+            help=(
+                "With --jax-spmd, how to move the halos: one all-to-all, or rounds of pairwise "
+                "ppermute swaps."
+            ),
+        ),
+    ] = driver_utils.SpmdTransport.ALL_TO_ALL,
     n_time_steps: Annotated[
         int | None,
         typer.Option(
@@ -202,6 +211,7 @@ def main(
         jax_constants_as_arguments=jax_constants_as_arguments,
         jax_jit_time_step=jax_jit_time_step,
         jax_spmd=jax_spmd,
+        jax_spmd_transport=jax_spmd_transport,
     )
 
 

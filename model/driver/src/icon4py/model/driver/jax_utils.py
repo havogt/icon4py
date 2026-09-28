@@ -15,6 +15,7 @@ import types
 from typing import Any
 
 import gt4py.next as gtx
+import numpy as np
 from gt4py.next import common as gtx_common
 
 import icon4py.model.common.utils as common_utils
@@ -48,6 +49,19 @@ def initialize_distributed(comm: Any) -> None:
         process_id=comm.rank,
         local_device_ids=[0],
     )
+
+
+def rank_mesh(axis_name: str) -> Any:
+    """
+    A 1-D mesh over the devices of all processes, device `i` belonging to process (rank) `i`.
+
+    `jax.make_mesh` refuses devices spread over several nodes.
+    """
+    jax = import_jax()
+    devices = sorted(jax.devices(), key=lambda device: device.process_index)
+    if [device.process_index for device in devices] != list(range(len(devices))):
+        raise ValueError("The mesh over the ranks needs exactly one device per process.")
+    return jax.sharding.Mesh(np.array(devices), (axis_name,))
 
 
 def to_jax(obj: Any) -> Any:
