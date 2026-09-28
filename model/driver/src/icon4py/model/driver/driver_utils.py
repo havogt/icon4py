@@ -563,6 +563,15 @@ class HaloExchange(enum.StrEnum):
     DEVICE_STREAM = "device-stream"
 
 
+class SpmdTransport(enum.StrEnum):
+    """How the SPMD JAX driver moves the halos between the ranks."""
+
+    #: one all-to-all of buffers padded to the largest transfer between any two ranks
+    ALL_TO_ALL = "all_to_all"
+    #: rounds of pairwise swaps (`lax.ppermute`), at most one partner per rank and round
+    PPERMUTE = "ppermute"
+
+
 #: Halo rings beyond the ICON-like one (a ring: the cells sharing a vertex with the local cells)
 #: that the global dynamical core and diffusion steps read around the owned cells.
 JAX_EXTRA_HALO_RINGS = 2

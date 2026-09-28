@@ -158,6 +158,17 @@ def _constants_of(granule: Any) -> dict[str, Any]:
     }
 
 
+def _unfilled_local(owned: Any, num_local: int, finite_padding: bool) -> Any:
+    jax = jax_utils.import_jax()
+    shape = (num_local - owned.shape[0], *owned.shape[1:])
+    padding = (
+        jax.numpy.broadcast_to(owned[0], shape)
+        if finite_padding
+        else jax.numpy.full(shape, jax.numpy.nan, owned.dtype)
+    )
+    return jax.numpy.concatenate([owned, padding])
+
+
 def exchange_collective(
     owned: Any, send: Any, recv: Any, num_local: int, finite_padding: bool = False
 ) -> Any:
@@ -170,15 +181,32 @@ def exchange_collective(
     gradients.
     """
     jax = jax_utils.import_jax()
-    shape = (num_local - owned.shape[0], *owned.shape[1:])
-    padding = (
-        jax.numpy.broadcast_to(owned[0], shape)
-        if finite_padding
-        else jax.numpy.full(shape, jax.numpy.nan, owned.dtype)
-    )
-    local = jax.numpy.concatenate([owned, padding])
+    local = _unfilled_local(owned, num_local, finite_padding)
     received = jax.lax.all_to_all(owned[send], _MESH_AXIS, 0, 0)
     return local.at[recv].set(received, mode="drop")
+
+
+def exchange_coloured(
+    owned: Any,
+    send_round: Any,
+    recv_round: Any,
+    rounds: tuple[tuple[tuple[int, int], ...], ...],
+    num_local: int,
+    *,
+    finite_padding: bool = False,
+) -> Any:
+    """
+    `exchange_collective` in the rounds of pairwise swaps of `spmd_layout.PaddedLayout.rounds`.
+
+    A rank without a partner in a round receives zeros from `ppermute`; its row of `recv_round`
+    drops them all.
+    """
+    jax = jax_utils.import_jax()
+    local = _unfilled_local(owned, num_local, finite_padding)
+    for k, perm in enumerate(rounds):
+        received = jax.lax.ppermute(owned[send_round[k]], _MESH_AXIS, perm=perm)
+        local = local.at[recv_round[k]].set(received, mode="drop")
+    return local
 
 
 class JaxIcon4pyDriver(driver.Icon4pyDriver):
@@ -192,6 +220,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         jit_time_step: bool = False,
         layout: spmd_layout.PaddedLayout | None = None,
         finite_halo_padding: bool = False,
+        spmd_transport: driver_utils.SpmdTransport = driver_utils.SpmdTransport.ALL_TO_ALL,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -217,6 +246,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         # NaN in the halo rows no exchange fills makes a missing exchange show; for gradients they
         # must be finite
         self.finite_halo_padding = finite_halo_padding
+        self.spmd_transport = driver_utils.SpmdTransport(spmd_transport)
         if layout is not None:
             if not (jit_time_step and constants_as_arguments):
                 raise ValueError(
@@ -411,12 +441,19 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         dim = field.domain.dims[0]
         assert self._traced_tables is not None
         tables = self._traced_tables[dim.value]
+        owned = field.ndarray[: self._num_owned[dim]]
+        if self.spmd_transport == driver_utils.SpmdTransport.PPERMUTE:
+            assert self._layout is not None
+            return exchange_coloured(
+                owned,
+                tables["send"],
+                tables["recv"],
+                self._layout.rounds,
+                self._num_local[dim],
+                finite_padding=self.finite_halo_padding,
+            )
         return exchange_collective(
-            field.ndarray[: self._num_owned[dim]],
-            tables["send"],
-            tables["recv"],
-            self._num_local[dim],
-            self.finite_halo_padding,
+            owned, tables["send"], tables["recv"], self._num_local[dim], self.finite_halo_padding
         )
 
     def _exchange_in_callback(
@@ -722,15 +759,17 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             self._mesh = self._jax.make_mesh((self._layout.num_ranks,), (_MESH_AXIS,))
             # the halos of the initial state are the ones the setup computed
             state, intermediate = self._to_global((state, intermediate))
+            coloured = self.spmd_transport == driver_utils.SpmdTransport.PPERMUTE
+            layout = self._layout
             constants = self._to_global(
                 {
                     **self._constants,
                     "halo_tables": {
                         dim.value: {
-                            "send": self._layout.send_index[dim],
-                            "recv": self._layout.recv_index[dim],
+                            "send": (layout.send_round if coloured else layout.send_index)[dim],
+                            "recv": (layout.recv_round if coloured else layout.recv_index)[dim],
                         }
-                        for dim in self._layout.padded_local
+                        for dim in layout.padded_local
                     },
                 }
             )

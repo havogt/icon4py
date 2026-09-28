@@ -21,6 +21,11 @@ where the padding rows replicate local row 0, so that they compute finite values
 The halo exchange is an all-to-all of fixed-size buffers: rank r sends
 ``padded[send_index[p]]`` to every rank p, and writes what it receives from p into
 ``padded[recv_index[p]]``, dropping the slots that are out of bounds.
+
+Alternatively it runs in rounds of pairwise swaps: the edges of the graph of ranks that exchange
+anything are coloured such that every rank has at most one partner per round, and in round k rank
+r sends ``padded[send_round[k]]`` to its partner and writes what it receives into
+``padded[recv_round[k]]``.
 """
 
 from __future__ import annotations
@@ -56,11 +61,36 @@ class PaddedLayout:
     #: (num_ranks, max sent points): the padded halo rows receiving from each rank, in the order
     #: that rank sends them; unused slots are padded_local, out of bounds
     recv_index: dict[gtx.Dimension, np.ndarray]
+    #: per round, the (source, destination) rank pairs of the swaps, both directions of each
+    rounds: tuple[tuple[tuple[int, int], ...], ...]
+    #: (num_rounds, max sent points): the rows of send_index of this rank's partner in each
+    #: round, unused slots 0
+    send_round: dict[gtx.Dimension, np.ndarray]
+    #: (num_rounds, max sent points): the rows of recv_index of this rank's partner in each
+    #: round, unused slots padded_local
+    recv_round: dict[gtx.Dimension, np.ndarray]
 
 
 def _padded_index(num_owned: int, num_local: int, padded_owned: int) -> np.ndarray:
     index = np.arange(num_local)
     return np.where(index < num_owned, index, index + padded_owned - num_owned)
+
+
+def _colour_edges(exchanges: np.ndarray) -> list[list[tuple[int, int]]]:
+    """
+    Greedy edge colouring of the graph with an edge {r, p} where `exchanges[r, p]`: per colour,
+    its edges (r, p) with r < p.
+    """
+    colours: list[list[tuple[int, int]]] = []
+    busy: list[set[int]] = []
+    for r, p in np.argwhere(np.triu(exchanges | exchanges.T, 1)).tolist():
+        k = next((k for k, b in enumerate(busy) if r not in b and p not in b), len(colours))
+        if k == len(colours):
+            colours.append([])
+            busy.append(set())
+        colours[k].append((r, p))
+        busy[k] |= {r, p}
+    return colours
 
 
 def build_padded_layout(
@@ -91,6 +121,7 @@ def build_padded_layout(
     padded_index: dict[gtx.Dimension, np.ndarray] = {}
     send_index: dict[gtx.Dimension, np.ndarray] = {}
     recv_index: dict[gtx.Dimension, np.ndarray] = {}
+    exchanges = np.zeros((num_ranks, num_ranks), dtype=bool)
     for dim in local:
         owned_counts = [g[dim][0] for g in gathered]
         global_indices = [g[dim][1] for g in gathered]
@@ -112,9 +143,10 @@ def build_padded_layout(
 
         # halo_owner[q]: the owner of each halo point of rank q, in q's local order
         halo_owner = []
-        for gi, o in zip(global_indices, owned_counts, strict=True):
+        for q, (gi, o) in enumerate(zip(global_indices, owned_counts, strict=True)):
             halo_owner.append(owner[gi[o:]])
-            assert (halo_owner[-1] >= 0).all(), f"halo {dim.value}s owned by no rank"
+            assert (halo_owner[q] >= 0).all(), f"halo {dim.value}s owned by no rank"
+            exchanges[q, halo_owner[q]] = True
         max_sent = max(
             (int(np.bincount(h, minlength=num_ranks).max()) for h in halo_owner if h.size),
             default=0,
@@ -136,6 +168,21 @@ def build_padded_layout(
         send_index[dim] = send
         recv_index[dim] = recv
 
+    colours = _colour_edges(exchanges)
+    partner = np.full(len(colours), -1)
+    for k, edges in enumerate(colours):
+        for r, p in edges:
+            if rank in (r, p):
+                partner[k] = p if r == rank else r
+    has_partner = partner >= 0
+    send_round: dict[gtx.Dimension, np.ndarray] = {}
+    recv_round: dict[gtx.Dimension, np.ndarray] = {}
+    for dim in local:
+        send_round[dim] = np.where(has_partner[:, None], send_index[dim][partner], 0)
+        recv_round[dim] = np.where(
+            has_partner[:, None], recv_index[dim][partner], padded_local[dim]
+        )
+
     return PaddedLayout(
         rank=rank,
         num_ranks=num_ranks,
@@ -147,6 +194,11 @@ def build_padded_layout(
         padded_index=padded_index,
         send_index=send_index,
         recv_index=recv_index,
+        rounds=tuple(
+            tuple(pair for r, p in edges for pair in ((r, p), (p, r))) for edges in colours
+        ),
+        send_round=send_round,
+        recv_round=recv_round,
     )
 
 
@@ -178,4 +230,23 @@ def exchange_numpy(
             slots = target.recv_index[dim][r]
             valid = slots < target.padded_local[dim]
             result[p][slots[valid]] = buffer[valid]
+    return result
+
+
+def exchange_coloured_numpy(
+    layouts: list[PaddedLayout], padded_arrays: list[np.ndarray], dim: gtx.Dimension
+) -> list[np.ndarray]:
+    """Reference halo exchange of one padded array per rank in the coloured rounds."""
+    result = [a.copy() for a in padded_arrays]
+    for k, perm in enumerate(layouts[0].rounds):
+        received = [
+            np.zeros((lt.send_round[dim].shape[1], *a.shape[1:]), a.dtype)
+            for lt, a in zip(layouts, padded_arrays, strict=True)
+        ]
+        for source, destination in perm:
+            received[destination] = padded_arrays[source][layouts[source].send_round[dim][k]]
+        for layout, array, got in zip(layouts, result, received, strict=True):
+            slots = layout.recv_round[dim][k]
+            valid = slots < layout.padded_local[dim]
+            array[slots[valid]] = got[valid]
     return result

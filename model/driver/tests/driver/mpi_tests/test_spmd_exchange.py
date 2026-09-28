@@ -19,14 +19,10 @@ from icon4py.model.testing import definitions as test_defs, grid_utils
 from icon4py.model.testing.fixtures.datatest import backend, backend_like, process_props
 
 
-@pytest.mark.datatest
-@pytest.mark.mpi
-@pytest.mark.parametrize("process_props", [True], indirect=True)
-def test_spmd_exchange_and_adjoint(process_props: decomp_defs.ProcessProperties) -> None:
-    """
-    The collective halo exchange of the SPMD JAX driver on a decomposed R02B04 grid: the halo
-    against the global field, and the adjoint JAX computes against the exchange (dot-product test).
-    """
+@pytest.fixture(scope="module")
+def spmd_layout_and_info(
+    process_props: decomp_defs.ProcessProperties,
+) -> tuple[spmd_layout.PaddedLayout, decomp_defs.DecompositionInfo]:
     pytest.importorskip("jax")
     from jax._src import (  # type: ignore[import-not-found]  # noqa: PLC0415 [import-outside-top-level]
         xla_bridge,
@@ -37,14 +33,7 @@ def test_spmd_exchange_and_adjoint(process_props: decomp_defs.ProcessProperties)
             "jax.distributed must start before JAX runs anything in the process: run this module "
             "on its own."
         )
-    from mpi4py import MPI  # noqa: PLC0415 [import-outside-top-level]
-
-    from icon4py.model.driver import jax_driver  # noqa: PLC0415 [import-outside-top-level]
-
-    comm = process_props.comm
-    jax_utils.initialize_distributed(comm)
-    jax = jax_utils.import_jax()
-    jnp = jax.numpy
+    jax_utils.initialize_distributed(process_props.comm)
     grid_manager = driver_utils.create_grid_manager(
         grid_file_path=grid_utils._download_grid_file(test_defs.Grids.R02B04_GLOBAL),
         vertical_grid_config=v_grid.VerticalGridConfig(num_levels=2),
@@ -54,8 +43,33 @@ def test_spmd_exchange_and_adjoint(process_props: decomp_defs.ProcessProperties)
     )
     info = grid_manager.decomposition_info
     layout = spmd_layout.build_padded_layout(
-        info, process_props.rank, process_props.comm_size, comm.allgather
+        info, process_props.rank, process_props.comm_size, process_props.comm.allgather
     )
+    return layout, info
+
+
+@pytest.mark.datatest
+@pytest.mark.mpi
+@pytest.mark.parametrize("process_props", [True], indirect=True)
+@pytest.mark.parametrize("transport", list(driver_utils.SpmdTransport))
+def test_spmd_exchange_and_adjoint(
+    process_props: decomp_defs.ProcessProperties,
+    spmd_layout_and_info: tuple[spmd_layout.PaddedLayout, decomp_defs.DecompositionInfo],
+    transport: driver_utils.SpmdTransport,
+) -> None:
+    """
+    The collective halo exchange of the SPMD JAX driver on a decomposed R02B04 grid: the halo
+    against the global field, and the adjoint JAX computes against the exchange (dot-product test).
+    """
+    from mpi4py import MPI  # noqa: PLC0415 [import-outside-top-level]
+
+    from icon4py.model.driver import jax_driver  # noqa: PLC0415 [import-outside-top-level]
+
+    comm = process_props.comm
+    layout, info = spmd_layout_and_info
+    jax = jax_utils.import_jax()
+    jnp = jax.numpy
+    coloured = transport == driver_utils.SpmdTransport.PPERMUTE
     mesh = jax.make_mesh((layout.num_ranks,), ("rank",))
     sharded = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec("rank"))
 
@@ -79,11 +93,12 @@ def test_spmd_exchange_and_adjoint(process_props: decomp_defs.ProcessProperties)
         def exchange(
             x: Any, send: Any, recv: Any, real: Any, padded_local: int = padded_local
         ) -> Any:
-            return jnp.where(
-                real[:, None],
-                jax_driver.exchange_collective(x, send, recv, padded_local),
-                0.0,
+            exchanged = (
+                jax_driver.exchange_coloured(x, send, recv, layout.rounds, padded_local)
+                if coloured
+                else jax_driver.exchange_collective(x, send, recv, padded_local)
             )
+            return jnp.where(real[:, None], exchanged, 0.0)
 
         def run(body: Any, *args: Any) -> Any:
             return jax.jit(
@@ -95,7 +110,11 @@ def test_spmd_exchange_and_adjoint(process_props: decomp_defs.ProcessProperties)
                 )
             )(*(to_global(a) for a in args))
 
-        tables = (layout.send_index[dim], layout.recv_index[dim], real)
+        tables = (
+            (layout.send_round if coloured else layout.send_index)[dim],
+            (layout.recv_round if coloured else layout.recv_index)[dim],
+            real,
+        )
         local = np.asarray(run(exchange, owned, *tables).addressable_shards[0].data)
         expected = global_field[global_index]
         np.testing.assert_array_equal(local[layout.padded_index[dim]], expected)
@@ -112,4 +131,6 @@ def test_spmd_exchange_and_adjoint(process_props: decomp_defs.ProcessProperties)
 
         lhs, rhs = np.asarray(run(dot_test, x, y, *tables).addressable_shards[0].data)[0]
         assert abs(lhs - rhs) <= 1e-12 * abs(lhs), (dim, lhs, rhs)
-        print(f"{dim.value}: halo == global; <Lx, y> = {lhs:.15e}, <x, L^T y> = {rhs:.15e}")
+        print(
+            f"{transport} {dim.value}: halo == global; <Lx, y> = {lhs:.15e}, <x, L^T y> = {rhs:.15e}"
+        )
