@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -305,6 +306,11 @@ def _diffusion_global_granule(
         ndyn_substeps=5,
         backend=backend,
     )
+    if backend is not None and os.environ.get("ICON4PY_BENCH_STATIC_SIZES", "1") == "1":
+        # As `setup_program` does for the granules: the vertical sizes are compile time too.
+        granule._diffusion_global_step = granule._diffusion_global_step.with_compilation_options(
+            static_params=("nrdmax", "num_levels")
+        )
     return granule, prognostic_input
 
 
