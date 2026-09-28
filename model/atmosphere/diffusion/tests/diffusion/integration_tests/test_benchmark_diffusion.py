@@ -307,9 +307,9 @@ def _diffusion_global_granule(
         backend=backend,
     )
     if backend is not None and os.environ.get("ICON4PY_BENCH_STATIC_SIZES", "1") == "1":
-        # As `setup_program` does for the granules: the vertical sizes are compile time too.
+        # The vertical sizes that reach `concat_where` and the flags are compile time, as the domains.
         granule._diffusion_global_step = granule._diffusion_global_step.with_compilation_options(
-            static_params=("nrdmax", "num_levels")
+            static_params=("nrdmax", "num_levels", "apply_to_temperature", "apply_zdiffusion_t")
         )
     return granule, prognostic_input
 
