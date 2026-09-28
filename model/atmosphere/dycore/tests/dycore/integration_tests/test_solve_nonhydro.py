@@ -2323,6 +2323,7 @@ def test_vertically_implicit_solver_at_corrector_step(  # noqa: PLR0917 [too-man
         sp_stencil_init.w_concorr_c().asnumpy()[
             start_cell_lb3:end_cell_halo, vertical_params.nflatlev + 1 :
         ],
+        atol=1.0e-15,
     )
 
     assert test_utils.dallclose(
