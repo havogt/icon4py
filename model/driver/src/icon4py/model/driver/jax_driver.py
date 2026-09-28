@@ -756,7 +756,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         intermediate = solve_nonhydro.initial_intermediate_state()._asdict()
         constants = self._constants
         if self._layout is not None:
-            self._mesh = self._jax.make_mesh((self._layout.num_ranks,), (_MESH_AXIS,))
+            self._mesh = jax_utils.rank_mesh(_MESH_AXIS)
             # the halos of the initial state are the ones the setup computed
             state, intermediate = self._to_global((state, intermediate))
             coloured = self.spmd_transport == driver_utils.SpmdTransport.PPERMUTE

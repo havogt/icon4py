@@ -70,7 +70,7 @@ def test_spmd_exchange_and_adjoint(
     jax = jax_utils.import_jax()
     jnp = jax.numpy
     coloured = transport == driver_utils.SpmdTransport.PPERMUTE
-    mesh = jax.make_mesh((layout.num_ranks,), ("rank",))
+    mesh = jax_utils.rank_mesh("rank")
     sharded = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec("rank"))
 
     def to_global(x: np.ndarray) -> object:
