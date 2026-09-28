@@ -60,7 +60,10 @@ class DiffusionGlobal:
         assert cell_params.area is not None
 
         def unstructured(op: gtx_typing.FieldOperator) -> gtx_typing.FieldOperator:
-            return op.with_grid_type(gtx.GridType.UNSTRUCTURED).with_backend(backend)
+            op = op.with_grid_type(gtx.GridType.UNSTRUCTURED).with_backend(backend)
+            if backend is not None:
+                op = op.with_compilation_options(static_domains=True)
+            return op
 
         self._init_diffusion_local_fields_for_regular_timestep = unstructured(
             _init_diffusion_local_fields_for_regular_timestep
