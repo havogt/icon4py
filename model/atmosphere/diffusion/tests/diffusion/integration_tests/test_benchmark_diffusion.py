@@ -27,6 +27,7 @@ from icon4py.model.common.grid import (
     geometry as grid_geometry,
     geometry_attributes as geometry_meta,
     grid_manager as gm,
+    icon as icon_grid,
     vertical as v_grid,
 )
 from icon4py.model.common.interpolation import interpolation_attributes, interpolation_factory
@@ -285,6 +286,9 @@ def _diffusion_global_granule(
         prognostic_input = {k: _to_jax(v, jnp) for k, v in prognostic_input.items()}
         allocator, backend = jnp, None
     else:
+        # gt4py's static domain inference takes min/max over the neighbour tables including their skip
+        # values, which gives a negative edge range through V2E on the pentagons (gt4py-f103).
+        mesh = icon_grid.with_skip_values_replaced(mesh)
         backend = model_options.customize_backend(None, backend_like)
         allocator = model_backends.get_allocator(backend_like)
 
