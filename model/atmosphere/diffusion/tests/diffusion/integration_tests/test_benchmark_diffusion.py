@@ -216,6 +216,10 @@ def test_diffusion_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
         max_nudging_coefficient=0.375,
     )
 
+    if os.environ.get("ICON4PY_BENCH_WAIT_COMPILATION", "1") == "1":
+        # `setup_program` only submits the compilation of its variants; unfinished ones compile
+        # in the background, on every core, while the benchmark runs.
+        gtx.wait_for_compilation()
     run = diffusion_granule.run
     if os.environ.get("ICON4PY_BENCH_SYNC_GRANULE", "0") == "1":
         allocator = model_backends.get_allocator(backend_like)
