@@ -216,12 +216,15 @@ def test_diffusion_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
         max_nudging_coefficient=0.375,
     )
 
-    benchmark(
-        diffusion_granule.run,
-        setup["diagnostic_state"],
-        setup["prognostic_state"],
-        setup["dtime"],
-    )
+    run = diffusion_granule.run
+    if os.environ.get("ICON4PY_BENCH_SYNC_GRANULE", "0") == "1":
+        allocator = model_backends.get_allocator(backend_like)
+
+        def run(*args: Any) -> None:
+            diffusion_granule.run(*args)
+            device_utils.sync(allocator)
+
+    benchmark(run, setup["diagnostic_state"], setup["prognostic_state"], setup["dtime"])
 
 
 def _to_jax(obj: Any, jnp: Any) -> Any:
