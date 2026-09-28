@@ -54,7 +54,6 @@ class TestComputeVelocityAdvectionInPredictorStep(stencil_tests.StencilTest):
             "vertical_end",
             "nflatlev",
             "end_index_of_damping_layer",
-            "skip_compute_predictor_vertical_advection",
             "apply_extra_diffusion_on_vn",
         ),
         stencil_tests.StandardStaticVariants.COMPILE_TIME_DOMAIN: (
@@ -68,7 +67,6 @@ class TestComputeVelocityAdvectionInPredictorStep(stencil_tests.StencilTest):
             "vertical_end",
             "nflatlev",
             "end_index_of_damping_layer",
-            "skip_compute_predictor_vertical_advection",
             "apply_extra_diffusion_on_vn",
         ),
     }
@@ -113,7 +111,6 @@ class TestComputeVelocityAdvectionInPredictorStep(stencil_tests.StencilTest):
         area_edge: np.ndarray,
         geofac_grdiv: np.ndarray,
         dtime: ta.wpfloat,
-        skip_compute_predictor_vertical_advection: bool,
         apply_extra_diffusion_on_vn: bool,
         nflatlev: int,
         end_index_of_damping_layer: int,
@@ -138,14 +135,12 @@ class TestComputeVelocityAdvectionInPredictorStep(stencil_tests.StencilTest):
             contravariant_correction_at_edges_new,
         ) = compute_diagnostics_from_normal_wind_numpy(
             connectivities=connectivities,
-            tangential_wind_on_half_levels=tangential_wind_on_half_levels,
             vn=vn,
             rbf_vec_coeff_e=rbf_vec_coeff_e,
             wgtfac_e=wgtfac_e,
             wgtfacq_e=wgtfacq_e,
             ddxn_z_full=ddxn_z_full,
             ddxt_z_full=ddxt_z_full,
-            skip_compute_predictor_vertical_advection=skip_compute_predictor_vertical_advection,
             nlev=nlev,
         )
 
@@ -171,38 +166,34 @@ class TestComputeVelocityAdvectionInPredictorStep(stencil_tests.StencilTest):
             end_index_of_damping_layer=end_index_of_damping_layer,
         )
 
-        vertical_wind_advective_tendency_new = vertical_wind_advective_tendency[:, :-1]
-        if not skip_compute_predictor_vertical_advection:
-            horizontal_advection_of_w_at_edges_on_half_levels = (
-                compute_horizontal_advection_of_w_numpy(
-                    connectivities=connectivities,
-                    w=w,
-                    tangential_wind_on_half_levels=tangential_wind_on_half_levels_new,
-                    vn_on_half_levels=vn_on_half_levels_new,
-                    c_intp=c_intp,
-                    inv_dual_edge_length=inv_dual_edge_length,
-                    inv_primal_edge_length=inv_primal_edge_length,
-                    tangent_orientation=tangent_orientation,
-                )
-            )
-            vertical_wind_advective_tendency_new = compute_advective_vertical_wind_tendency_and_apply_diffusion_numpy(
-                connectivities=connectivities,
-                vertical_wind_advective_tendency=vertical_wind_advective_tendency_new,
-                w=w,
-                horizontal_advection_of_w_at_edges_on_half_levels=horizontal_advection_of_w_at_edges_on_half_levels,
-                contravariant_corrected_w_at_cells_on_half_levels=contravariant_corrected_w_at_cells_on_half_levels,
-                cfl_clipping=cfl_clipping,
-                coeff1_dwdz=coeff1_dwdz,
-                coeff2_dwdz=coeff2_dwdz,
-                e_bln_c_s=e_bln_c_s,
-                ddqz_z_half=ddqz_z_half[:, :-1],
-                area=area,
-                geofac_n2s=geofac_n2s,
-                owner_mask=owner_mask,
-                dtime=dtime,
-                nlev=nlev,
-                end_index_of_damping_layer=end_index_of_damping_layer,
-            )
+        horizontal_advection_of_w_at_edges_on_half_levels = compute_horizontal_advection_of_w_numpy(
+            connectivities=connectivities,
+            w=w,
+            tangential_wind_on_half_levels=tangential_wind_on_half_levels_new,
+            vn_on_half_levels=vn_on_half_levels_new,
+            c_intp=c_intp,
+            inv_dual_edge_length=inv_dual_edge_length,
+            inv_primal_edge_length=inv_primal_edge_length,
+            tangent_orientation=tangent_orientation,
+        )
+        vertical_wind_advective_tendency_new = compute_advective_vertical_wind_tendency_and_apply_diffusion_numpy(
+            connectivities=connectivities,
+            vertical_wind_advective_tendency=vertical_wind_advective_tendency[:, :-1],
+            w=w,
+            horizontal_advection_of_w_at_edges_on_half_levels=horizontal_advection_of_w_at_edges_on_half_levels,
+            contravariant_corrected_w_at_cells_on_half_levels=contravariant_corrected_w_at_cells_on_half_levels,
+            cfl_clipping=cfl_clipping,
+            coeff1_dwdz=coeff1_dwdz,
+            coeff2_dwdz=coeff2_dwdz,
+            e_bln_c_s=e_bln_c_s,
+            ddqz_z_half=ddqz_z_half[:, :-1],
+            area=area,
+            geofac_n2s=geofac_n2s,
+            owner_mask=owner_mask,
+            dtime=dtime,
+            nlev=nlev,
+            end_index_of_damping_layer=end_index_of_damping_layer,
+        )
 
         contravariant_corrected_w_at_cells_on_model_levels = (
             interpolate_contravariant_vertical_velocity_to_full_levels_numpy(
@@ -290,17 +281,8 @@ class TestComputeVelocityAdvectionInPredictorStep(stencil_tests.StencilTest):
         )
 
     @stencil_tests.input_data_fixture(
-        params=[
-            {
-                "skip_compute_predictor_vertical_advection": skip,
-                "apply_extra_diffusion_on_vn": diffu,
-            }
-            for skip, diffu in ((False, True), (True, False))
-        ],
-        ids=lambda param: (
-            f"skip_compute_predictor_vertical_advection[{param['skip_compute_predictor_vertical_advection']}]"
-            f"-apply_extra_diffusion_on_vn[{param['apply_extra_diffusion_on_vn']}]"
-        ),
+        params=[{"apply_extra_diffusion_on_vn": diffu} for diffu in (True, False)],
+        ids=lambda param: f"apply_extra_diffusion_on_vn[{param['apply_extra_diffusion_on_vn']}]",
     )
     def input_data(
         data_alloc: stencil_tests.DataAllocationWrapper,
@@ -409,9 +391,6 @@ class TestComputeVelocityAdvectionInPredictorStep(stencil_tests.StencilTest):
             area_edge=area_edge,
             geofac_grdiv=geofac_grdiv,
             dtime=dtime,
-            skip_compute_predictor_vertical_advection=request.param[
-                "skip_compute_predictor_vertical_advection"
-            ],
             apply_extra_diffusion_on_vn=request.param["apply_extra_diffusion_on_vn"],
             nflatlev=nflatlev,
             end_index_of_damping_layer=end_index_of_damping_layer,

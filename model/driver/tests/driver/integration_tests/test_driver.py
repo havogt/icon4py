@@ -83,6 +83,9 @@ def timeloop_diffusion_linit_exit() -> bool:
     return False
 
 
+@pytest.mark.xfail(
+    reason="serialized ICON data runs itime_scheme=4, icon4py implements itime_scheme=6 only"
+)
 @pytest.mark.datatest
 @pytest.mark.level("integration")
 @pytest.mark.embedded_remap_error

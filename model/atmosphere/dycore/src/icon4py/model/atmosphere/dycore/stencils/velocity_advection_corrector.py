@@ -71,7 +71,6 @@ def _compute_velocity_advection_in_corrector_step(
         geofac_n2s=geofac_n2s,
         owner_mask=owner_mask,
         dtime=dtime,
-        skip_vertical_wind_advective_tendency=False,
         nlev=nlev,
         end_index_of_damping_layer=end_index_of_damping_layer,
     )

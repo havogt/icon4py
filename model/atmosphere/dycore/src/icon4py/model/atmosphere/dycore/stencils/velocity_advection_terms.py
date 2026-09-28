@@ -334,7 +334,6 @@ def _compute_advection_in_vertical_momentum(
     geofac_n2s: gtx.Field[gtx.Dims[dims.CellDim, dims.C2E2CODim], ta.wpfloat],
     owner_mask: fa.CellField[bool],
     dtime: ta.wpfloat,
-    skip_vertical_wind_advective_tendency: bool,
     nlev: gtx.int32,
     end_index_of_damping_layer: gtx.int32,
 ) -> tuple[fa.CellKHalfField[ta.vpfloat], fa.CellKField[ta.vpfloat], fa.CellKHalfField[ta.vpfloat]]:
@@ -351,29 +350,24 @@ def _compute_advection_in_vertical_momentum(
         end_index_of_damping_layer=end_index_of_damping_layer,
     )
 
-    vertical_wind_advective_tendency = (
-        _compute_advective_vertical_wind_tendency(
-            w=w,
-            tangential_wind_on_half_levels=tangential_wind_on_half_levels,
-            vn_on_half_levels=vn_on_half_levels,
-            c_intp=c_intp,
-            inv_dual_edge_length=inv_dual_edge_length,
-            inv_primal_edge_length=inv_primal_edge_length,
-            tangent_orientation=tangent_orientation,
-            contravariant_corrected_w_at_cells_on_half_levels=contravariant_corrected_w_at_cells_on_half_levels,
-            cfl_clipping=cfl_clipping,
-            coeff1_dwdz=coeff1_dwdz,
-            coeff2_dwdz=coeff2_dwdz,
-            e_bln_c_s=e_bln_c_s,
-            ddqz_z_half=ddqz_z_half,
-            area=area,
-            geofac_n2s=geofac_n2s,
-            owner_mask=owner_mask,
-            dtime=dtime,
-        )
-        if not skip_vertical_wind_advective_tendency
-        # Skipped: a placeholder that must not be read; the caller keeps its previous tendency.
-        else broadcast(vpfloat("0.0"), (dims.CellDim, dims.KHalfDim))
+    vertical_wind_advective_tendency = _compute_advective_vertical_wind_tendency(
+        w=w,
+        tangential_wind_on_half_levels=tangential_wind_on_half_levels,
+        vn_on_half_levels=vn_on_half_levels,
+        c_intp=c_intp,
+        inv_dual_edge_length=inv_dual_edge_length,
+        inv_primal_edge_length=inv_primal_edge_length,
+        tangent_orientation=tangent_orientation,
+        contravariant_corrected_w_at_cells_on_half_levels=contravariant_corrected_w_at_cells_on_half_levels,
+        cfl_clipping=cfl_clipping,
+        coeff1_dwdz=coeff1_dwdz,
+        coeff2_dwdz=coeff2_dwdz,
+        e_bln_c_s=e_bln_c_s,
+        ddqz_z_half=ddqz_z_half,
+        area=area,
+        geofac_n2s=geofac_n2s,
+        owner_mask=owner_mask,
+        dtime=dtime,
     )
 
     contravariant_corrected_w_at_cells_on_model_levels = (

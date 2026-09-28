@@ -375,47 +375,6 @@ class Icon4pyDriver:
         # dynamics substep (nnow_rcf/nnew_rcf vs nnow/nnew in ICON)
         tracers.swap()
 
-    def _update_time_levels_for_velocity_tendencies(
-        self,
-        diagnostic_state_nh: nonhydro_states.DiagnosticStateNonHydro,
-        at_first_substep: bool,
-        at_initial_timestep: bool,
-    ) -> None:
-        """
-        Set time levels of advective tendency fields for call to velocity_tendencies.
-
-        When using `TimeSteppingScheme.MOST_EFFICIENT` (itime_scheme=4 in ICON Fortran),
-        `vertical_wind_advective_tendency.predictor` (advection term in vertical momentum equation in
-        predictor step) is not computed in the predictor step of each substep.
-        Instead, the advection term computed in the corrector step during the
-        previous substep is reused for efficiency (except, of course, in the
-        very first substep of the initial time step).
-        `normal_wind_advective_tendency.predictor` (advection term in horizontal momentum equation in
-        predictor step) is only computed in the predictor step of the first
-        substep and the advection term in the corrector step during the previous
-        substep is reused for `normal_wind_advective_tendency.predictor` from the second substep onwards.
-        Additionally, in this scheme the predictor and corrector outputs are kept
-        in separate elements of the pair (.predictor for the predictor step and
-        .corrector for the corrector step) and interpoolated at the end of the
-        corrector step to get the final output.
-
-        `TimeSteppingScheme.STABLE` (itime_scheme=5) treats the tendencies the same way.
-        With `TimeSteppingScheme.EXPENSIVE` (itime_scheme=6) both steps recompute their
-        tendencies in every substep, so the swaps do not change the result.
-
-        Args:
-            diagnostic_state_nh: Diagnostic fields calculated in the dynamical core (SolveNonHydro)
-            at_first_substep: Flag indicating if this is the first substep of the time step.
-            at_initial_timestep: Flag indicating if this is the first time step.
-
-        Returns:
-            The index of the pair element to be used for the corrector output.
-        """
-        if not (at_initial_timestep and at_first_substep):
-            diagnostic_state_nh.vertical_wind_advective_tendency.swap()
-        if not at_first_substep:
-            diagnostic_state_nh.normal_wind_advective_tendency.swap()
-
     def _do_dyn_substepping(
         self,
         solve_nonhydro_diagnostic_state: nonhydro_states.DiagnosticStateNonHydro,
@@ -432,12 +391,6 @@ class Icon4pyDriver:
         )
         for dyn_substep in range(self.model_time_variables.ndyn_substeps_var):
             self._compute_statistics(dyn_substep, prognostic_states.current)
-
-            self._update_time_levels_for_velocity_tendencies(
-                solve_nonhydro_diagnostic_state,
-                at_first_substep=self._is_first_substep(dyn_substep),
-                at_initial_timestep=self.model_time_variables.is_first_step_in_simulation,
-            )
 
             with timer_solve_nh:
                 assert self.granules.solve_nonhydro is not None

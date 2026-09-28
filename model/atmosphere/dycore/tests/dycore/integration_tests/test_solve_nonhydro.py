@@ -33,6 +33,11 @@ from .. import utils
 from ..fixtures import *  # noqa: F403
 
 
+scheme_4_reference = pytest.mark.xfail(
+    reason="serialized ICON data runs itime_scheme=4, icon4py implements itime_scheme=6 only"
+)
+
+
 if TYPE_CHECKING:
     import gt4py.next.typing as gtx_typing
 
@@ -438,6 +443,7 @@ def test_nonhydro_predictor_step(  # noqa: PLR0917 [too-many-positional-argument
     )
 
 
+@scheme_4_reference
 @pytest.mark.embedded_remap_error
 @pytest.mark.datatest
 @pytest.mark.parametrize(
@@ -629,6 +635,7 @@ def test_nonhydro_corrector_step(  # noqa: PLR0917 [too-many-positional-argument
     )
 
 
+@scheme_4_reference
 @pytest.mark.embedded_remap_error
 @pytest.mark.datatest
 @pytest.mark.parametrize(
@@ -763,6 +770,7 @@ def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-a
     )
 
 
+@scheme_4_reference
 @pytest.mark.embedded_remap_error
 @pytest.mark.datatest
 @pytest.mark.parametrize("experiment_description", [test_defs.Experiments.MCH_CH_R04B09])
@@ -1809,8 +1817,6 @@ def test_compute_averaged_vn_and_fluxes(  # noqa: PLR0917 [too-many-positional-a
     z_theta_v_fl_e_ref = savepoint_dycore_30_to_38_exit.z_theta_v_fl_e()
     vn_traj_ref = savepoint_dycore_30_to_38_exit.vn_traj()
     mass_flx_me_ref = savepoint_dycore_30_to_38_exit.mass_flx_me()
-    vt_ref = savepoint_dycore_30_to_38_exit.vt()
-    z_w_concorr_me_ref = savepoint_dycore_30_to_38_exit.z_w_concorr_me()
 
     compute_horizontal_velocity_quantities.compute_averaged_vn_and_fluxes.with_backend(backend)(
         spatially_averaged_vn=z_vn_avg,
@@ -1830,8 +1836,6 @@ def test_compute_averaged_vn_and_fluxes(  # noqa: PLR0917 [too-many-positional-a
         theta_v_at_edges_on_model_levels=z_theta_v_e,
         prepare_fluxes_for_advection=True,
         at_first_substep=at_first_substep,
-        recompute_contravariant_correction=experiment.config.nonhydrostatic.itime_scheme
-        >= dycore_states.TimeSteppingScheme.STABLE,
         r_nsubsteps=r_nsubsteps,
         nflatlev=vertical_params.nflatlev,
         horizontal_start=horizontal_start,
@@ -1843,9 +1847,6 @@ def test_compute_averaged_vn_and_fluxes(  # noqa: PLR0917 [too-many-positional-a
             "E2C2EO": icon_grid.get_connectivity("E2C2EO"),
         },
     )
-
-    assert test_utils.dallclose(vt_ref.asnumpy(), vt.asnumpy())
-    assert test_utils.dallclose(z_w_concorr_me_ref.asnumpy(), z_w_concorr_me.asnumpy())
 
     assert test_utils.dallclose(
         z_vn_avg_ref.asnumpy(),
@@ -1908,7 +1909,7 @@ def test_compute_averaged_vn_and_fluxes_recomputes_tangential_wind_and_contravar
     savepoint_nonhydro_init,
     backend,
 ):
-    # ICON computes `vt` and `z_w_concorr_me` in the corrector (itime_scheme >= 5) with the same
+    # ICON computes `vt` and `z_w_concorr_me` in the corrector (itime_scheme = 6) with the same
     # expressions as in the predictor, so the predictor savepoints (istep = 1) are the reference.
     edge_domain = h_grid.domain(dims.EdgeDim)
     vertical_params = utils.create_vertical_params(experiment.config.vertical_grid, grid_savepoint)
@@ -1941,7 +1942,6 @@ def test_compute_averaged_vn_and_fluxes_recomputes_tangential_wind_and_contravar
         theta_v_at_edges_on_model_levels=savepoint_dycore_30_to_38_init.z_theta_v_e(),
         prepare_fluxes_for_advection=False,
         at_first_substep=True,
-        recompute_contravariant_correction=True,
         r_nsubsteps=1.0 / experiment.config.driver.ndyn_substeps,
         nflatlev=nflatlev,
         horizontal_start=horizontal_start,
@@ -2266,9 +2266,7 @@ def test_vertically_implicit_solver_at_corrector_step(  # noqa: PLR0917 [too-man
         nonhydro_buoy_at_cells_on_half_levels=nonhydro_buoy_at_cells_on_half_levels,
         rho_at_cells_on_half_levels=rho_at_cells_on_half_levels,
         contravariant_correction_at_cells_on_half_levels=contravariant_correction_at_cells_on_half_levels,
-        contravariant_correction_at_edges_on_model_levels=data_alloc.zero_field(
-            icon_grid, dims.EdgeDim, dims.KDim, allocator=backend
-        ),
+        contravariant_correction_at_edges_on_model_levels=sp_nh_exit.z_w_concorr_me(),
         exner_w_explicit_weight_parameter=metrics_savepoint.vwind_expl_wgt(),
         current_exner=current_exner,
         current_rho=current_rho,
@@ -2300,8 +2298,6 @@ def test_vertically_implicit_solver_at_corrector_step(  # noqa: PLR0917 [too-man
         rayleigh_type=config.rayleigh_type,
         at_first_substep=at_first_substep,
         at_last_substep=at_last_substep,
-        recompute_contravariant_correction=config.itime_scheme
-        >= dycore_states.TimeSteppingScheme.STABLE,
         end_index_of_damping_layer=grid_savepoint.nrdmax(),
         kstart_moist=kstart_moist,
         flat_level_index_plus1=gtx.int32(vertical_params.nflatlev + 1),
@@ -2314,6 +2310,19 @@ def test_vertically_implicit_solver_at_corrector_step(  # noqa: PLR0917 [too-man
         vertical_start_index_model_top=gtx.int32(0),
         vertical_end_index_model_surface=gtx.int32(icon_grid.num_levels + 1),
         offset_provider=offset_provider,
+    )
+
+    # Recomputed from the predictor's `z_w_concorr_me`, which the scheme-4 corrector keeps, so
+    # the recomputation must reproduce the predictor's `w_concorr_c`.
+    start_cell_lb3 = icon_grid.start_index(cell_domain(h_grid.Zone.LATERAL_BOUNDARY_LEVEL_3))
+    end_cell_halo = icon_grid.end_index(cell_domain(h_grid.Zone.HALO))
+    assert test_utils.dallclose(
+        contravariant_correction_at_cells_on_half_levels.asnumpy()[
+            start_cell_lb3:end_cell_halo, vertical_params.nflatlev + 1 :
+        ],
+        sp_stencil_init.w_concorr_c().asnumpy()[
+            start_cell_lb3:end_cell_halo, vertical_params.nflatlev + 1 :
+        ],
     )
 
     assert test_utils.dallclose(

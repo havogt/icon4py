@@ -29,18 +29,6 @@ log = logging.getLogger(__name__)
 
 
 @config_io.register_enum
-class TimeSteppingScheme(enum.IntEnum):
-    """Parameter called `itime_scheme` in ICON namelist."""
-
-    #: Contravariant vertical velocity is computed in the predictor step only, velocity tendencies are computed in the corrector step only
-    MOST_EFFICIENT = 4
-    #: Contravariant vertical velocity is computed in both substeps (beneficial for numerical stability in very-high resolution setups with extremely steep slopes)
-    STABLE = 5
-    #:  As STABLE, but velocity tendencies are also computed in both substeps (no benefit, but more expensive)
-    EXPENSIVE = 6
-
-
-@config_io.register_enum
 class DivergenceDampingType(enum.IntEnum):
     #: divergence damping acting on 2D divergence
     TWO_DIMENSIONAL = 2

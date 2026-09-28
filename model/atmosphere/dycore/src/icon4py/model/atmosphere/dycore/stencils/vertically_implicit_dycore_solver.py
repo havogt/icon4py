@@ -73,29 +73,6 @@ def _interpolate_contravariant_correction_from_edges_on_model_levels_to_cells_on
 
 
 @gtx.field_operator
-def _maybe_interpolate_contravariant_correction_from_edges_on_model_levels_to_cells_on_half_levels(
-    contravariant_correction_at_cells_on_half_levels: fa.CellKHalfField[vpfloat],
-    contravariant_correction_at_edges_on_model_levels: fa.EdgeKField[vpfloat],
-    e_bln_c_s: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], wpfloat],
-    wgtfac_c: fa.CellKHalfField[vpfloat],
-    wgtfacq_c: fa.CellKField[vpfloat],
-    recompute_contravariant_correction: bool,
-    nlev: gtx.int32,
-) -> fa.CellKHalfField[vpfloat]:
-    return (
-        _interpolate_contravariant_correction_from_edges_on_model_levels_to_cells_on_half_levels(
-            contravariant_correction_at_edges_on_model_levels=contravariant_correction_at_edges_on_model_levels,
-            e_bln_c_s=e_bln_c_s,
-            wgtfac_c=wgtfac_c,
-            wgtfacq_c=wgtfacq_c,
-            nlev=nlev,
-        )
-        if recompute_contravariant_correction
-        else contravariant_correction_at_cells_on_half_levels
-    )
-
-
-@gtx.field_operator
 def _set_surface_boundary_condition_for_computation_of_w(
     contravariant_correction_at_cells_on_half_levels: fa.CellKHalfField[ta.vpfloat],
 ) -> fa.CellKHalfField[ta.wpfloat]:
@@ -825,7 +802,6 @@ def vertically_implicit_solver_at_corrector_step(
     rayleigh_type: gtx.int32,
     at_first_substep: bool,
     at_last_substep: bool,
-    recompute_contravariant_correction: bool,
     end_index_of_damping_layer: gtx.int32,
     kstart_moist: gtx.int32,
     flat_level_index_plus1: gtx.int32,
@@ -836,13 +812,11 @@ def vertically_implicit_solver_at_corrector_step(
     vertical_start_index_model_top: gtx.int32,
     vertical_end_index_model_surface: gtx.int32,
 ) -> None:
-    _maybe_interpolate_contravariant_correction_from_edges_on_model_levels_to_cells_on_half_levels(
-        contravariant_correction_at_cells_on_half_levels=contravariant_correction_at_cells_on_half_levels,
+    _interpolate_contravariant_correction_from_edges_on_model_levels_to_cells_on_half_levels(
         contravariant_correction_at_edges_on_model_levels=contravariant_correction_at_edges_on_model_levels,
         e_bln_c_s=e_bln_c_s,
         wgtfac_c=wgtfac_c,
         wgtfacq_c=wgtfacq_c,
-        recompute_contravariant_correction=recompute_contravariant_correction,
         nlev=vertical_end_index_model_surface - 1,
         out=contravariant_correction_at_cells_on_half_levels,
         domain={

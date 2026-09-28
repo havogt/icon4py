@@ -48,7 +48,6 @@ class TestComputeAveragedVnAndFluxesAndPrepareTracerAdvection(stencil_tests.Sten
             "nflatlev",
             "prepare_fluxes_for_advection",
             "at_first_substep",
-            "recompute_contravariant_correction",
             "r_nsubsteps",
         ),
         stencil_tests.StandardStaticVariants.COMPILE_TIME_VERTICAL: (
@@ -57,7 +56,6 @@ class TestComputeAveragedVnAndFluxesAndPrepareTracerAdvection(stencil_tests.Sten
             "nflatlev",
             "prepare_fluxes_for_advection",
             "at_first_substep",
-            "recompute_contravariant_correction",
             "r_nsubsteps",
         ),
     }
@@ -83,7 +81,6 @@ class TestComputeAveragedVnAndFluxesAndPrepareTracerAdvection(stencil_tests.Sten
         theta_v_at_edges_on_model_levels: np.ndarray,
         prepare_fluxes_for_advection: bool,
         at_first_substep: bool,
-        recompute_contravariant_correction: bool,
         r_nsubsteps: ta.wpfloat,
         nflatlev: int,
         horizontal_start: int,
@@ -130,24 +127,21 @@ class TestComputeAveragedVnAndFluxesAndPrepareTracerAdvection(stencil_tests.Sten
                 )
             )
 
-        if recompute_contravariant_correction:
-            e2c2e = connectivities[dims.E2C2E]
-            tangential_wind = np.sum(
-                np.where(
-                    (e2c2e != -1)[:, :, np.newaxis],
-                    vn[e2c2e] * rbf_vec_coeff_e[:, :, np.newaxis],
-                    0.0,
-                ),
-                axis=1,
-            )
-            k = np.arange(vn.shape[1])[np.newaxis, :]
-            contravariant_correction_at_edges_on_model_levels = np.where(
-                k >= nflatlev,
-                compute_contravariant_correction_numpy(
-                    vn, ddxn_z_full, ddxt_z_full, tangential_wind
-                ),
-                contravariant_correction_at_edges_on_model_levels,
-            )
+        e2c2e = connectivities[dims.E2C2E]
+        tangential_wind = np.sum(
+            np.where(
+                (e2c2e != -1)[:, :, np.newaxis],
+                vn[e2c2e] * rbf_vec_coeff_e[:, :, np.newaxis],
+                0.0,
+            ),
+            axis=1,
+        )
+        k = np.arange(vn.shape[1])[np.newaxis, :]
+        contravariant_correction_at_edges_on_model_levels = np.where(
+            k >= nflatlev,
+            compute_contravariant_correction_numpy(vn, ddxn_z_full, ddxt_z_full, tangential_wind),
+            contravariant_correction_at_edges_on_model_levels,
+        )
         for field, initial in (
             (tangential_wind, initial_tangential_wind),
             (
@@ -205,20 +199,14 @@ class TestComputeAveragedVnAndFluxesAndPrepareTracerAdvection(stencil_tests.Sten
 
     @stencil_tests.input_data_fixture(
         params=[
-            {
-                "prepare_fluxes_for_advection": pa,
-                "at_first_substep": afs,
-                "recompute_contravariant_correction": rcc,
-            }
-            for pa, afs, rcc in [
-                (True, True, False),
-                (True, False, False),
-                (True, False, True),
+            {"prepare_fluxes_for_advection": pa, "at_first_substep": afs}
+            for pa, afs in [
+                (True, True),
+                (True, False),
             ]
         ],
         ids=lambda p: (
             f"prepare_fluxes_for_advection[{p['prepare_fluxes_for_advection']}]__at_first_substep[{p['at_first_substep']}]"
-            f"__recompute_contravariant_correction[{p['recompute_contravariant_correction']}]"
         ),
     )
     def input_data(
@@ -247,7 +235,6 @@ class TestComputeAveragedVnAndFluxesAndPrepareTracerAdvection(stencil_tests.Sten
         nflatlev = 5  # value is set to reflect the MCH ch1 experiment
         prepare_fluxes_for_advection = request.param["prepare_fluxes_for_advection"]
         at_first_substep = request.param["at_first_substep"]
-        recompute_contravariant_correction = request.param["recompute_contravariant_correction"]
         r_nsubsteps = 0.5
 
         edge_domain = h_grid.domain(dims.EdgeDim)
@@ -272,7 +259,6 @@ class TestComputeAveragedVnAndFluxesAndPrepareTracerAdvection(stencil_tests.Sten
             theta_v_at_edges_on_model_levels=z_theta_v_e,
             prepare_fluxes_for_advection=prepare_fluxes_for_advection,
             at_first_substep=at_first_substep,
-            recompute_contravariant_correction=recompute_contravariant_correction,
             r_nsubsteps=r_nsubsteps,
             nflatlev=nflatlev,
             horizontal_start=horizontal_start,

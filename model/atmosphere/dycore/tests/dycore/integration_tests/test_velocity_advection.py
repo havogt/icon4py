@@ -218,7 +218,6 @@ def test_velocity_predictor_step(  # noqa: PLR0917 [too-many-positional-argument
         area_edge=edge_geometry.edge_areas,
         geofac_grdiv=interpolation_state.geofac_grdiv,
         dtime=dtime,
-        skip_compute_predictor_vertical_advection=vn_only,
         apply_extra_diffusion_on_vn=True,
         nflatlev=vertical_params.nflatlev,
         end_index_of_damping_layer=vertical_params.end_index_of_damping_layer,
@@ -271,30 +270,28 @@ def test_velocity_predictor_step(  # noqa: PLR0917 [too-many-positional-argument
         atol=1.0e-15,
     )
 
-    assert test_utils.dallclose(
-        diagnostic_state.vertical_wind_advective_tendency.predictor.asnumpy()[
-            start_cell_nudging:, :
-        ],
-        icon_result_ddt_w_adv_pc[start_cell_nudging:, :],
-        atol=5.0e-16,
-        rtol=1.0e-10,
-    )
+    # The serialized ICON step ran with `lvn_only`, which leaves ddt_w_adv_pc and z_vt_ie
+    # uncomputed, so the reference holds stale values for those two fields.
+    if not vn_only:
+        assert test_utils.dallclose(
+            diagnostic_state.vertical_wind_advective_tendency.predictor.asnumpy()[
+                start_cell_nudging:, :
+            ],
+            icon_result_ddt_w_adv_pc[start_cell_nudging:, :],
+            atol=5.0e-16,
+            rtol=1.0e-10,
+        )
+        assert test_utils.dallclose(
+            tangential_wind_on_half_levels.asnumpy(),
+            savepoint_velocity_exit.z_vt_ie().asnumpy(),
+            rtol=1.0e-14,
+            atol=1.0e-14,
+        )
 
     assert test_utils.dallclose(
         diagnostic_state.normal_wind_advective_tendency.predictor.asnumpy(),
         icon_result_ddt_vn_apc_pc,
         atol=1.0e-15,
-    )
-
-    # ICON sets z_vt_ie on the top half level unconditionally
-    # (mo_velocity_advection.f90:300) whereas icon4py leaves the whole field untouched
-    # when the predictor's vertical advection is skipped.
-    first_comparable_half_level = 1 if vn_only else 0
-    assert test_utils.dallclose(
-        tangential_wind_on_half_levels.asnumpy()[:, first_comparable_half_level:],
-        savepoint_velocity_exit.z_vt_ie().asnumpy()[:, first_comparable_half_level:],
-        rtol=1.0e-14,
-        atol=1.0e-14,
     )
 
     assert test_utils.dallclose(

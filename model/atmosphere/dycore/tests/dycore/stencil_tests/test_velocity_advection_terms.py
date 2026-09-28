@@ -73,14 +73,12 @@ def extrapolate_to_surface_numpy(vn: np.ndarray, wgtfacq_e: np.ndarray) -> np.nd
 def compute_diagnostics_from_normal_wind_numpy(
     *,
     connectivities: Mapping[gtx.FieldOffset, np.ndarray],
-    tangential_wind_on_half_levels: np.ndarray,
     vn: np.ndarray,
     rbf_vec_coeff_e: np.ndarray,
     wgtfac_e: np.ndarray,
     wgtfacq_e: np.ndarray,
     ddxn_z_full: np.ndarray,
     ddxt_z_full: np.ndarray,
-    skip_compute_predictor_vertical_advection: bool,
     nlev: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     tangential_wind = reference_funcs.compute_tangential_wind_numpy(
@@ -92,11 +90,9 @@ def compute_diagnostics_from_normal_wind_numpy(
     vn_on_half_levels = interpolate_vn_to_half_levels_numpy(vn, wgtfac_e)
     vn_on_half_levels[:, nlev] = extrapolate_to_surface_numpy(vn, wgtfacq_e)
 
-    tangential_wind_on_half_levels = tangential_wind_on_half_levels.copy()
-    if not skip_compute_predictor_vertical_advection:
-        tangential_wind_on_half_levels[:, :nlev] = interpolate_vt_to_interface_edges_numpy(
-            tangential_wind, wgtfac_e
-        )[:, :nlev]
+    tangential_wind_on_half_levels = interpolate_vt_to_interface_edges_numpy(
+        tangential_wind, wgtfac_e
+    )
 
     contravariant_correction_at_edges_on_model_levels = compute_contravariant_correction_numpy(
         vn, ddxn_z_full, ddxt_z_full, tangential_wind

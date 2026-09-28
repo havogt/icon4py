@@ -154,16 +154,6 @@ class NonHydrostaticConfig:
     Default values are taken from the defaults in the corresponding ICON Fortran namelist files.
     """
 
-    itime_scheme: typing.Annotated[
-        dycore_states.TimeSteppingScheme,
-        common_conf_opt.ConfigOption(
-            description="Options for predictor-corrector time-stepping scheme.",
-            icon_equivalent=common_conf_opt.IconOption(
-                name="itime_scheme", path=("nonhydrostatic_nml",)
-            ),
-        ),
-    ] = dycore_states.TimeSteppingScheme.MOST_EFFICIENT
-
     iadv_rhotheta: typing.Annotated[
         dycore_states.RhoThetaAdvectionType,
         common_conf_opt.ConfigOption(
@@ -407,9 +397,6 @@ class NonHydrostaticConfig:
 
         if self.igradp_method != dycore_states.HorizontalPressureDiscretizationType.TAYLOR_HYDRO:
             raise NotImplementedError("igradp_method can only be 3")
-
-        if self.itime_scheme not in tuple(dycore_states.TimeSteppingScheme):
-            raise NotImplementedError("itime_scheme can only be 4, 5 or 6")
 
         if self.iadv_rhotheta != dycore_states.RhoThetaAdvectionType.MIURA:
             raise NotImplementedError("iadv_rhotheta can only be 2 (Miura scheme)")
@@ -667,9 +654,6 @@ class SolveNonhydro:
             offset_provider=self._grid.connectivities,
         )
 
-        recompute_contravariant_correction = (
-            self._config.itime_scheme >= dycore_states.TimeSteppingScheme.STABLE
-        )
         self._compute_averaged_vn_and_fluxes = setup_program(
             backend=backend,
             program=compute_averaged_vn_and_fluxes,
@@ -679,7 +663,6 @@ class SolveNonhydro:
                 "ddqz_z_full_e": self._metric_state_nonhydro.ddqz_z_full_e,
                 "ddxn_z_full": self._metric_state_nonhydro.ddxn_z_full,
                 "ddxt_z_full": self._metric_state_nonhydro.ddxt_z_full,
-                "recompute_contravariant_correction": recompute_contravariant_correction,
             },
             variants={
                 "at_first_substep": [False, True],
@@ -748,7 +731,6 @@ class SolveNonhydro:
                 "advection_explicit_weight_parameter": self._params.advection_explicit_weight_parameter,
                 "advection_implicit_weight_parameter": self._params.advection_implicit_weight_parameter,
                 "rayleigh_type": self._config.rayleigh_type,
-                "recompute_contravariant_correction": recompute_contravariant_correction,
             },
             variants={
                 "at_first_substep": [False, True],
@@ -964,9 +946,6 @@ class SolveNonhydro:
                 **shared_constant_args,
             },
             variants={
-                "skip_compute_predictor_vertical_advection": [False]
-                if self._config.itime_scheme >= dycore_states.TimeSteppingScheme.EXPENSIVE
-                else [True, False],
                 # Only True: deriving `apply_extra_diffusion_on_vn` from `max_vertical_cfl` would need a
                 # device synchronization, so the call site fixes it to True (see the TODO there).
                 "apply_extra_diffusion_on_vn": [True],
@@ -1286,44 +1265,34 @@ class SolveNonhydro:
             f"running predictor step: dtime = {dtime}, initial_timestep = {at_initial_timestep} at_first_substep = {at_first_substep}"
         )
 
-        if (
-            self._config.itime_scheme >= dycore_states.TimeSteppingScheme.EXPENSIVE
-            or at_first_substep
-        ):
-            skip_compute_predictor_vertical_advection: bool = (
-                self._config.itime_scheme < dycore_states.TimeSteppingScheme.EXPENSIVE
-                and not (at_initial_timestep and at_first_substep)
-            )
+        # Note, if we compute `apply_extra_diffusion_on_vn = max_vertical_cfl > VerticalCflConstants.W_LIMIT`
+        # from the reduction below, we would have to synchronize with the device before this call.
+        # TODO (Chia Rui): to decide whether make apply_extra_diffusion_on_vn a config parameter or remove it or always turn on extra diffusion
+        apply_extra_diffusion_on_vn = True
 
-            # Note, if we compute `apply_extra_diffusion_on_vn = max_vertical_cfl > VerticalCflConstants.W_LIMIT`
-            # from the reduction below, we would have to synchronize with the device before this call.
-            # TODO (Chia Rui): to decide whether make apply_extra_diffusion_on_vn a config parameter or remove it or always turn on extra diffusion
-            apply_extra_diffusion_on_vn = True
+        # TODO(havogt): however, our test data is probably not able to catch cfl_clipping conditions
+        self._compute_velocity_advection_in_predictor_step(
+            tangential_wind=diagnostic_state_nh.tangential_wind,
+            tangential_wind_on_half_levels=z_fields.tangential_wind_on_half_levels,
+            vn_on_half_levels=diagnostic_state_nh.vn_on_half_levels,
+            horizontal_kinetic_energy_at_edges_on_model_levels=z_fields.horizontal_kinetic_energy_at_edges_on_model_levels,
+            contravariant_correction_at_edges_on_model_levels=self._contravariant_correction_at_edges_on_model_levels,
+            contravariant_correction_at_cells_on_half_levels=diagnostic_state_nh.contravariant_correction_at_cells_on_half_levels,
+            vertical_wind_advective_tendency=diagnostic_state_nh.vertical_wind_advective_tendency.predictor,
+            vertical_cfl=self._vertical_cfl,
+            normal_wind_advective_tendency=diagnostic_state_nh.normal_wind_advective_tendency.predictor,
+            vn=prognostic_states.current.vn,
+            w=prognostic_states.current.w,
+            dtime=dtime,
+            apply_extra_diffusion_on_vn=apply_extra_diffusion_on_vn,
+        )
 
-            # TODO(havogt): however, our test data is probably not able to catch cfl_clipping conditions
-            self._compute_velocity_advection_in_predictor_step(
-                tangential_wind=diagnostic_state_nh.tangential_wind,
-                tangential_wind_on_half_levels=z_fields.tangential_wind_on_half_levels,
-                vn_on_half_levels=diagnostic_state_nh.vn_on_half_levels,
-                horizontal_kinetic_energy_at_edges_on_model_levels=z_fields.horizontal_kinetic_energy_at_edges_on_model_levels,
-                contravariant_correction_at_edges_on_model_levels=self._contravariant_correction_at_edges_on_model_levels,
-                contravariant_correction_at_cells_on_half_levels=diagnostic_state_nh.contravariant_correction_at_cells_on_half_levels,
-                vertical_wind_advective_tendency=diagnostic_state_nh.vertical_wind_advective_tendency.predictor,
-                vertical_cfl=self._vertical_cfl,
-                normal_wind_advective_tendency=diagnostic_state_nh.normal_wind_advective_tendency.predictor,
-                vn=prognostic_states.current.vn,
-                w=prognostic_states.current.w,
-                dtime=dtime,
-                skip_compute_predictor_vertical_advection=skip_compute_predictor_vertical_advection,
-                apply_extra_diffusion_on_vn=apply_extra_diffusion_on_vn,
-            )
-
-            _update_max_vertical_cfl(
-                diagnostic_state_nh,
-                self._vertical_cfl,
-                self._start_cell_lateral_boundary_level_4,
-                self._end_cell_halo,
-            )
+        _update_max_vertical_cfl(
+            diagnostic_state_nh,
+            self._vertical_cfl,
+            self._start_cell_lateral_boundary_level_4,
+            self._end_cell_halo,
+        )
 
         self._compute_perturbed_quantities_and_interpolation(
             temporal_extrapolation_of_perturbed_exner=self.temporal_extrapolation_of_perturbed_exner,

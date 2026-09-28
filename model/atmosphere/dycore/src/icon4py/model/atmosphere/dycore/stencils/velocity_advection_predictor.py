@@ -36,14 +36,12 @@ from icon4py.model.common.type_alias import vpfloat, wpfloat
 
 @gtx.field_operator
 def _compute_diagnostics_from_normal_wind(
-    tangential_wind_on_half_levels: fa.EdgeKHalfField[ta.vpfloat],
     vn: fa.EdgeKField[ta.wpfloat],
     rbf_vec_coeff_e: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2EDim], ta.wpfloat],
     wgtfac_e: fa.EdgeKHalfField[ta.vpfloat],
     wgtfacq_e: fa.EdgeKField[ta.vpfloat],
     ddxn_z_full: fa.EdgeKField[ta.vpfloat],
     ddxt_z_full: fa.EdgeKField[ta.vpfloat],
-    skip_compute_predictor_vertical_advection: bool,
     nlev: gtx.int32,
 ) -> tuple[
     fa.EdgeKField[ta.vpfloat],
@@ -62,11 +60,7 @@ def _compute_diagnostics_from_normal_wind(
         _extrapolate_at_top(vn, wgtfacq_e),
     )
 
-    tangential_wind_on_half_levels = (
-        _interpolate_to_half_levels(tangential_wind, wgtfac_e)
-        if not skip_compute_predictor_vertical_advection
-        else tangential_wind_on_half_levels
-    )
+    tangential_wind_on_half_levels = _interpolate_to_half_levels(tangential_wind, wgtfac_e)
 
     contravariant_correction_at_edges_on_model_levels = _compute_contravariant_correction(
         vn, ddxn_z_full, ddxt_z_full, tangential_wind
@@ -108,8 +102,6 @@ def _interpolate_contravariant_correction_to_cells_on_half_levels(
 
 @gtx.field_operator
 def _compute_velocity_advection_in_predictor_step(
-    tangential_wind_on_half_levels: fa.EdgeKHalfField[ta.vpfloat],
-    vertical_wind_advective_tendency: fa.CellKHalfField[ta.vpfloat],
     vn: fa.EdgeKField[ta.wpfloat],
     w: fa.CellKHalfField[ta.wpfloat],
     rbf_vec_coeff_e: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2EDim], ta.wpfloat],
@@ -137,7 +129,6 @@ def _compute_velocity_advection_in_predictor_step(
     area_edge: fa.EdgeField[ta.wpfloat],
     geofac_grdiv: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2EODim], ta.wpfloat],
     dtime: ta.wpfloat,
-    skip_compute_predictor_vertical_advection: bool,
     apply_extra_diffusion_on_vn: bool,
     nflatlev: gtx.int32,
     nlev: gtx.int32,
@@ -160,14 +151,12 @@ def _compute_velocity_advection_in_predictor_step(
         horizontal_kinetic_energy_at_edges_on_model_levels,
         contravariant_correction_at_edges_on_model_levels,
     ) = _compute_diagnostics_from_normal_wind(
-        tangential_wind_on_half_levels=tangential_wind_on_half_levels,
         vn=vn,
         rbf_vec_coeff_e=rbf_vec_coeff_e,
         wgtfac_e=wgtfac_e,
         wgtfacq_e=wgtfacq_e,
         ddxn_z_full=ddxn_z_full,
         ddxt_z_full=ddxt_z_full,
-        skip_compute_predictor_vertical_advection=skip_compute_predictor_vertical_advection,
         nlev=nlev,
     )
 
@@ -179,7 +168,7 @@ def _compute_velocity_advection_in_predictor_step(
     )
 
     (
-        maybe_vertical_wind_advective_tendency,  # if `skip_compute_predictor_vertical_advection` this field will carry a dummy value
+        vertical_wind_advective_tendency,
         contravariant_corrected_w_at_cells_on_model_levels,
         vertical_cfl,
     ) = _compute_advection_in_vertical_momentum(
@@ -199,18 +188,8 @@ def _compute_velocity_advection_in_predictor_step(
         geofac_n2s=geofac_n2s,
         owner_mask=owner_mask,
         dtime=dtime,
-        skip_vertical_wind_advective_tendency=skip_compute_predictor_vertical_advection,
         nlev=nlev,
         end_index_of_damping_layer=end_index_of_damping_layer,
-    )
-
-    # We forward the previous value if `skip_compute_predictor_vertical_advection`.
-    # This code looks weird because the `MOST_EFFICIENT` scheme skips computing the vertical_wind_advective_tendency,
-    # which the correct `EXPENSIVE` scheme would compute.
-    vertical_wind_advective_tendency = (
-        maybe_vertical_wind_advective_tendency
-        if not skip_compute_predictor_vertical_advection
-        else vertical_wind_advective_tendency
     )
 
     normal_wind_advective_tendency = _compute_advection_in_horizontal_momentum(
@@ -286,7 +265,6 @@ def compute_velocity_advection_in_predictor_step(
     area_edge: fa.EdgeField[ta.wpfloat],
     geofac_grdiv: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2EODim], ta.wpfloat],
     dtime: ta.wpfloat,
-    skip_compute_predictor_vertical_advection: bool,
     apply_extra_diffusion_on_vn: bool,
     nflatlev: gtx.int32,
     end_index_of_damping_layer: gtx.int32,
@@ -343,7 +321,6 @@ def compute_velocity_advection_in_predictor_step(
         - area_edge: area associated with each edge
         - geofac_grdiv: metrics field used to compute the gradient of a divergence (of vn)
         - dtime: time step
-        - skip_compute_predictor_vertical_advection: logical flag to skip the vertical advection
         - apply_extra_diffusion_on_vn: option to apply extra diffusion to vn
         - nflatlev: index of the first flat level
         - end_index_of_damping_layer: vertical index where damping ends
@@ -358,8 +335,6 @@ def compute_velocity_advection_in_predictor_step(
     """
 
     _compute_velocity_advection_in_predictor_step(
-        tangential_wind_on_half_levels=tangential_wind_on_half_levels,
-        vertical_wind_advective_tendency=vertical_wind_advective_tendency,
         vn=vn,
         w=w,
         rbf_vec_coeff_e=rbf_vec_coeff_e,
@@ -387,7 +362,6 @@ def compute_velocity_advection_in_predictor_step(
         area_edge=area_edge,
         geofac_grdiv=geofac_grdiv,
         dtime=dtime,
-        skip_compute_predictor_vertical_advection=skip_compute_predictor_vertical_advection,
         apply_extra_diffusion_on_vn=apply_extra_diffusion_on_vn,
         nflatlev=nflatlev,
         nlev=vertical_end,

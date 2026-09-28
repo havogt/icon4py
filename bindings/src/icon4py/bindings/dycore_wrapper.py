@@ -156,8 +156,10 @@ def solve_nh_init(  # noqa: PLR0917 [too-many-positional-arguments]
             allocator=allocator,
         )
 
+    if itime_scheme != 6:
+        raise NotImplementedError(f"icon4py only implements itime_scheme = 6, got {itime_scheme}")
+
     config = solve_nonhydro.NonHydrostaticConfig(
-        itime_scheme=itime_scheme,
         iadv_rhotheta=iadv_rhotheta,
         igradp_method=igradp_method,
         rayleigh_type=rayleigh_type,
