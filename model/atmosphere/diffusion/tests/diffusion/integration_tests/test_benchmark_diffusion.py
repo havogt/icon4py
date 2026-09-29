@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import importlib.util
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -265,8 +267,9 @@ def _diffusion_global_granule(
     """
     The `DiffusionGlobal` granule and its prognostic input.
 
-    With `execution="jax"` it works on JAX arrays on the default JAX device; the constant fields
-    are computed with `backend_like` and then converted. With `execution="backend"` it runs on
+    With `execution="jax"` it works on JAX arrays on the default JAX device, with `"torch"` and
+    `"torch_compile"` on torch tensors on the default torch device; the constant fields are
+    computed with `backend_like` and then converted. With `execution="backend"` it runs on
     `backend_like`.
     """
     mesh = setup["mesh"]
@@ -279,20 +282,21 @@ def _diffusion_global_granule(
     vertical_grid = setup["vertical_grid"]
     prognostic_input = {k: getattr(setup["prognostic_state"], k) for k in _PROGNOSTIC_FIELDS}
 
-    if execution == "jax":
-        jax = pytest.importorskip("jax")
-        jnp = jax.numpy
-        mesh = dataclasses.replace(
-            mesh, connectivities={k: _to_jax(v, jnp) for k, v in mesh.connectivities.items()}
+    if execution in ("jax", "torch", "torch_compile"):
+        xp = (
+            pytest.importorskip("jax").numpy if execution == "jax" else pytest.importorskip("torch")
         )
-        constants = {k: _to_jax(v, jnp) for k, v in constants.items()}
+        mesh = dataclasses.replace(
+            mesh, connectivities={k: _to_jax(v, xp) for k, v in mesh.connectivities.items()}
+        )
+        constants = {k: _to_jax(v, xp) for k, v in constants.items()}
         vertical_grid = v_grid.VerticalGrid(
             config=vertical_grid.config,
-            vct_a=_to_jax(vertical_grid.vct_a, jnp),
-            vct_b=_to_jax(vertical_grid.vct_b, jnp),
+            vct_a=_to_jax(vertical_grid.vct_a, xp),
+            vct_b=_to_jax(vertical_grid.vct_b, xp),
         )
-        prognostic_input = {k: _to_jax(v, jnp) for k, v in prognostic_input.items()}
-        allocator, backend = jnp, None
+        prognostic_input = {k: _to_jax(v, xp) for k, v in prognostic_input.items()}
+        allocator, backend = xp, None
     else:
         # gt4py's static domain inference takes min/max over the neighbour tables including their skip
         # values, which gives a negative edge range through V2E on the pentagons (gt4py-f103).
@@ -330,13 +334,33 @@ def _diffusion_global_granule(
 def _diffusion_global_step(
     setup: dict[str, Any], execution: str, backend_like: model_backends.BackendLike
 ) -> tuple[Any, dict[str, gtx.Field]]:
-    """The `DiffusionGlobal` step, jitted with `execution="jax"`, and its prognostic input."""
-    granule, prognostic_input = _diffusion_global_granule(setup, execution, backend_like)
+    """
+    The `DiffusionGlobal` step, jitted with `execution="jax"`, eager with `"torch"` and under
+    `torch.compile` with `"torch_compile"`, and its prognostic input.
+
+    The torch device is `ICON4PY_BENCH_TORCH_DEVICE` (default `cuda`).
+    """
+    torch = pytest.importorskip("torch") if execution.startswith("torch") else None
+    device = torch.device(os.environ.get("ICON4PY_BENCH_TORCH_DEVICE", "cuda")) if torch else None
+    with device or contextlib.nullcontext():
+        granule, prognostic_input = _diffusion_global_granule(setup, execution, backend_like)
     dtime = setup["dtime"]
 
     def step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
         new = granule.run(prognostic_state=prognostics.PrognosticState(**fields), dtime=dtime)
         return {k: getattr(new, k) for k in _PROGNOSTIC_FIELDS}
+
+    if torch is not None:
+        run = torch.compile(step) if execution == "torch_compile" else step
+
+        def torch_step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
+            with device:
+                out = run(fields)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            return out
+
+        return torch_step, prognostic_input
 
     if execution == "jax":
         jax = pytest.importorskip("jax")
@@ -354,7 +378,7 @@ def _diffusion_global_step(
 
 @pytest.mark.benchmark
 @pytest.mark.benchmark_only
-@pytest.mark.parametrize("execution", ["jax", "backend"])
+@pytest.mark.parametrize("execution", ["jax", "backend", "torch", "torch_compile"])
 def test_diffusion_global_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
     geometry_field_source: grid_geometry.GridGeometry,
     grid_manager: gm.GridManager,
@@ -383,14 +407,19 @@ def test_diffusion_global_benchmark(  # noqa: PLR0917 [too-many-positional-argum
     benchmark(step, prognostic_input)
 
 
-def test_diffusion_global_jax_matches_backend(
+@pytest.mark.parametrize("execution", ["jax", "torch", "torch_compile"])
+def test_diffusion_global_matches_backend(  # noqa: PLR0917 [too-many-positional-arguments]
     geometry_field_source: grid_geometry.GridGeometry,
     grid_manager: gm.GridManager,
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
     metrics_field_source: metrics_factory.MetricsFieldsFactory,
     backend_like: model_backends.BackendLike,
+    execution: str,
 ) -> None:
-    """`DiffusionGlobal` under `jax.jit` against `DiffusionGlobal` and `Diffusion` on `--backend`."""
+    """
+    `DiffusionGlobal` under `jax.jit` or on torch against `DiffusionGlobal` and `Diffusion` on
+    `--backend`; on torch also against `jax.jit`.
+    """
     setup = _setup(
         geometry_field_source,
         grid_manager,
@@ -398,21 +427,29 @@ def test_diffusion_global_jax_matches_backend(
         metrics_field_source,
         backend_like,
     )
-    jax_step, jax_input = _diffusion_global_step(setup, "jax", backend_like)
-    if perturbation := float(os.environ.get("ICON4PY_BENCH_PERTURB_JAX_THETA_V", "0")):
+    step, step_input = _diffusion_global_step(setup, execution, backend_like)
+    perturbation = float(os.environ.get("ICON4PY_BENCH_PERTURB_JAX_THETA_V", "0"))
+    if perturbation and execution == "jax":
         # negative control: the comparison below must fail
         jnp = pytest.importorskip("jax").numpy
-        theta_v = jax_input["theta_v"]
-        jax_input["theta_v"] = gtx.as_field(
+        theta_v = step_input["theta_v"]
+        step_input["theta_v"] = gtx.as_field(
             theta_v.domain, jnp.asarray(theta_v.asnumpy() * (1.0 + perturbation)), allocator=jnp
         )
     backend_step, backend_input = _diffusion_global_step(setup, "backend", backend_like)
-    computed = {k: v.asnumpy() for k, v in jax_step(jax_input).items()}
+    output = step(step_input)
+    print(
+        f"{execution} output arrays: {type(output['vn'].ndarray)} {getattr(output['vn'].ndarray, 'device', '')}"
+    )
+    computed = {k: v.asnumpy() for k, v in output.items()}
     if dump := os.environ.get("ICON4PY_BENCH_DUMP_JAX_OUTPUT"):
         np.savez(dump, **computed)
     references = {
         "global": {k: v.asnumpy() for k, v in backend_step(backend_input).items()},
     }
+    if execution != "jax" and importlib.util.find_spec("jax") is not None:
+        reference_step, reference_input = _diffusion_global_step(setup, "jax", backend_like)
+        references["jax"] = {k: v.asnumpy() for k, v in reference_step(reference_input).items()}
     granule = diffusion.Diffusion(
         grid=setup["mesh"],
         config=setup["config"],
@@ -435,7 +472,7 @@ def test_diffusion_global_jax_matches_backend(
         for name in _PROGNOSTIC_FIELDS:
             diff = np.abs(computed[name] - reference[name])
             print(
-                f"jax vs {reference_name} {name}: max abs {np.nanmax(diff):.3e}, "
+                f"{execution} vs {reference_name} {name}: max abs {np.nanmax(diff):.3e}, "
                 f"max |ref| {np.nanmax(np.abs(reference[name])):.3e}, "
                 f"nan {int(np.isnan(computed[name]).sum())}/{int(np.isnan(reference[name]).sum())}"
             )
