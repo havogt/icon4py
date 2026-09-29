@@ -314,10 +314,15 @@ def _diffusion_global_granule(
         ndyn_substeps=5,
         backend=backend,
     )
-    if backend is not None and os.environ.get("ICON4PY_BENCH_STATIC_SIZES", "1") == "1":
+    static_params: tuple[str, ...] = ()
+    if (selected := os.environ.get("ICON4PY_BENCH_STATIC_PARAMS")) is not None:
+        static_params = tuple(p for p in selected.split(",") if p)
+    elif os.environ.get("ICON4PY_BENCH_STATIC_SIZES", "1") == "1":
         # The vertical sizes that reach `concat_where` and the flags are compile time, as the domains.
+        static_params = ("nrdmax", "num_levels", "apply_to_temperature", "apply_zdiffusion_t")
+    if backend is not None and static_params:
         granule._diffusion_global_step = granule._diffusion_global_step.with_compilation_options(
-            static_params=("nrdmax", "num_levels", "apply_to_temperature", "apply_zdiffusion_t")
+            static_params=static_params
         )
     return granule, prognostic_input
 
