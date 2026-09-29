@@ -403,6 +403,8 @@ def test_diffusion_global_jax_matches_backend(
         )
     backend_step, backend_input = _diffusion_global_step(setup, "backend", backend_like)
     computed = {k: v.asnumpy() for k, v in jax_step(jax_input).items()}
+    if dump := os.environ.get("ICON4PY_BENCH_DUMP_JAX_OUTPUT"):
+        np.savez(dump, **computed)
     references = {
         "global": {k: v.asnumpy() for k, v in backend_step(backend_input).items()},
     }
