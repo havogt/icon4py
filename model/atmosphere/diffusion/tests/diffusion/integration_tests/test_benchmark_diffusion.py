@@ -394,6 +394,10 @@ def test_diffusion_global_jax_matches_backend(
         backend_like,
     )
     jax_step, jax_input = _diffusion_global_step(setup, "jax", backend_like)
+    if perturbation := float(os.environ.get("ICON4PY_BENCH_PERTURB_JAX_THETA_V", "0")):
+        # negative control: the comparison below must fail
+        theta_v = jax_input["theta_v"]
+        jax_input["theta_v"] = gtx.as_field(theta_v.domain, theta_v.ndarray * (1.0 + perturbation))
     backend_step, backend_input = _diffusion_global_step(setup, "backend", backend_like)
     computed = {k: v.asnumpy() for k, v in jax_step(jax_input).items()}
     references = {
