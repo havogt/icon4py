@@ -46,7 +46,7 @@ class DiffusionCoefficients(NamedTuple):
     k4_dt: fa.KField[wpfloat]
     #: k_w Δt of Eq 40
     kw_dt: wpfloat
-    #: coefficient of the second-order w diffusion in the upper damping layer
+    #: coefficient of the second-order w diffusion in the upper damping layer, zero below it
     k2w_damping_layer: fa.KHalfField[wpfloat]
 
 
@@ -145,7 +145,6 @@ def _diffusion_global_step(
     thresh_tdiff: wpfloat,
     smallest_coefficient: wpfloat,
     rd_o_cvd: wpfloat,
-    nrdmax: gtx.int32,
     num_levels: gtx.int32,
     apply_to_temperature: bool,
     apply_zdiffusion_t: bool,
@@ -177,15 +176,15 @@ def _diffusion_global_step(
 
     # Eqs 40 and 41, plus a second-order term in the upper damping layer; the surface level is kept
     nabla2_w = nabla2_khalf(w, inv_dual_edge_length, geofac_div)
-    w_new = w - coefficients.kw_dt * cell_area**2 * nabla2_khalf(
-        nabla2_w, inv_dual_edge_length, geofac_div
-    )
     w_new = concat_where(
-        (dims.KHalfDim >= 1) & (dims.KHalfDim < nrdmax),
-        w_new + coefficients.k2w_damping_layer * cell_area * nabla2_w,
-        w_new,
+        dims.KHalfDim < num_levels,
+        w
+        - coefficients.kw_dt
+        * cell_area**2
+        * nabla2_khalf(nabla2_w, inv_dual_edge_length, geofac_div)
+        + coefficients.k2w_damping_layer * cell_area * nabla2_w,
+        w,
     )
-    w_new = concat_where(dims.KHalfDim < num_levels, w_new, w)
 
     # Eq 38, with the coefficient raised in cold pools on the two lowest levels
     theta_v_new, exner_new = theta_v, exner
