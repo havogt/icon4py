@@ -563,6 +563,46 @@ _SOLVE_NONHYDRO_GLOBAL_STATIC_PARAMS = (
 )
 
 
+def _solve_nonhydro_global_backend_solver(
+    geometry_field_source: grid_geometry.GridGeometry,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
+) -> tuple[solve_nonhydro_global.SolveNonhydroGlobal, icon_grid.IconGrid, Any]:
+    """`SolveNonhydroGlobal` on `--backend`, with static domains and static integer and boolean arguments."""
+    setup = _setup(
+        geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
+    )
+    mesh = setup.pop("mesh")
+    if mesh.limited_area:
+        pytest.skip("'SolveNonhydroGlobal' does not support limited area grids.")
+    setup.pop("owner_mask")
+    allocator = model_backends.get_allocator(backend_like)
+    if os.environ.get("ICON4PY_BENCH_REPLACE_SKIP_VALUES", "1") == "1":
+        # gt4py's static domain inference takes min/max over the neighbour tables including their
+        # skip values (gt4py-f103).
+        mesh = icon_grid.with_skip_values_replaced(mesh, allocator=allocator)
+    backend = backend_like
+    if os.environ.get("ICON4PY_BENCH_DACE_DISABLE_SPLITTING", "0") == "1":
+        assert isinstance(backend_like, dict)
+        backend = {**backend_like, "optimization_args": {"disable_splitting": True}}
+    solver = solve_nonhydro_global.SolveNonhydroGlobal(
+        grid=mesh,
+        **setup,
+        allocator=allocator,
+        backend=model_options.customize_backend(None, backend),
+    )
+    options: dict[str, Any] = {}
+    if os.environ.get("ICON4PY_BENCH_STATIC_DOMAINS", "1") == "1":
+        options["static_domains"] = True
+    if os.environ.get("ICON4PY_BENCH_STATIC_SIZES", "1") == "1":
+        options["static_params"] = _SOLVE_NONHYDRO_GLOBAL_STATIC_PARAMS
+    solver._solve_nonhydro_global_step = (
+        solver._solve_nonhydro_global_step.with_compilation_options(**options)
+    )
+    return solver, mesh, allocator
+
+
 @pytest.mark.parametrize(
     "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
 )
@@ -584,31 +624,8 @@ def test_benchmark_solve_nonhydro_global_backend(  # noqa: PLR0917 [too-many-pos
 
     The first call, which compiles, is timed on its own in `extra_info["first_call_s"]`.
     """
-    setup = _setup(
+    solver, mesh, allocator = _solve_nonhydro_global_backend_solver(
         geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
-    )
-    mesh = setup.pop("mesh")
-    if mesh.limited_area:
-        pytest.skip("'SolveNonhydroGlobal' does not support limited area grids.")
-    setup.pop("owner_mask")
-    allocator = model_backends.get_allocator(backend_like)
-    if os.environ.get("ICON4PY_BENCH_REPLACE_SKIP_VALUES", "1") == "1":
-        # gt4py's static domain inference takes min/max over the neighbour tables including their
-        # skip values (gt4py-f103).
-        mesh = icon_grid.with_skip_values_replaced(mesh, allocator=allocator)
-    solver = solve_nonhydro_global.SolveNonhydroGlobal(
-        grid=mesh,
-        **setup,
-        allocator=allocator,
-        backend=model_options.customize_backend(None, backend_like),
-    )
-    options: dict[str, Any] = {}
-    if os.environ.get("ICON4PY_BENCH_STATIC_DOMAINS", "1") == "1":
-        options["static_domains"] = True
-    if os.environ.get("ICON4PY_BENCH_STATIC_SIZES", "1") == "1":
-        options["static_params"] = _SOLVE_NONHYDRO_GLOBAL_STATIC_PARAMS
-    solver._solve_nonhydro_global_step = solver._solve_nonhydro_global_step.with_compilation_options(
-        **options
     )
     prep_adv, diagnostic_state_nh, prognostic_states = _states(mesh, allocator)
     intermediate_state = solver.initial_intermediate_state()
@@ -630,6 +647,73 @@ def test_benchmark_solve_nonhydro_global_backend(  # noqa: PLR0917 [too-many-pos
     step()
     benchmark.extra_info["first_call_s"] = time.perf_counter() - start
     benchmark(step)
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+def test_solve_nonhydro_global_backend_matches_granule(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    backend_like: model_backends.BackendLike,
+) -> None:
+    """`SolveNonhydroGlobal` on `--backend` against a fresh `SolveNonhydro` on `--backend`."""
+    solver, mesh, allocator = _solve_nonhydro_global_backend_solver(
+        geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
+    )
+    prep_adv, diagnostic_state_nh, prognostic_states = _states(mesh, allocator)
+    start = time.perf_counter()
+    new, *_ = solver.time_step(
+        diagnostic_state_nh=diagnostic_state_nh,
+        prognostic_state=prognostic_states.current,
+        intermediate_state=solver.initial_intermediate_state(),
+        prep_adv=prep_adv,
+        dtime=90.0,
+        at_first_substep=at_first_substep,
+        at_last_substep=at_last_substep,
+        **_SUBSTEP_ARGS,
+    )
+    computed = {k: getattr(new, k).asnumpy() for k in _PROGNOSTIC_FIELDS}
+    print(f"first call (compile and run) {time.perf_counter() - start:.1f} s")
+
+    setup = _setup(
+        geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
+    )
+    granule = solve_nh.SolveNonhydro(
+        grid=setup.pop("mesh"),
+        **setup,
+        exchange=decomposition.SingleNodeExchange(),
+        backend=backend_like,
+        max_nudging_coefficient=0.375,
+    )
+    prep_adv, diagnostic_state_nh, prognostic_states = _states(
+        grid_manager.grid, model_backends.get_allocator(backend_like)
+    )
+    granule.time_step(
+        diagnostic_state_nh=diagnostic_state_nh,
+        prognostic_states=prognostic_states,
+        prep_adv=prep_adv,
+        dtime=90.0,
+        at_first_substep=at_first_substep,
+        at_last_substep=at_last_substep,
+        **_SUBSTEP_ARGS,
+    )
+    reference = {k: getattr(prognostic_states.next, k).asnumpy() for k in _PROGNOSTIC_FIELDS}
+    for name in _PROGNOSTIC_FIELDS:
+        diff = np.abs(computed[name] - reference[name])
+        print(
+            f"backend vs granule {name}: max abs {np.nanmax(diff):.3e}, "
+            f"max |ref| {np.nanmax(np.abs(reference[name])):.3e}, "
+            f"nan {int(np.isnan(computed[name]).sum())}/{int(np.isnan(reference[name]).sum())}"
+        )
+    for name in _PROGNOSTIC_FIELDS:
+        np.testing.assert_allclose(
+            computed[name], reference[name], rtol=1e-10, atol=1e-12, equal_nan=True, err_msg=name
+        )
 
 
 @pytest.mark.parametrize(
