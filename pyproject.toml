@@ -122,6 +122,8 @@ jax-cuda13 = ["icon4py-common[jax-cuda13]"]
 profiling = ['viztracer>=1.1.0']
 rocm7 = ["icon4py-common[rocm7]"]
 testing = ["icon4py-testing"]
+torch = ["torch==2.14.0"]
+torch-cuda13 = ["icon4py-common[cuda13]", "torch==2.14.0"]
 
 [project.urls]
 Homepage = 'https://github.com/C2SM/icon4py'
@@ -418,7 +420,11 @@ conflicts = [
   [{extra = "jax-cuda12"}, {extra = "cuda13"}],
   [{extra = "jax-cuda12"}, {extra = "rocm7"}],
   [{extra = "jax-cuda13"}, {extra = "cuda12"}],
-  [{extra = "jax-cuda13"}, {extra = "rocm7"}]
+  [{extra = "jax-cuda13"}, {extra = "rocm7"}],
+  [{extra = "torch"}, {extra = "torch-cuda13"}],
+  [{extra = "torch-cuda13"}, {extra = "cuda12"}],
+  [{extra = "torch-cuda13"}, {extra = "rocm7"}],
+  [{extra = "torch-cuda13"}, {extra = "jax-cuda12"}]
 ]
 
 [[tool.uv.index]]
@@ -430,6 +436,16 @@ url = "https://test.pypi.org/simple/"
 explicit = true
 name = 'gridtools'
 url = 'https://gridtools.github.io/pypi/'
+
+[[tool.uv.index]]
+explicit = true
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+
+[[tool.uv.index]]
+explicit = true
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 
 [tool.uv.sources]
 # dace = {index = "gridtools"}
@@ -448,6 +464,10 @@ icon4py-common = {workspace = true}
 icon4py-driver = {workspace = true}
 icon4py-testing = {workspace = true}
 icon4py-tools = {workspace = true}
+torch = [
+  {index = "pytorch-cpu", extra = "torch"},
+  {index = "pytorch-cu130", extra = "torch-cuda13"}
+]
 
 [tool.uv.workspace]
 members = [
