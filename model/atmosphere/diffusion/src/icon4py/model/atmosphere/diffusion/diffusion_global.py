@@ -31,9 +31,19 @@ from icon4py.model.atmosphere.diffusion.diffusion_utils import (
     _init_nabla2_factor_in_upper_damping_zone,
     _setup_fields_for_initial_step,
 )
-from icon4py.model.atmosphere.diffusion.stencils.diffusion_global_step import _diffusion_global_step
+from icon4py.model.atmosphere.diffusion.stencils.diffusion_global_step import (
+    CellNeighbourWeights,
+    DiffusionCoefficients,
+    SteepPointInterpolation,
+    _diffusion_global_step,
+)
 from icon4py.model.common import constants, dimension as dims
 from icon4py.model.common.grid import horizontal as h_grid, icon as icon_grid, vertical as v_grid
+from icon4py.model.common.math.differential_operators import (
+    DiamondDirection,
+    DiamondLengths,
+    RbfVectorCoefficients,
+)
 from icon4py.model.common.utils import data_allocation as data_alloc
 
 
@@ -77,10 +87,26 @@ class DiffusionGlobal:
         self._vertical_grid = vertical_grid
         self._metric_state = metric_state
         self._interpolation_state = interpolation_state
-        self._geofac_n2s_c = interpolation_state.geofac_n2s_c
-        self._geofac_n2s_nbh = interpolation_state.geofac_n2s_nbh
         self._edge_params = edge_params
         self._cell_params = cell_params
+        self._rbf_coeff = RbfVectorCoefficients(
+            u=interpolation_state.rbf_coeff_1, v=interpolation_state.rbf_coeff_2
+        )
+        self._primal_normal = DiamondDirection(*edge_params.primal_normal_vert)
+        self._dual_normal = DiamondDirection(*edge_params.dual_normal_vert)
+        self._lengths = DiamondLengths(
+            inv_l_p=edge_params.inverse_primal_edge_lengths,
+            inv_l_vv=edge_params.inverse_vertex_vertex_lengths,
+        )
+        self._n2s = CellNeighbourWeights(
+            center=interpolation_state.geofac_n2s_c, neighbours=interpolation_state.geofac_n2s_nbh
+        )
+        self._steep = SteepPointInterpolation(
+            diffusion_coefficient=metric_state.zd_diffcoef,
+            # mypy infers other dimension types for these two fields of the metric state
+            vertical_offset=metric_state.zd_vertoffset,  # type: ignore[arg-type]
+            weight=metric_state.zd_intcoef,  # type: ignore[arg-type]
+        )
         self._offset_provider = grid.connectivities
         ndyn_substeps_as_float = float(ndyn_substeps)
 
@@ -89,29 +115,23 @@ class DiffusionGlobal:
         )
         #: threshold temperature deviation from neighboring grid points that activates extra diffusion against runaway cooling
         self.thresh_tdiff: float = -5.0
-        self.smag_offset: float = 0.25 * params.K4 * ndyn_substeps_as_float
-        self.diff_multfac_w: float = min(1.0 / 48.0, params.K4W * ndyn_substeps_as_float)
         self._determine_horizontal_domains()
 
         num_levels = self._grid.num_levels
-        self.diff_multfac_vn, self.smag_limit, self.enh_smag_fac = (
-            self._init_diffusion_local_fields_for_regular_timestep(
-                params.K4,
-                ndyn_substeps_as_float,
-                *params.smagorinski_factor,
-                *params.smagorinski_height,
-                self._vertical_grid.interface_physical_height,
-                domain={dims.KDim: (0, num_levels)},
-                offset_provider={},
-            )
+        k4_dt, kh_limit, f_s = self._init_diffusion_local_fields_for_regular_timestep(
+            params.K4,
+            ndyn_substeps_as_float,
+            *params.smagorinski_factor,
+            *params.smagorinski_height,
+            self._vertical_grid.interface_physical_height,
+            domain={dims.KDim: (0, num_levels)},
+            offset_provider={},
         )
         end_index_of_damping_layer = self._vertical_grid.end_index_of_damping_layer
         heights = self._vertical_grid.interface_physical_height
-        self.diff_multfac_n2w = data_alloc.zero_field(
-            self._grid, dims.KHalfDim, allocator=allocator
-        )
+        k2w_damping_layer = data_alloc.zero_field(self._grid, dims.KHalfDim, allocator=allocator)
         if end_index_of_damping_layer > 0:
-            self.diff_multfac_n2w = concat_where(
+            k2w_damping_layer = concat_where(
                 (dims.KHalfDim >= 1) & (dims.KHalfDim < end_index_of_damping_layer + 1),
                 self._init_nabla2_factor_in_upper_damping_zone(
                     physical_heights=heights,
@@ -122,8 +142,16 @@ class DiffusionGlobal:
                     domain={dims.KHalfDim: (1, end_index_of_damping_layer + 1)},
                     offset_provider={},
                 ),
-                self.diff_multfac_n2w,
+                k2w_damping_layer,
             )
+        self.coefficients = DiffusionCoefficients(
+            f_s=f_s,
+            kh_offset=0.25 * params.K4 * ndyn_substeps_as_float,
+            kh_limit=kh_limit,
+            k4_dt=k4_dt,
+            kw_dt=min(1.0 / 48.0, params.K4W * ndyn_substeps_as_float),
+            k2w_damping_layer=k2w_damping_layer,
+        )
 
     def _determine_horizontal_domains(self) -> None:
         def interior(dim: gtx.Dimension) -> tuple[gtx.int32, gtx.int32]:
@@ -143,50 +171,35 @@ class DiffusionGlobal:
         num_levels = self._grid.num_levels
         k_domain = {dims.KDim: (0, num_levels)}
 
+        coefficients = self.coefficients
         if initial_run:
-            diff_multfac_vn, smag_limit = self._setup_fields_for_initial_step(
+            k4_dt, kh_limit = self._setup_fields_for_initial_step(
                 self._params.K4,
                 self.config.hdiff_efdt_ratio,
                 domain=k_domain,
                 offset_provider={},
             )
-            smag_offset = 0.0
-        else:
-            diff_multfac_vn = self.diff_multfac_vn
-            smag_limit = self.smag_limit
-            smag_offset = self.smag_offset
+            coefficients = coefficients._replace(kh_offset=0.0, kh_limit=kh_limit, k4_dt=k4_dt)
 
         vn, w, theta_v, exner = self._diffusion_global_step(
             vn=prognostic_state.vn,
             w=prognostic_state.w,
             theta_v=prognostic_state.theta_v,
             exner=prognostic_state.exner,
-            diff_multfac_vn=diff_multfac_vn,
-            smag_limit=smag_limit,
-            enh_smag_fac=self.enh_smag_fac,
-            diff_multfac_n2w=self.diff_multfac_n2w,
-            rbf_coeff_1=self._interpolation_state.rbf_coeff_1,
-            rbf_coeff_2=self._interpolation_state.rbf_coeff_2,
+            coefficients=coefficients,
+            rbf_coeff=self._rbf_coeff,
+            primal_normal=self._primal_normal,
+            dual_normal=self._dual_normal,
+            lengths=self._lengths,
             tangent_orientation=self._edge_params.tangent_orientation,
-            inv_primal_edge_length=self._edge_params.inverse_primal_edge_lengths,
-            inv_vert_vert_length=self._edge_params.inverse_vertex_vertex_lengths,
             inv_dual_edge_length=self._edge_params.inverse_dual_edge_lengths,
-            primal_normal_vert_x=self._edge_params.primal_normal_vert[0],
-            primal_normal_vert_y=self._edge_params.primal_normal_vert[1],
-            dual_normal_vert_x=self._edge_params.dual_normal_vert[0],
-            dual_normal_vert_y=self._edge_params.dual_normal_vert[1],
             edge_area=self._edge_params.edge_areas,
             cell_area=self._cell_params.area,
             geofac_div=self._interpolation_state.geofac_div,
-            geofac_n2s_c=self._geofac_n2s_c,
-            geofac_n2s_nbh=self._geofac_n2s_nbh,
+            n2s=self._n2s,
             theta_ref_mc=self._metric_state.theta_ref_mc,
-            zd_vertoffset=self._metric_state.zd_vertoffset,
-            zd_diffcoef=self._metric_state.zd_diffcoef,
-            zd_intcoef=self._metric_state.zd_intcoef,
+            steep=self._steep,
             dtime=dtime,
-            smag_offset=smag_offset,
-            diff_multfac_w=self.diff_multfac_w,
             thresh_tdiff=self.thresh_tdiff,
             smallest_coefficient=constants.DBL_EPS,
             rd_o_cvd=self.rd_o_cvd,

@@ -9,9 +9,11 @@
 Horizontal differential operators of the ICON triangular grid.
 
 Equation numbers refer to Zängl et al. (2015), https://doi.org/10.1002/qj.2378. The diamond of an
-edge is the two triangles sharing it (their Fig. 1): vertices 1 and 2 are the edge's end points,
-3 and 4 the opposite vertices of the two triangles.
+edge is the two triangles sharing it (their Fig. 1): vertices 1 and 2 are adjacent to the edge,
+3 and 4 are the outer vertices.
 """
+
+from typing import NamedTuple
 
 import gt4py.next as gtx
 from gt4py.next import neighbor_sum, sqrt
@@ -21,16 +23,41 @@ from icon4py.model.common.dimension import C2E, E2C, E2C2V, V2E
 from icon4py.model.common.type_alias import wpfloat
 
 
+class VertexVector(NamedTuple):
+    u: fa.VertexKField[wpfloat]
+    v: fa.VertexKField[wpfloat]
+
+
+class RbfVectorCoefficients(NamedTuple):
+    """Weights of the edge-normal components in the RBF reconstruction of (u, v) at a vertex."""
+
+    u: gtx.Field[gtx.Dims[dims.VertexDim, dims.V2EDim], wpfloat]
+    v: gtx.Field[gtx.Dims[dims.VertexDim, dims.V2EDim], wpfloat]
+
+
+class DiamondDirection(NamedTuple):
+    """A unit vector given at each of the four diamond vertices."""
+
+    x: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2VDim], wpfloat]
+    y: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2VDim], wpfloat]
+
+
+class DiamondLengths(NamedTuple):
+    """Inverse lengths of the diamond diagonals: l_p between vertices 1 and 2, l_vv between 3 and 4."""
+
+    inv_l_p: fa.EdgeField[wpfloat]
+    inv_l_vv: fa.EdgeField[wpfloat]
+
+
 @gtx.field_operator
 def rbf_vector_at_vertices(
-    psi_n: fa.EdgeKField[wpfloat],
-    rbf_coeff_1: gtx.Field[gtx.Dims[dims.VertexDim, dims.V2EDim], wpfloat],
-    rbf_coeff_2: gtx.Field[gtx.Dims[dims.VertexDim, dims.V2EDim], wpfloat],
-) -> tuple[fa.VertexKField[wpfloat], fa.VertexKField[wpfloat]]:
+    psi_n: fa.EdgeKField[wpfloat], coeff: RbfVectorCoefficients
+) -> VertexVector:
     """Vector at the vertices reconstructed by RBF from its edge-normal components."""
-    u = neighbor_sum(rbf_coeff_1 * psi_n(V2E), axis=dims.V2EDim)
-    v = neighbor_sum(rbf_coeff_2 * psi_n(V2E), axis=dims.V2EDim)
-    return u, v
+    return VertexVector(
+        u=neighbor_sum(coeff.u * psi_n(V2E), axis=dims.V2EDim),
+        v=neighbor_sum(coeff.v * psi_n(V2E), axis=dims.V2EDim),
+    )
 
 
 @gtx.field_operator
@@ -53,20 +80,20 @@ def grad_n_khalf(
 
 @gtx.field_operator
 def div(
-    flux: fa.EdgeKField[wpfloat],
+    phi_e: fa.EdgeKField[wpfloat],
     geofac_div: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], wpfloat],
 ) -> fa.CellKField[wpfloat]:
     """Divergence of an edge-normal flux on cells (Eq 19)."""
-    return neighbor_sum(flux(C2E) * geofac_div, axis=dims.C2EDim)
+    return neighbor_sum(phi_e(C2E) * geofac_div, axis=dims.C2EDim)
 
 
 @gtx.field_operator
 def div_khalf(
-    flux: fa.EdgeKHalfField[wpfloat],
+    phi_e: fa.EdgeKHalfField[wpfloat],
     geofac_div: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], wpfloat],
 ) -> fa.CellKHalfField[wpfloat]:
     """Divergence of an edge-normal flux on cells (Eq 19)."""
-    return neighbor_sum(flux(C2E) * geofac_div, axis=dims.C2EDim)
+    return neighbor_sum(phi_e(C2E) * geofac_div, axis=dims.C2EDim)
 
 
 @gtx.field_operator
@@ -81,30 +108,24 @@ def nabla2_khalf(
 
 @gtx.field_operator
 def components_at_diamond_vertices(
-    u: fa.VertexKField[wpfloat],
-    v: fa.VertexKField[wpfloat],
-    direction_x: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2VDim], wpfloat],
-    direction_y: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2VDim], wpfloat],
+    vector: VertexVector, direction: DiamondDirection
 ) -> tuple[
     fa.EdgeKField[wpfloat],
     fa.EdgeKField[wpfloat],
     fa.EdgeKField[wpfloat],
     fa.EdgeKField[wpfloat],
 ]:
-    """Component of the vertex vector (u, v) along the direction given at each diamond vertex 1..4."""
-    psi_1 = (
-        u(E2C2V[0]) * direction_x[dims.E2C2VDim(0)] + v(E2C2V[0]) * direction_y[dims.E2C2VDim(0)]
+    """Component of the vertex vector along the direction given at each diamond vertex 1..4."""
+    return (
+        vector.u(E2C2V[0]) * direction.x[dims.E2C2VDim(0)]
+        + vector.v(E2C2V[0]) * direction.y[dims.E2C2VDim(0)],
+        vector.u(E2C2V[1]) * direction.x[dims.E2C2VDim(1)]
+        + vector.v(E2C2V[1]) * direction.y[dims.E2C2VDim(1)],
+        vector.u(E2C2V[2]) * direction.x[dims.E2C2VDim(2)]
+        + vector.v(E2C2V[2]) * direction.y[dims.E2C2VDim(2)],
+        vector.u(E2C2V[3]) * direction.x[dims.E2C2VDim(3)]
+        + vector.v(E2C2V[3]) * direction.y[dims.E2C2VDim(3)],
     )
-    psi_2 = (
-        u(E2C2V[1]) * direction_x[dims.E2C2VDim(1)] + v(E2C2V[1]) * direction_y[dims.E2C2VDim(1)]
-    )
-    psi_3 = (
-        u(E2C2V[2]) * direction_x[dims.E2C2VDim(2)] + v(E2C2V[2]) * direction_y[dims.E2C2VDim(2)]
-    )
-    psi_4 = (
-        u(E2C2V[3]) * direction_x[dims.E2C2VDim(3)] + v(E2C2V[3]) * direction_y[dims.E2C2VDim(3)]
-    )
-    return psi_1, psi_2, psi_3, psi_4
 
 
 @gtx.field_operator
@@ -114,50 +135,43 @@ def nabla2_diamond(  # noqa: PLR0917 [too-many-positional-arguments]
     psi_2: fa.EdgeKField[wpfloat],
     psi_3: fa.EdgeKField[wpfloat],
     psi_4: fa.EdgeKField[wpfloat],
-    inv_primal_edge_length: fa.EdgeField[wpfloat],
-    inv_vert_vert_length: fa.EdgeField[wpfloat],
+    lengths: DiamondLengths,
 ) -> fa.EdgeKField[wpfloat]:
     """Second differences of psi along the two diagonals of the diamond (Eq 36)."""
-    return (psi_2 + psi_1 - 2.0 * psi) * inv_primal_edge_length**2 + (
+    return (psi_2 + psi_1 - 2.0 * psi) * lengths.inv_l_p**2 + (
         psi_4 + psi_3 - 2.0 * psi
-    ) * inv_vert_vert_length**2
+    ) * lengths.inv_l_vv**2
 
 
 @gtx.field_operator
-def nabla2_n(  # noqa: PLR0917 [too-many-positional-arguments]
+def nabla2_n(
     vn: fa.EdgeKField[wpfloat],
-    rbf_coeff_1: gtx.Field[gtx.Dims[dims.VertexDim, dims.V2EDim], wpfloat],
-    rbf_coeff_2: gtx.Field[gtx.Dims[dims.VertexDim, dims.V2EDim], wpfloat],
-    primal_normal_vert_x: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2VDim], wpfloat],
-    primal_normal_vert_y: gtx.Field[gtx.Dims[dims.EdgeDim, dims.E2C2VDim], wpfloat],
-    inv_primal_edge_length: fa.EdgeField[wpfloat],
-    inv_vert_vert_length: fa.EdgeField[wpfloat],
+    rbf_coeff: RbfVectorCoefficients,
+    primal_normal: DiamondDirection,
+    lengths: DiamondLengths,
 ) -> fa.EdgeKField[wpfloat]:
     """Laplacian of an edge-normal vector component (Eq 36), from the RBF vector at the diamond vertices."""
-    u, v = rbf_vector_at_vertices(vn, rbf_coeff_1, rbf_coeff_2)
-    vn_1, vn_2, vn_3, vn_4 = components_at_diamond_vertices(
-        u, v, primal_normal_vert_x, primal_normal_vert_y
+    vn1, vn2, vn3, vn4 = components_at_diamond_vertices(
+        rbf_vector_at_vertices(vn, rbf_coeff), primal_normal
     )
-    return nabla2_diamond(vn, vn_1, vn_2, vn_3, vn_4, inv_primal_edge_length, inv_vert_vert_length)
+    return nabla2_diamond(vn, vn1, vn2, vn3, vn4, lengths)
 
 
 @gtx.field_operator
 def horizontal_deformation(  # noqa: PLR0917 [too-many-positional-arguments]
-    vn_1: fa.EdgeKField[wpfloat],
-    vn_2: fa.EdgeKField[wpfloat],
-    vn_3: fa.EdgeKField[wpfloat],
-    vn_4: fa.EdgeKField[wpfloat],
-    vt_1: fa.EdgeKField[wpfloat],
-    vt_2: fa.EdgeKField[wpfloat],
-    vt_3: fa.EdgeKField[wpfloat],
-    vt_4: fa.EdgeKField[wpfloat],
+    vn1: fa.EdgeKField[wpfloat],
+    vn2: fa.EdgeKField[wpfloat],
+    vn3: fa.EdgeKField[wpfloat],
+    vn4: fa.EdgeKField[wpfloat],
+    vt1: fa.EdgeKField[wpfloat],
+    vt2: fa.EdgeKField[wpfloat],
+    vt3: fa.EdgeKField[wpfloat],
+    vt4: fa.EdgeKField[wpfloat],
     tangent_orientation: fa.EdgeField[wpfloat],
-    inv_primal_edge_length: fa.EdgeField[wpfloat],
-    inv_vert_vert_length: fa.EdgeField[wpfloat],
+    lengths: DiamondLengths,
 ) -> fa.EdgeKField[wpfloat]:
     """Magnitude of the tension and shear deformation on the diamond (the root in Eq 37)."""
     # Vertices 1 and 2 follow the edge tangent, which points either way along the edge.
-    inv_l_p = tangent_orientation * inv_primal_edge_length
-    tension = (vn_4 - vn_3) * inv_vert_vert_length - (vt_2 - vt_1) * inv_l_p
-    shear = (vn_2 - vn_1) * inv_l_p + (vt_4 - vt_3) * inv_vert_vert_length
+    tension = (vn4 - vn3) * lengths.inv_l_vv - (vt2 - vt1) * tangent_orientation * lengths.inv_l_p
+    shear = (vn2 - vn1) * tangent_orientation * lengths.inv_l_p + (vt4 - vt3) * lengths.inv_l_vv
     return sqrt(tension**2 + shear**2)
