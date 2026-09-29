@@ -8,10 +8,13 @@
 from __future__ import annotations
 
 import dataclasses
+import types
+from typing import Any
 
 import gt4py.next as gtx
 import numpy as np
 import pytest
+from gt4py.next import common as gtx_common
 
 from icon4py.model.atmosphere.diffusion import diffusion, diffusion_global, diffusion_states
 from icon4py.model.common import model_backends
@@ -164,3 +167,115 @@ def test_diffusion_global_matches_diffusion_without_turbulence(  # noqa: PLR0917
             atol=1e-14,
             err_msg=name,
         )
+
+
+class _TorchAllocator:
+    def __init__(self, torch: Any, device: str) -> None:
+        self._torch = torch
+        self._device = torch.device(device)
+        self.__gt_device_type__ = (
+            gtx.DeviceType.CUDA if self._device.type == "cuda" else gtx.DeviceType.CPU
+        )
+
+    def __gt_allocate__(self, domain, dtype, device_id=0, aligned_index=None):
+        torch_dtype = getattr(self._torch, np.dtype(dtype.scalar_type).name)
+        return types.SimpleNamespace(
+            ndarray=self._torch.empty(domain.shape, dtype=torch_dtype, device=self._device)
+        )
+
+
+def _to_torch(obj: Any, torch: Any, device: str) -> Any:
+    gt_device = gtx.Device(gtx.DeviceType.CUDA if device == "cuda" else gtx.DeviceType.CPU, 0)
+    if isinstance(obj, gtx_common.Connectivity):
+        return gtx.as_connectivity(
+            obj.domain,
+            obj.codomain,
+            torch.as_tensor(obj.asnumpy(), device=device),
+            skip_value=obj.skip_value,
+            allocator=torch,
+            device=gt_device,
+        )
+    if isinstance(obj, gtx.Field):
+        return gtx.as_field(
+            obj.domain,
+            torch.as_tensor(obj.asnumpy(), device=device),
+            allocator=torch,
+            device=gt_device,
+        )
+    if isinstance(obj, tuple):
+        return tuple(_to_torch(x, torch, device) for x in obj)
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.replace(
+            obj,
+            **{
+                f.name: _to_torch(getattr(obj, f.name), torch, device)
+                for f in dataclasses.fields(obj)
+                if f.init
+            },
+        )
+    return obj
+
+
+@pytest.mark.datatest
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("experiment_description, step_date_init, step_date_exit", _STEPS)
+def test_run_diffusion_global_single_step_torch(  # noqa: PLR0917 [too-many-positional-arguments]
+    experiment,
+    step_date_init,
+    step_date_exit,
+    savepoint_diffusion_init,
+    savepoint_diffusion_exit,
+    interpolation_state: diffusion_states.DiffusionInterpolationState,
+    metric_state: diffusion_states.DiffusionMetricState,
+    backend,
+    device,
+):
+    if backend is not None:
+        pytest.skip("torch fields run on the embedded backend only.")
+    torch = pytest.importorskip("torch")
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("no CUDA device.")
+
+    def convert(obj: Any) -> Any:
+        return _to_torch(obj, torch, device)
+
+    vertical_config = experiment.config.vertical_grid
+    vct_a, vct_b = v_grid.get_vct_a_and_vct_b(vertical_config, backend)
+    grid = get_grid_for_experiment(experiment, backend)
+    config = experiment.config.diffusion
+    granule = diffusion_global.DiffusionGlobal(
+        grid=dataclasses.replace(
+            grid, connectivities={k: convert(v) for k, v in grid.connectivities.items()}
+        ),
+        config=config,
+        params=diffusion.DiffusionParams(config),
+        vertical_grid=v_grid.VerticalGrid(
+            config=vertical_config, vct_a=convert(vct_a), vct_b=convert(vct_b)
+        ),
+        metric_state=convert(metric_state),
+        interpolation_state=convert(interpolation_state),
+        edge_params=convert(get_edge_geometry_for_experiment(experiment, backend)),
+        cell_params=convert(get_cell_geometry_for_experiment(experiment, backend)),
+        allocator=torch if device == "cpu" else _TorchAllocator(torch, device),
+        ndyn_substeps=experiment.config.driver.ndyn_substeps,
+    )
+    dtime = savepoint_diffusion_init.get_metadata("dtime").get("dtime")
+
+    new_state = granule.run(
+        prognostic_state=convert(savepoint_diffusion_init.construct_prognostics()), dtime=dtime
+    )
+
+    for name in ("vn", "w", "theta_v", "exner", "rho"):
+        array = getattr(new_state, name).ndarray
+        assert isinstance(array, torch.Tensor), name
+        assert array.device.type == device, name
+    for name, atol, rtol in (
+        ("vn", 1.0e-8, 1.0e-9),
+        ("w", 1.0e-14, 1.0e-12),
+        ("theta_v", 0.0, 1.0e-12),
+        ("exner", 0.0, 1.0e-12),
+    ):
+        actual = getattr(new_state, name).asnumpy()
+        expected = getattr(savepoint_diffusion_exit, name)().asnumpy()
+        print(f"{name}: max abs diff {np.max(np.abs(actual - expected)):.3e}")
+        assert test_utils.dallclose(actual, expected, atol=atol, rtol=rtol), name
