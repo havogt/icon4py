@@ -428,14 +428,17 @@ def test_diffusion_global_matches_backend(  # noqa: PLR0917 [too-many-positional
         backend_like,
     )
     step, step_input = _diffusion_global_step(setup, execution, backend_like)
-    perturbation = float(os.environ.get("ICON4PY_BENCH_PERTURB_JAX_THETA_V", "0"))
-    if perturbation and execution == "jax":
+    if perturbation := float(os.environ.get("ICON4PY_BENCH_PERTURB_JAX_THETA_V", "0")):
         # negative control: the comparison below must fail
-        jnp = pytest.importorskip("jax").numpy
         theta_v = step_input["theta_v"]
-        step_input["theta_v"] = gtx.as_field(
-            theta_v.domain, jnp.asarray(theta_v.asnumpy() * (1.0 + perturbation)), allocator=jnp
-        )
+        perturbed = theta_v.asnumpy() * (1.0 + perturbation)
+        if execution == "jax":
+            xp = pytest.importorskip("jax").numpy
+            array = xp.asarray(perturbed)
+        else:
+            xp = pytest.importorskip("torch")
+            array = xp.asarray(perturbed, device=theta_v.ndarray.device)
+        step_input["theta_v"] = gtx.as_field(theta_v.domain, array, allocator=xp)
     backend_step, backend_input = _diffusion_global_step(setup, "backend", backend_like)
     output = step(step_input)
     print(
