@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import functools
 import os
@@ -564,6 +563,14 @@ _SOLVE_NONHYDRO_GLOBAL_STATIC_PARAMS = (
 )
 
 
+def _seeded_states(mesh: Any, allocator: Any, seed: int) -> Any:
+    """`_states` with its random fields drawn from a generator seeded with `seed`."""
+    rng = np.random.default_rng(seed)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(np.random, "default_rng", lambda *_, **__: rng)
+        return _states(mesh, allocator)
+
+
 def _solve_nonhydro_global_backend_solver(
     geometry_field_source: grid_geometry.GridGeometry,
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
@@ -666,9 +673,14 @@ def test_solve_nonhydro_global_backend_matches_granule(  # noqa: PLR0917 [too-ma
     solver, mesh, allocator = _solve_nonhydro_global_backend_solver(
         geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
     )
-    # the states are random: both solvers must start from the same ones
-    states = _states(mesh, allocator)
-    prep_adv, diagnostic_state_nh, prognostic_states = copy.deepcopy(states)
+    # the states are random: both solvers must start from the same ones, in the allocator's layout
+    prep_adv, diagnostic_state_nh, prognostic_states = _seeded_states(mesh, allocator, seed=0)
+    reference_states = _seeded_states(mesh, allocator, seed=0)
+    for name in _PROGNOSTIC_FIELDS:
+        assert np.array_equal(
+            getattr(prognostic_states.current, name).asnumpy(),
+            getattr(reference_states[2].current, name).asnumpy(),
+        ), name
     start = time.perf_counter()
     new, *_ = solver.time_step(
         diagnostic_state_nh=diagnostic_state_nh,
@@ -693,7 +705,7 @@ def test_solve_nonhydro_global_backend_matches_granule(  # noqa: PLR0917 [too-ma
         backend=backend_like,
         max_nudging_coefficient=0.375,
     )
-    prep_adv, diagnostic_state_nh, prognostic_states = states
+    prep_adv, diagnostic_state_nh, prognostic_states = reference_states
     granule.time_step(
         diagnostic_state_nh=diagnostic_state_nh,
         prognostic_states=prognostic_states,
