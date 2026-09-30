@@ -84,16 +84,21 @@ class DiffusionGlobal:
         self._offset_provider = grid.connectivities
         ndyn_substeps_as_float = float(ndyn_substeps)
 
-        self.rd_o_cvd: float = constants.GAS_CONSTANT_DRY_AIR / (
-            constants.CPD - constants.GAS_CONSTANT_DRY_AIR
+        # The scalars passed to the step are Python ints and floats: torch.compile traces numpy
+        # scalars and the arithmetic on them into the compiled region.
+        self.rd_o_cvd: float = float(
+            constants.GAS_CONSTANT_DRY_AIR / (constants.CPD - constants.GAS_CONSTANT_DRY_AIR)
         )
         #: threshold temperature deviation from neighboring grid points that activates extra diffusion against runaway cooling
         self.thresh_tdiff: float = -5.0
-        self.smag_offset: float = 0.25 * params.K4 * ndyn_substeps_as_float
-        self.diff_multfac_w: float = min(1.0 / 48.0, params.K4W * ndyn_substeps_as_float)
+        self.smag_offset: float = float(0.25 * params.K4 * ndyn_substeps_as_float)
+        self.diff_multfac_w: float = float(min(1.0 / 48.0, params.K4W * ndyn_substeps_as_float))
+        self._smallest_vpfloat = float(constants.DBL_EPS)
+        self._nrdmax = int(vertical_grid.end_index_of_damping_layer) + 1
+        self._num_levels = int(self._grid.num_levels)
         self._determine_horizontal_domains()
 
-        num_levels = self._grid.num_levels
+        num_levels = self._num_levels
         self.diff_multfac_vn, self.smag_limit, self.enh_smag_fac = (
             self._init_diffusion_local_fields_for_regular_timestep(
                 params.K4,
@@ -126,9 +131,9 @@ class DiffusionGlobal:
             )
 
     def _determine_horizontal_domains(self) -> None:
-        def interior(dim: gtx.Dimension) -> tuple[gtx.int32, gtx.int32]:
+        def interior(dim: gtx.Dimension) -> tuple[int, int]:
             domain = h_grid.domain(dim)(h_grid.Zone.INTERIOR)
-            return self._grid.start_index(domain), self._grid.end_index(domain)
+            return int(self._grid.start_index(domain)), int(self._grid.end_index(domain))
 
         self._cells = interior(dims.CellDim)
         self._edges = interior(dims.EdgeDim)
@@ -140,7 +145,7 @@ class DiffusionGlobal:
         dtime: float,
         initial_run: bool = False,
     ) -> prognostics.PrognosticState:
-        num_levels = self._grid.num_levels
+        num_levels = self._num_levels
         k_domain = {dims.KDim: (0, num_levels)}
 
         if initial_run:
@@ -189,10 +194,10 @@ class DiffusionGlobal:
             smag_offset=smag_offset,
             diff_multfac_w=self.diff_multfac_w,
             thresh_tdiff=self.thresh_tdiff,
-            smallest_vpfloat=constants.DBL_EPS,
+            smallest_vpfloat=self._smallest_vpfloat,
             rd_o_cvd=self.rd_o_cvd,
-            nrdmax=gtx.int32(self._vertical_grid.end_index_of_damping_layer + 1),
-            num_levels=gtx.int32(num_levels),
+            nrdmax=self._nrdmax,
+            num_levels=num_levels,
             apply_to_temperature=self.config.apply_to_temperature,
             apply_zdiffusion_t=self.config.apply_zdiffusion_t,
             domain=(
