@@ -352,9 +352,14 @@ def _diffusion_global_step(
 
     if torch is not None:
         run = torch.compile(step) if execution == "torch_compile" else step
+        # "inside": each call under `with device`; "outside": no device mode around the call;
+        # "default_device": `torch.set_default_device` instead of the context manager
+        placement = os.environ.get("ICON4PY_BENCH_TORCH_DEVICE_PLACEMENT", "inside")
+        if placement == "default_device":
+            torch.set_default_device(device)
 
         def torch_step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
-            with device:
+            with device if placement == "inside" else contextlib.nullcontext():
                 out = run(fields)
             if device.type == "cuda":
                 torch.cuda.synchronize()
