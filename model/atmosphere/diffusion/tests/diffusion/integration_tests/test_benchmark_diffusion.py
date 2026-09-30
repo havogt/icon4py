@@ -353,8 +353,12 @@ def _diffusion_global_step(
     if torch is not None:
         run = torch.compile(step) if execution == "torch_compile" else step
         # "inside": each call under `with device`; "outside": no device mode around the call;
-        # "default_device": `torch.set_default_device` instead of the context manager
-        placement = os.environ.get("ICON4PY_BENCH_TORCH_DEVICE_PLACEMENT", "inside")
+        # "default_device": `torch.set_default_device` instead of the context manager.
+        # torch.compile must not be entered under a device mode (pytorch#156162, #140884).
+        placement = os.environ.get(
+            "ICON4PY_BENCH_TORCH_DEVICE_PLACEMENT",
+            "outside" if execution == "torch_compile" else "inside",
+        )
         if placement == "default_device":
             torch.set_default_device(device)
 
