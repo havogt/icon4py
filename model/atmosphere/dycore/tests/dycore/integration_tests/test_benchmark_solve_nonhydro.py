@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import functools
 import os
@@ -665,7 +666,9 @@ def test_solve_nonhydro_global_backend_matches_granule(  # noqa: PLR0917 [too-ma
     solver, mesh, allocator = _solve_nonhydro_global_backend_solver(
         geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
     )
-    prep_adv, diagnostic_state_nh, prognostic_states = _states(mesh, allocator)
+    # the states are random: both solvers must start from the same ones
+    states = _states(mesh, allocator)
+    prep_adv, diagnostic_state_nh, prognostic_states = copy.deepcopy(states)
     start = time.perf_counter()
     new, *_ = solver.time_step(
         diagnostic_state_nh=diagnostic_state_nh,
@@ -690,9 +693,7 @@ def test_solve_nonhydro_global_backend_matches_granule(  # noqa: PLR0917 [too-ma
         backend=backend_like,
         max_nudging_coefficient=0.375,
     )
-    prep_adv, diagnostic_state_nh, prognostic_states = _states(
-        grid_manager.grid, model_backends.get_allocator(backend_like)
-    )
+    prep_adv, diagnostic_state_nh, prognostic_states = states
     granule.time_step(
         diagnostic_state_nh=diagnostic_state_nh,
         prognostic_states=prognostic_states,
