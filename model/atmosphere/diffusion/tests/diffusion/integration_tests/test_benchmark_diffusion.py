@@ -351,7 +351,19 @@ def _diffusion_global_step(
         return {k: getattr(new, k) for k in _PROGNOSTIC_FIELDS}
 
     if torch is not None:
-        run = torch.compile(step) if execution == "torch_compile" else step
+        run = step
+        if execution == "torch_compile":
+            if os.environ.get("ICON4PY_BENCH_TORCH_EXPLAIN", "0") == "1":
+                explanation = torch._dynamo.explain(step)(prognostic_input)
+                print(
+                    f"TORCH_EXPLAIN graphs {explanation.graph_count}, "
+                    f"graph breaks {explanation.graph_break_count}, "
+                    f"reasons {[r.reason for r in explanation.break_reasons]}"
+                )
+            # any graph break is an error; set ICON4PY_BENCH_TORCH_FULLGRAPH=0 to allow them
+            run = torch.compile(
+                step, fullgraph=os.environ.get("ICON4PY_BENCH_TORCH_FULLGRAPH", "1") == "1"
+            )
         # "inside": each call under `with device`; "outside": no device mode around the call;
         # "default_device": `torch.set_default_device` instead of the context manager.
         # torch.compile must not be entered under a device mode (pytorch#156162, #140884).
