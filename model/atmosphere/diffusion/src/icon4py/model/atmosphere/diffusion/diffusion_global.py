@@ -98,15 +98,14 @@ class DiffusionGlobal:
             inv_l_p=edge_params.inverse_primal_edge_lengths,
             inv_l_vv=edge_params.inverse_vertex_vertex_lengths,
         )
-        # mypy infers other dimension types for the sparse fields of the diffusion states
         self._n2s = CellNeighbourWeights(
             center=interpolation_state.geofac_n2s_c,
-            neighbours=interpolation_state.geofac_n2s_nbh,  # type: ignore[arg-type]
+            neighbours=interpolation_state.geofac_n2s_nbh,
         )
         self._steep = SteepPointInterpolation(
             diffusion_coefficient=metric_state.zd_diffcoef,
-            vertical_offset=metric_state.zd_vertoffset,  # type: ignore[arg-type]
-            weight=metric_state.zd_intcoef,  # type: ignore[arg-type]
+            vertical_offset=metric_state.zd_vertoffset,
+            weight=metric_state.zd_intcoef,
         )
         self._offset_provider = grid.connectivities
         ndyn_substeps_as_float = float(ndyn_substeps)
@@ -204,6 +203,7 @@ class DiffusionGlobal:
             thresh_tdiff=self.thresh_tdiff,
             smallest_coefficient=constants.DBL_EPS,
             rd_o_cvd=self.rd_o_cvd,
+            nrdmax=gtx.int32(self._vertical_grid.end_index_of_damping_layer + 1),
             num_levels=gtx.int32(num_levels),
             apply_to_temperature=self.config.apply_to_temperature,
             apply_zdiffusion_t=self.config.apply_zdiffusion_t,

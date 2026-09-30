@@ -45,7 +45,7 @@ class DiffusionCoefficients(NamedTuple):
     k4_dt: fa.KField[wpfloat]
     #: k_w Δt of Eq 40
     kw_dt: wpfloat
-    #: coefficient of the second-order w diffusion in the upper damping layer, zero below it
+    #: coefficient of the second-order w diffusion in the upper damping layer
     k2w_damping_layer: fa.KHalfField[wpfloat]
 
 
@@ -175,6 +175,7 @@ def diffused_w(
     cell_area: fa.CellField[wpfloat],
     inv_dual_edge_length: fa.EdgeField[wpfloat],
     geofac_div: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], wpfloat],
+    nrdmax: gtx.int32,
     num_levels: gtx.int32,
 ) -> fa.CellKHalfField[wpfloat]:
     """w after the fourth-order diffusion (Eqs 40 and 41) and a second-order one in the upper damping layer, the surface level kept."""
@@ -185,7 +186,11 @@ def diffused_w(
         - coefficients.kw_dt
         * cell_area**2
         * nabla2_khalf(nabla2_w, inv_dual_edge_length, geofac_div)
-        + coefficients.k2w_damping_layer * cell_area * nabla2_w,
+        + concat_where(
+            (dims.KHalfDim >= 1) & (dims.KHalfDim < nrdmax),
+            coefficients.k2w_damping_layer * cell_area * nabla2_w,
+            0.0,
+        ),
         w,
     )
 
@@ -250,6 +255,7 @@ def _diffusion_global_step(
     thresh_tdiff: wpfloat,
     smallest_coefficient: wpfloat,
     rd_o_cvd: wpfloat,
+    nrdmax: gtx.int32,
     num_levels: gtx.int32,
     apply_to_temperature: bool,
     apply_zdiffusion_t: bool,
@@ -263,7 +269,9 @@ def _diffusion_global_step(
         vn, coefficients, rbf_coeff, primal_normal, dual_normal, lengths, tangent_orientation, dtime
     )
     vn_new = diffused_vn(vn, kh, coefficients, rbf_coeff, primal_normal, lengths, edge_area)
-    w_new = diffused_w(w, coefficients, cell_area, inv_dual_edge_length, geofac_div, num_levels)
+    w_new = diffused_w(
+        w, coefficients, cell_area, inv_dual_edge_length, geofac_div, nrdmax, num_levels
+    )
     theta_v_new, exner_new = (
         diffused_theta_v_and_exner(
             theta_v,
