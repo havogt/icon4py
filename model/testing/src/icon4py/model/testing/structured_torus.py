@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -433,8 +434,9 @@ def check_layouts(
     One call per layout, outputs mapped back to ICON order, compared pairwise.
 
     Prints and returns (max abs diff, max abs diff / max |second|) per pair and output, and
-    requires the relative one to be at most `rtol[pair]` for the pairs listed there. The structured
-    layout is compared on its core only: its halo points are not outputs.
+    requires the relative one to be at most `rtol[pair]` for the pairs listed there; with
+    `ICON4PY_BENCH_LAYOUT_EXACT=1` it also requires structured and reordered to be bitwise equal.
+    The structured layout is compared on its core only: its halo points are not outputs.
     """
     outs = {which: call.to_icon(call.run()) for which, call in calls.items()}
     pairs = [(a, b) for a in LAYOUTS for b in LAYOUTS if LAYOUTS.index(a) > LAYOUTS.index(b)]
@@ -453,4 +455,9 @@ def check_layouts(
     for pair, limit in rtol.items():
         for name, (_, rel) in result[pair].items():
             _require(rel <= limit, f"{pair} {name}: relative difference {rel:.3e} > {limit}")
+    if os.environ.get("ICON4PY_BENCH_LAYOUT_EXACT", "0") == "1":
+        for name, (diff, _) in result[("structured", "reordered")].items():
+            _require(
+                diff == 0.0, f"structured vs reordered {name}: max abs {diff:.3e}, not bitwise"
+            )
     return result
