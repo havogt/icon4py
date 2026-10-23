@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
+import dataclasses
 import logging
 
 import numpy as np
@@ -14,7 +15,7 @@ import pytest
 from gt4py.next import typing as gtx_typing
 
 from icon4py.model.atmosphere.dycore import dycore_states, solve_nonhydro as nh
-from icon4py.model.common import dimension as dims, type_alias as ta
+from icon4py.model.common import dimension as dims, type_alias as ta, utils as common_utils
 from icon4py.model.common.decomposition import definitions, mpi_decomposition
 from icon4py.model.common.grid import (
     horizontal as h_grid,
@@ -22,6 +23,7 @@ from icon4py.model.common.grid import (
     states as grid_states,
     vertical as v_grid,
 )
+from icon4py.model.common.states import nonhydro_states, prognostic_state as prognostics
 from icon4py.model.common.utils import data_allocation as data_alloc
 from icon4py.model.testing import definitions as test_defs, parallel_helpers, serialbox, test_utils
 
@@ -32,6 +34,91 @@ from ..fixtures import *  # noqa: F403
 _log = logging.getLogger(__name__)
 
 
+def _run_time_step(
+    config: nh.NonHydrostaticConfig,
+    *,
+    experiment: test_defs.Experiment,
+    icon_grid: icon.IconGrid,
+    savepoint_nonhydro_init: serialbox.IconNonHydroInitSavepoint,
+    is_iau_active: bool,
+    iau_wgt_dyn: ta.wpfloat,
+    grid_savepoint: serialbox.IconGridSavepoint,
+    metrics_savepoint: serialbox.MetricSavepoint,
+    interpolation_savepoint: serialbox.InterpolationSavepoint,
+    substep_init: int,
+    process_props: definitions.ProcessProperties,
+    decomposition_info: definitions.DecompositionInfo,
+    backend: gtx_typing.Backend | None,
+) -> tuple[
+    nonhydro_states.DiagnosticStateNonHydro,
+    common_utils.TimeStepPair[prognostics.PrognosticState],
+    dycore_states.PrepAdvection,
+]:
+    nonhydro_params = nh.NonHydrostaticParams(config)
+    vertical_config = experiment.config.vertical_grid
+    vertical_params = utils.create_vertical_params(vertical_config, grid_savepoint)
+    dtime = savepoint_nonhydro_init.dtime()
+    prepare_fluxes_for_advection = savepoint_nonhydro_init.get_metadata("prep_adv").get("prep_adv")
+    prep_adv = dycore_states.PrepAdvection(
+        vn_traj=savepoint_nonhydro_init.vn_traj(),
+        mass_flx_me=savepoint_nonhydro_init.mass_flx_me(),
+        dynamical_vertical_mass_flux_at_cells_on_half_levels=savepoint_nonhydro_init.mass_flx_ic(),
+        dynamical_vertical_volumetric_flux_at_cells_on_half_levels=data_alloc.zero_field(
+            icon_grid, dims.CellDim, dims.KHalfDim, allocator=backend
+        ),
+    )
+
+    diagnostic_state_nh = utils.construct_diagnostics(savepoint_nonhydro_init, icon_grid, backend)
+
+    interpolation_state = utils.construct_interpolation_state(interpolation_savepoint)
+    metric_state_nonhydro = utils.construct_metric_state(metrics_savepoint, grid_savepoint)
+    second_order_divdamp_factor = savepoint_nonhydro_init.divdamp_fac_o2()
+    at_initial_timestep = True
+    cell_geometry: grid_states.CellParams = grid_savepoint.construct_cell_geometry()
+    edge_geometry: grid_states.EdgeParams = grid_savepoint.construct_edge_geometry()
+
+    prognostic_states = utils.create_prognostic_states(savepoint_nonhydro_init)
+
+    exchange = definitions.create_exchange(process_props, decomposition_info)
+
+    solve_nonhydro = nh.SolveNonhydro(
+        grid=icon_grid,
+        config=config,
+        params=nonhydro_params,
+        metric_state_nonhydro=metric_state_nonhydro,
+        interpolation_state=interpolation_state,
+        vertical_params=vertical_params,
+        edge_geometry=edge_geometry,
+        cell_geometry=cell_geometry,
+        owner_mask=grid_savepoint.c_owner_mask(),
+        backend=backend,
+        exchange=exchange,
+        max_nudging_coefficient=experiment.config.interpolation.max_nudging_coefficient,
+    )
+
+    _log.info(
+        f"rank={process_props.rank}/{process_props.comm_size}:  entering : solve_nonhydro.time_step"
+    )
+
+    solve_nonhydro.time_step(
+        diagnostic_state_nh=diagnostic_state_nh,
+        prognostic_states=prognostic_states,
+        prep_adv=prep_adv,
+        second_order_divdamp_factor=second_order_divdamp_factor,
+        dtime=dtime,
+        ndyn_substeps_var=experiment.config.driver.ndyn_substeps,
+        at_initial_timestep=at_initial_timestep,
+        prepare_fluxes_for_advection=prepare_fluxes_for_advection,
+        at_first_substep=(substep_init == 1),
+        at_last_substep=(substep_init == experiment.config.driver.ndyn_substeps),
+        is_iau_active=is_iau_active,
+        iau_wgt_dyn=iau_wgt_dyn,
+    )
+    _log.info(f"rank={process_props.rank}/{process_props.comm_size}: dycore step run ")
+    return diagnostic_state_nh, prognostic_states, prep_adv
+
+
+@pytest.mark.parametrize("halo_overlap_chunks", [1, 3])
 @pytest.mark.parametrize("process_props", [True], indirect=True)
 @pytest.mark.datatest
 @pytest.mark.parametrize(
@@ -50,6 +137,7 @@ _log = logging.getLogger(__name__)
 )
 @pytest.mark.mpi
 def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-arguments]
+    halo_overlap_chunks: int,
     istep_init: int,
     istep_exit: int,
     step_date_init: str,
@@ -98,67 +186,24 @@ def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-a
 
     assert experiment.config.nonhydrostatic is not None
 
-    nonhydro_params = nh.NonHydrostaticParams(experiment.config.nonhydrostatic)
-    vertical_config = experiment.config.vertical_grid
-    vertical_params = utils.create_vertical_params(vertical_config, grid_savepoint)
-    dtime = savepoint_nonhydro_init.dtime()
-    prepare_fluxes_for_advection = savepoint_nonhydro_init.get_metadata("prep_adv").get("prep_adv")
-    prep_adv = dycore_states.PrepAdvection(
-        vn_traj=savepoint_nonhydro_init.vn_traj(),
-        mass_flx_me=savepoint_nonhydro_init.mass_flx_me(),
-        dynamical_vertical_mass_flux_at_cells_on_half_levels=savepoint_nonhydro_init.mass_flx_ic(),
-        dynamical_vertical_volumetric_flux_at_cells_on_half_levels=data_alloc.zero_field(
-            icon_grid, dims.CellDim, dims.KHalfDim, allocator=backend
-        ),
+    config = dataclasses.replace(
+        experiment.config.nonhydrostatic, halo_overlap_chunks=halo_overlap_chunks
     )
-
-    diagnostic_state_nh = utils.construct_diagnostics(savepoint_nonhydro_init, icon_grid, backend)
-
-    interpolation_state = utils.construct_interpolation_state(interpolation_savepoint)
-    metric_state_nonhydro = utils.construct_metric_state(metrics_savepoint, grid_savepoint)
-    second_order_divdamp_factor = savepoint_nonhydro_init.divdamp_fac_o2()
-    at_initial_timestep = True
-    cell_geometry: grid_states.CellParams = grid_savepoint.construct_cell_geometry()
-    edge_geometry: grid_states.EdgeParams = grid_savepoint.construct_edge_geometry()
-
-    prognostic_states = utils.create_prognostic_states(savepoint_nonhydro_init)
-
-    exchange = definitions.create_exchange(process_props, decomposition_info)
-
-    solve_nonhydro = nh.SolveNonhydro(
-        grid=icon_grid,
-        config=experiment.config.nonhydrostatic,
-        params=nonhydro_params,
-        metric_state_nonhydro=metric_state_nonhydro,
-        interpolation_state=interpolation_state,
-        vertical_params=vertical_params,
-        edge_geometry=edge_geometry,
-        cell_geometry=cell_geometry,
-        owner_mask=grid_savepoint.c_owner_mask(),
-        backend=backend,
-        exchange=exchange,
-        max_nudging_coefficient=experiment.config.interpolation.max_nudging_coefficient,
-    )
-
-    _log.info(
-        f"rank={process_props.rank}/{process_props.comm_size}:  entering : solve_nonhydro.time_step"
-    )
-
-    solve_nonhydro.time_step(
-        diagnostic_state_nh=diagnostic_state_nh,
-        prognostic_states=prognostic_states,
-        prep_adv=prep_adv,
-        second_order_divdamp_factor=second_order_divdamp_factor,
-        dtime=dtime,
-        ndyn_substeps_var=experiment.config.driver.ndyn_substeps,
-        at_initial_timestep=at_initial_timestep,
-        prepare_fluxes_for_advection=prepare_fluxes_for_advection,
-        at_first_substep=(substep_init == 1),
-        at_last_substep=(substep_init == experiment.config.driver.ndyn_substeps),
+    diagnostic_state_nh, prognostic_states, prep_adv = _run_time_step(
+        config,
+        experiment=experiment,
+        icon_grid=icon_grid,
+        savepoint_nonhydro_init=savepoint_nonhydro_init,
         is_iau_active=is_iau_active,
         iau_wgt_dyn=iau_wgt_dyn,
+        grid_savepoint=grid_savepoint,
+        metrics_savepoint=metrics_savepoint,
+        interpolation_savepoint=interpolation_savepoint,
+        substep_init=substep_init,
+        process_props=process_props,
+        decomposition_info=decomposition_info,
+        backend=backend,
     )
-    _log.info(f"rank={process_props.rank}/{process_props.comm_size}: dycore step run ")
 
     expected_theta_v = savepoint_nonhydro_step_final.theta_v_new().asnumpy()
     calculated_theta_v = prognostic_states.next.theta_v.asnumpy()
@@ -216,3 +261,87 @@ def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-a
         prep_adv.vn_traj.asnumpy(),
         rtol=1e-10,
     )
+
+
+@pytest.mark.parametrize("process_props", [True], indirect=True)
+@pytest.mark.datatest
+@pytest.mark.parametrize(
+    "experiment_description, istep_init, step_date_init, substep_init, istep_exit, step_date_exit, substep_exit",
+    [
+        (
+            test_defs.Experiments.MCH_CH_R04B09,
+            1,
+            "2021-06-20T12:00:10.000",
+            1,
+            2,
+            "2021-06-20T12:00:10.000",
+            1,
+        ),
+    ],
+)
+@pytest.mark.mpi
+def test_run_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too-many-positional-arguments]
+    istep_init: int,
+    istep_exit: int,
+    step_date_init: str,
+    step_date_exit: str,
+    substep_init: int,
+    experiment: test_defs.Experiment,
+    icon_grid: icon.IconGrid,
+    savepoint_nonhydro_init: serialbox.IconNonHydroInitSavepoint,
+    is_iau_active: bool,
+    iau_wgt_dyn: ta.wpfloat,
+    grid_savepoint: serialbox.IconGridSavepoint,
+    metrics_savepoint: serialbox.MetricSavepoint,
+    interpolation_savepoint: serialbox.InterpolationSavepoint,
+    process_props: definitions.ProcessProperties,
+    decomposition_info: definitions.DecompositionInfo,  # : F811 fixture
+    backend: gtx_typing.Backend | None,
+) -> None:
+    if test_utils.is_embedded(backend):
+        # https://github.com/GridTools/gt4py/issues/1583
+        pytest.xfail("ValueError: axes don't match array")
+    parallel_helpers.check_comm_size(process_props)
+    base_config = experiment.config.nonhydrostatic
+    assert base_config is not None
+
+    def run(num_chunks: int) -> dict[str, np.ndarray]:
+        diagnostic_state_nh, prognostic_states, prep_adv = _run_time_step(
+            dataclasses.replace(base_config, halo_overlap_chunks=num_chunks),
+            experiment=experiment,
+            icon_grid=icon_grid,
+            savepoint_nonhydro_init=savepoint_nonhydro_init,
+            is_iau_active=is_iau_active,
+            iau_wgt_dyn=iau_wgt_dyn,
+            grid_savepoint=grid_savepoint,
+            metrics_savepoint=metrics_savepoint,
+            interpolation_savepoint=interpolation_savepoint,
+            substep_init=substep_init,
+            process_props=process_props,
+            decomposition_info=decomposition_info,
+            backend=backend,
+        )
+        fields = {
+            f"next.{name}": getattr(prognostic_states.next, name)
+            for name in ("vn", "w", "rho", "exner", "theta_v")
+        }
+        fields |= {
+            "rho_ic": diagnostic_state_nh.rho_at_cells_on_half_levels,
+            "theta_v_ic": diagnostic_state_nh.theta_v_at_cells_on_half_levels,
+            "mass_fl_e": diagnostic_state_nh.mass_flux_at_edges_on_model_levels,
+            "vn_traj": prep_adv.vn_traj,
+            "mass_flx_me": prep_adv.mass_flx_me,
+        }
+        return {name: field.asnumpy() for name, field in fields.items()}
+
+    reference = run(1)
+    split = run(3)
+
+    edge_halo = ~data_alloc.as_numpy(decomposition_info.owner_mask(dims.EdgeDim))
+    assert edge_halo.any()
+    mismatches = [
+        name
+        for name, values in reference.items()
+        if not np.array_equal(split[name], values, equal_nan=True)
+    ]
+    assert not mismatches, f"rank={process_props.rank}: {mismatches}"
