@@ -177,7 +177,9 @@ def solve_nh_init(  # noqa: PLR0917 [too-many-positional-arguments]
         fourth_order_divdamp_z2=divdamp_z2,
         fourth_order_divdamp_z3=divdamp_z3,
         fourth_order_divdamp_z4=divdamp_z4,
+        halo_overlap_chunks=wrapper_config.HALO_OVERLAP_CHUNKS,
     )
+    logger.info(f"halo_overlap_chunks={config.halo_overlap_chunks}")
     nonhydro_params = solve_nonhydro.NonHydrostaticParams(config)
 
     # Create separate fields for the two components of the RBF vector coefficients and swap.
