@@ -8,15 +8,19 @@
 
 from __future__ import annotations
 
+import copy
 import functools
 from typing import TYPE_CHECKING, Any
 
 import gt4py.next as gtx
+import numpy as np
 import pytest
 
 
 if TYPE_CHECKING:
     import gt4py.next.typing as gtx_typing
+
+    from icon4py.model.common.grid import base as base_grid
 
 import icon4py.model.common.dimension as dims
 import icon4py.model.common.grid.states as grid_states
@@ -42,20 +46,15 @@ from icon4py.model.testing.fixtures.datatest import backend_like
 from icon4py.model.testing.fixtures.stencil_tests import grid_manager
 
 
-@pytest.fixture(scope="module")
-def solve_nonhydro(
+def _construct_solve_nonhydro(
     geometry_field_source: grid_geometry.GridGeometry,
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
     metrics_field_source: metrics_factory.MetricsFieldsFactory,
     backend_like: model_backends.BackendLike,
+    config: solve_nh.NonHydrostaticConfig,
 ) -> solve_nh.SolveNonhydro:
     allocator = model_backends.get_allocator(backend_like)
     mesh = geometry_field_source.grid
-
-    config = solve_nh.NonHydrostaticConfig(
-        divdamp_order=dycore_states.DivergenceDampingOrder.COMBINED,
-        fourth_order_divdamp_factor=0.004,
-    )
 
     nonhydro_params = solve_nh.NonHydrostaticParams(config)
 
@@ -219,31 +218,37 @@ def solve_nonhydro(
     return solve_nonhydro
 
 
-@pytest.mark.parametrize(
-    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
-)
-@pytest.mark.embedded_remap_error
-@pytest.mark.benchmark
-@pytest.mark.continuous_benchmarking
-@pytest.mark.benchmark_only
-def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-arguments]
-    grid_manager: gm.GridManager,
-    solve_nonhydro: solve_nh.SolveNonhydro,
-    at_first_substep: bool,
-    at_last_substep: bool,
+def _config(halo_overlap_chunks: int = 1) -> solve_nh.NonHydrostaticConfig:
+    return solve_nh.NonHydrostaticConfig(
+        divdamp_order=dycore_states.DivergenceDampingOrder.COMBINED,
+        fourth_order_divdamp_factor=0.004,
+        halo_overlap_chunks=halo_overlap_chunks,
+    )
+
+
+@pytest.fixture(scope="module")
+def solve_nonhydro(
+    geometry_field_source: grid_geometry.GridGeometry,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
     backend_like: model_backends.BackendLike,
-    benchmark: Any,
-) -> None:
-    allocator = model_backends.get_allocator(backend_like)
-    mesh = grid_manager.grid
+) -> solve_nh.SolveNonhydro:
+    return _construct_solve_nonhydro(
+        geometry_field_source,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        _config(),
+    )
 
-    dtime = 10.0 if mesh.limited_area else 90.0
 
-    prepare_fluxes_for_advection = True
-    ndyn_substeps = 5
-    at_initial_timestep = False
-    second_order_divdamp_factor = 0.02
-
+def _construct_states(
+    mesh: base_grid.Grid, allocator: gtx_typing.Allocator | None
+) -> tuple[
+    dycore_states.PrepAdvection,
+    nonhydro_states.DiagnosticStateNonHydro,
+    common_utils.TimeStepPair[prognostics.PrognosticState],
+]:
     prep_adv = dycore_states.PrepAdvection(
         vn_traj=data_alloc.zero_field(mesh, dims.EdgeDim, dims.KDim, allocator=allocator),
         mass_flx_me=data_alloc.zero_field(mesh, dims.EdgeDim, dims.KDim, allocator=allocator),
@@ -322,6 +327,35 @@ def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-argumen
     )
 
     prognostic_states = common_utils.TimeStepPair(prognostic_state_nnow, prognostic_state_nnew)
+    return prep_adv, diagnostic_state_nh, prognostic_states
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+@pytest.mark.embedded_remap_error
+@pytest.mark.benchmark
+@pytest.mark.continuous_benchmarking
+@pytest.mark.benchmark_only
+def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-arguments]
+    grid_manager: gm.GridManager,
+    solve_nonhydro: solve_nh.SolveNonhydro,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    backend_like: model_backends.BackendLike,
+    benchmark: Any,
+) -> None:
+    allocator = model_backends.get_allocator(backend_like)
+    mesh = grid_manager.grid
+
+    dtime = 10.0 if mesh.limited_area else 90.0
+
+    prepare_fluxes_for_advection = True
+    ndyn_substeps = 5
+    at_initial_timestep = False
+    second_order_divdamp_factor = 0.02
+
+    prep_adv, diagnostic_state_nh, prognostic_states = _construct_states(mesh, allocator)
 
     solve_nonhydro_timestep_variants = functools.partial(
         device_utils.synchronized_function(solve_nonhydro.time_step, allocator=allocator),
@@ -340,3 +374,66 @@ def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-argumen
         at_first_substep=at_first_substep,
         at_last_substep=at_last_substep,
     )
+
+
+@pytest.mark.embedded_remap_error
+@pytest.mark.parametrize("halo_overlap_chunks", [2, 3])
+def test_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too-many-positional-arguments]
+    grid_manager: gm.GridManager,
+    geometry_field_source: grid_geometry.GridGeometry,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    halo_overlap_chunks: int,
+    backend_like: model_backends.BackendLike,
+) -> None:
+    allocator = model_backends.get_allocator(backend_like)
+    mesh = grid_manager.grid
+    initial_states = _construct_states(mesh, allocator)
+    initial_vn = initial_states[2].next.vn.asnumpy()
+
+    def run(num_chunks: int) -> dict[str, np.ndarray]:
+        solver = _construct_solve_nonhydro(
+            geometry_field_source,
+            interpolation_field_source,
+            metrics_field_source,
+            backend_like,
+            _config(num_chunks),
+        )
+        prep_adv, diagnostic_state_nh, prognostic_states = copy.deepcopy(initial_states)
+        for at_first_substep, at_last_substep in [(True, False), (False, True)]:
+            solver.time_step(
+                diagnostic_state_nh=diagnostic_state_nh,
+                prognostic_states=prognostic_states,
+                prep_adv=prep_adv,
+                second_order_divdamp_factor=0.02,
+                dtime=10.0 if mesh.limited_area else 90.0,
+                ndyn_substeps_var=5,
+                at_initial_timestep=False,
+                prepare_fluxes_for_advection=True,
+                at_first_substep=at_first_substep,
+                at_last_substep=at_last_substep,
+            )
+        fields = {
+            f"next.{name}": getattr(prognostic_states.next, name)
+            for name in ("vn", "w", "rho", "exner", "theta_v")
+        }
+        fields |= {
+            "mass_flux_at_edges_on_model_levels": diagnostic_state_nh.mass_flux_at_edges_on_model_levels,
+            "vn_traj": prep_adv.vn_traj,
+            "mass_flx_me": prep_adv.mass_flx_me,
+            "z_vn_avg": solver.z_vn_avg,
+            "theta_v_flux_at_edges_on_model_levels": solver.theta_v_flux_at_edges_on_model_levels,
+        }
+        return {name: field.asnumpy() for name, field in fields.items()}
+
+    reference = run(1)
+    split = run(halo_overlap_chunks)
+
+    assert not np.array_equal(reference["next.vn"], initial_vn, equal_nan=True)
+    assert np.isfinite(reference["next.vn"]).mean() > 0.99
+    mismatches = [
+        name
+        for name, values in reference.items()
+        if not np.array_equal(split[name], values, equal_nan=True)
+    ]
+    assert not mismatches

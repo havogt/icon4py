@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import logging
 import typing
 from typing import Final
@@ -315,6 +316,16 @@ class NonHydrostaticConfig:
         ),
     ] = 80000.0
 
+    halo_overlap_chunks: typing.Annotated[
+        int,
+        common_conf_opt.ConfigOption(
+            description=(
+                "Number of vertical chunks the corrector's vn update is split into, so that the "
+                "halo exchange of one chunk overlaps the computation of the next. 1 disables it."
+            ),
+        ),
+    ] = 1
+
     def __post_init__(self) -> None:
         ta.dataclass_float_to_wp(self)
         self._validate()
@@ -346,6 +357,9 @@ class NonHydrostaticConfig:
             raise NotImplementedError(
                 "Only Klemp type of the Rayleigh damping (nudging vertical wind towards zero) is implemented."
             )
+
+        if self.halo_overlap_chunks < 1:
+            raise ValueError(f"halo_overlap_chunks must be >= 1, got {self.halo_overlap_chunks}")
 
         if not self.extra_diffu:
             raise NotImplementedError(
@@ -538,38 +552,49 @@ class SolveNonhydro:
 
         assert self._cell_params.mean_cell_area is not None
 
-        self._apply_divergence_damping_and_update_vn = setup_program(
-            backend=backend,
-            program=compute_edge_diagnostics_for_dycore_and_update_vn.apply_divergence_damping_and_update_vn,
-            constant_args={
-                "horizontal_mask_for_3d_divdamp": self._metric_state_nonhydro.horizontal_mask_for_3d_divdamp,
-                "scaling_factor_for_3d_divdamp": self._metric_state_nonhydro.scaling_factor_for_3d_divdamp,
-                "inv_dual_edge_length": self._edge_geometry.inverse_dual_edge_lengths,
-                "nudgecoeff_e": self._interpolation_state.nudgecoeff_e,
-                "geofac_grdiv": self._interpolation_state.geofac_grdiv,
-                "advection_explicit_weight_parameter": self._params.advection_explicit_weight_parameter,
-                "advection_implicit_weight_parameter": self._params.advection_implicit_weight_parameter,
-                "limited_area": self._grid.limited_area,
-                "divdamp_order": gtx.int32(self._config.divdamp_order),
-                "mean_cell_area": ta.wpfloat(self._cell_params.mean_cell_area),
-                "max_nudging_coefficient": ta.wpfloat(max_nudging_coefficient),
-                "wp_eps": constants.WP_EPS,
-            },
-            variants={
-                "apply_2nd_order_divergence_damping": [False, True],
-                "apply_4th_order_divergence_damping": [False, True],
-                "is_iau_active": [False, True] if self._config.iau_init else [False],
-            },
-            horizontal_sizes={
-                "horizontal_start": gtx.int32(self._start_edge_nudging_level_2),
-                "horizontal_end": self._end_edge_local,
-            },
-            vertical_sizes={
-                "vertical_start": gtx.int32(0),
-                "vertical_end": gtx.int32(self._grid.num_levels),
-            },
-            offset_provider=self._grid.connectivities,
-        )
+        num_chunks = self._config.halo_overlap_chunks
+        if num_chunks > self._grid.num_levels:
+            raise ValueError(
+                f"halo_overlap_chunks ({num_chunks}) exceeds the number of levels ({self._grid.num_levels})"
+            )
+        chunk_bounds = [i * self._grid.num_levels // num_chunks for i in range(num_chunks + 1)]
+        self._halo_overlap_chunks = list(itertools.pairwise(chunk_bounds))
+
+        self._apply_divergence_damping_and_update_vn = [
+            setup_program(
+                backend=backend,
+                program=compute_edge_diagnostics_for_dycore_and_update_vn.apply_divergence_damping_and_update_vn,
+                constant_args={
+                    "horizontal_mask_for_3d_divdamp": self._metric_state_nonhydro.horizontal_mask_for_3d_divdamp,
+                    "scaling_factor_for_3d_divdamp": self._metric_state_nonhydro.scaling_factor_for_3d_divdamp,
+                    "inv_dual_edge_length": self._edge_geometry.inverse_dual_edge_lengths,
+                    "nudgecoeff_e": self._interpolation_state.nudgecoeff_e,
+                    "geofac_grdiv": self._interpolation_state.geofac_grdiv,
+                    "advection_explicit_weight_parameter": self._params.advection_explicit_weight_parameter,
+                    "advection_implicit_weight_parameter": self._params.advection_implicit_weight_parameter,
+                    "limited_area": self._grid.limited_area,
+                    "divdamp_order": gtx.int32(self._config.divdamp_order),
+                    "mean_cell_area": ta.wpfloat(self._cell_params.mean_cell_area),
+                    "max_nudging_coefficient": ta.wpfloat(max_nudging_coefficient),
+                    "wp_eps": constants.WP_EPS,
+                },
+                variants={
+                    "apply_2nd_order_divergence_damping": [False, True],
+                    "apply_4th_order_divergence_damping": [False, True],
+                    "is_iau_active": [False, True] if self._config.iau_init else [False],
+                },
+                horizontal_sizes={
+                    "horizontal_start": gtx.int32(self._start_edge_nudging_level_2),
+                    "horizontal_end": self._end_edge_local,
+                },
+                vertical_sizes={
+                    "vertical_start": gtx.int32(vertical_start),
+                    "vertical_end": gtx.int32(vertical_end),
+                },
+                offset_provider=self._grid.connectivities,
+            )
+            for vertical_start, vertical_end in self._halo_overlap_chunks
+        ]
 
         self._compute_horizontal_velocity_quantities_and_fluxes = setup_program(
             backend=backend,
@@ -596,27 +621,30 @@ class SolveNonhydro:
             offset_provider=self._grid.connectivities,
         )
 
-        self._compute_averaged_vn_and_fluxes = setup_program(
-            backend=backend,
-            program=compute_averaged_vn_and_fluxes,
-            constant_args={
-                "e_flx_avg": self._interpolation_state.e_flx_avg,
-                "ddqz_z_full_e": self._metric_state_nonhydro.ddqz_z_full_e,
-            },
-            variants={
-                "at_first_substep": [False, True],
-                "prepare_fluxes_for_advection": [False, True],
-            },
-            horizontal_sizes={
-                "horizontal_start": gtx.int32(self._start_edge_lateral_boundary_level_5),
-                "horizontal_end": self._end_edge_halo_level_2,
-            },
-            vertical_sizes={
-                "vertical_start": gtx.int32(0),
-                "vertical_end": gtx.int32(self._grid.num_levels),
-            },
-            offset_provider=self._grid.connectivities,
-        )
+        self._compute_averaged_vn_and_fluxes = [
+            setup_program(
+                backend=backend,
+                program=compute_averaged_vn_and_fluxes,
+                constant_args={
+                    "e_flx_avg": self._interpolation_state.e_flx_avg,
+                    "ddqz_z_full_e": self._metric_state_nonhydro.ddqz_z_full_e,
+                },
+                variants={
+                    "at_first_substep": [False, True],
+                    "prepare_fluxes_for_advection": [False, True],
+                },
+                horizontal_sizes={
+                    "horizontal_start": gtx.int32(self._start_edge_lateral_boundary_level_5),
+                    "horizontal_end": self._end_edge_halo_level_2,
+                },
+                vertical_sizes={
+                    "vertical_start": gtx.int32(vertical_start),
+                    "vertical_end": gtx.int32(vertical_end),
+                },
+                offset_provider=self._grid.connectivities,
+            )
+            for vertical_start, vertical_end in self._halo_overlap_chunks
+        ]
 
         self._vertically_implicit_solver_at_predictor_step = setup_program(
             backend=backend,
@@ -1463,35 +1491,54 @@ class SolveNonhydro:
             )
         )
 
-        self._apply_divergence_damping_and_update_vn(
-            horizontal_gradient_of_normal_wind_divergence=z_fields.horizontal_gradient_of_normal_wind_divergence,
-            next_vn=prognostic_states.next.vn,
-            current_vn=prognostic_states.current.vn,
-            dwdz_at_cells_on_model_levels=z_fields.dwdz_at_cells_on_model_levels,
-            predictor_normal_wind_advective_tendency=diagnostic_state_nh.normal_wind_advective_tendency.predictor,
-            corrector_normal_wind_advective_tendency=diagnostic_state_nh.normal_wind_advective_tendency.corrector,
-            normal_wind_tendency_due_to_slow_physics_process=diagnostic_state_nh.normal_wind_tendency_due_to_slow_physics_process,
-            normal_wind_iau_increment=diagnostic_state_nh.normal_wind_iau_increment,
-            theta_v_at_edges_on_model_levels=z_fields.theta_v_at_edges_on_model_levels,
-            horizontal_pressure_gradient=z_fields.horizontal_pressure_gradient,
-            interpolated_fourth_order_divdamp_factor=self.interpolated_fourth_order_divdamp_factor,
-            second_order_divdamp_factor=second_order_divdamp_factor_wp,
-            second_order_divdamp_scaling_coeff=second_order_divdamp_scaling_coeff,
-            dtime=dtime,
-            apply_2nd_order_divergence_damping=apply_2nd_order_divergence_damping,
-            apply_4th_order_divergence_damping=apply_4th_order_divergence_damping,
-            is_iau_active=is_iau_active,
-            iau_wgt_dyn=iau_wgt_dyn,
-        )
-
-        log.debug("exchanging prognostic field 'vn'")
-        self._exchange.exchange(
-            dims.EdgeDim,
-            prognostic_states.next.vn,
-            stream=decomposition.DEFAULT_STREAM,
-        )
-
-        self._compute_averaged_vn_and_fluxes(
+        # Pipelined over vertical chunks: the vn exchange of chunk i-1 overlaps the vn update
+        # of chunk i, and the exchange of chunk i overlaps the flux computation of chunk i-1.
+        # GHEX allows only one exchange in flight, hence finish(i-1) before start(i).
+        exchange_handle: decomposition.ExchangeResult = decomposition.SingleNodeResult()
+        for i, (vertical_start, vertical_end) in enumerate(self._halo_overlap_chunks):
+            self._apply_divergence_damping_and_update_vn[i](
+                horizontal_gradient_of_normal_wind_divergence=z_fields.horizontal_gradient_of_normal_wind_divergence,
+                next_vn=prognostic_states.next.vn,
+                current_vn=prognostic_states.current.vn,
+                dwdz_at_cells_on_model_levels=z_fields.dwdz_at_cells_on_model_levels,
+                predictor_normal_wind_advective_tendency=diagnostic_state_nh.normal_wind_advective_tendency.predictor,
+                corrector_normal_wind_advective_tendency=diagnostic_state_nh.normal_wind_advective_tendency.corrector,
+                normal_wind_tendency_due_to_slow_physics_process=diagnostic_state_nh.normal_wind_tendency_due_to_slow_physics_process,
+                normal_wind_iau_increment=diagnostic_state_nh.normal_wind_iau_increment,
+                theta_v_at_edges_on_model_levels=z_fields.theta_v_at_edges_on_model_levels,
+                horizontal_pressure_gradient=z_fields.horizontal_pressure_gradient,
+                interpolated_fourth_order_divdamp_factor=self.interpolated_fourth_order_divdamp_factor,
+                second_order_divdamp_factor=second_order_divdamp_factor_wp,
+                second_order_divdamp_scaling_coeff=second_order_divdamp_scaling_coeff,
+                dtime=dtime,
+                apply_2nd_order_divergence_damping=apply_2nd_order_divergence_damping,
+                apply_4th_order_divergence_damping=apply_4th_order_divergence_damping,
+                is_iau_active=is_iau_active,
+                iau_wgt_dyn=iau_wgt_dyn,
+            )
+            exchange_handle.finish(stream=decomposition.DEFAULT_STREAM)
+            log.debug("exchanging prognostic field 'vn'")
+            exchange_handle = self._exchange.start(
+                dims.EdgeDim,
+                prognostic_states.next.vn[:, vertical_start:vertical_end],
+                stream=decomposition.DEFAULT_STREAM,
+            )
+            if i > 0:
+                self._compute_averaged_vn_and_fluxes[i - 1](
+                    spatially_averaged_vn=self.z_vn_avg,
+                    mass_flux_at_edges_on_model_levels=diagnostic_state_nh.mass_flux_at_edges_on_model_levels,
+                    theta_v_flux_at_edges_on_model_levels=self.theta_v_flux_at_edges_on_model_levels,
+                    substep_and_spatially_averaged_vn=prep_adv.vn_traj,
+                    substep_averaged_mass_flux=prep_adv.mass_flx_me,
+                    vn=prognostic_states.next.vn,
+                    rho_at_edges_on_model_levels=z_fields.rho_at_edges_on_model_levels,
+                    theta_v_at_edges_on_model_levels=z_fields.theta_v_at_edges_on_model_levels,
+                    prepare_fluxes_for_advection=prepare_fluxes_for_advection,
+                    at_first_substep=at_first_substep,
+                    r_nsubsteps=r_nsubsteps,
+                )
+        exchange_handle.finish(stream=decomposition.DEFAULT_STREAM)
+        self._compute_averaged_vn_and_fluxes[-1](
             spatially_averaged_vn=self.z_vn_avg,
             mass_flux_at_edges_on_model_levels=diagnostic_state_nh.mass_flux_at_edges_on_model_levels,
             theta_v_flux_at_edges_on_model_levels=self.theta_v_flux_at_edges_on_model_levels,

@@ -7,10 +7,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import TYPE_CHECKING
 
 import gt4py.next as gtx
+import numpy as np
 import pytest
 
 import icon4py.model.common.grid.states as grid_states
@@ -652,6 +654,127 @@ def test_nonhydro_corrector_step(  # noqa: PLR0917 [too-many-positional-argument
         savepoint_nonhydro_exit.exner_dyn_incr().asnumpy(),
         atol=1e-14,
     )
+
+
+@pytest.mark.embedded_remap_error
+@pytest.mark.datatest
+@pytest.mark.parametrize("halo_overlap_chunks", [2, 3])
+@pytest.mark.parametrize(
+    "istep_init, substep_init, istep_exit, substep_exit, at_initial_timestep", [(2, 1, 2, 1, True)]
+)
+@pytest.mark.parametrize(
+    "experiment_description, step_date_init, step_date_exit",
+    [
+        (
+            test_defs.Experiments.MCH_CH_R04B09,
+            "2021-06-20T12:00:10.000",
+            "2021-06-20T12:00:10.000",
+        ),
+    ],
+)
+def test_nonhydro_corrector_step_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too-many-positional-arguments]
+    halo_overlap_chunks,
+    istep_init,
+    substep_init,
+    istep_exit,
+    substep_exit,
+    at_initial_timestep,
+    step_date_init,
+    step_date_exit,
+    icon_grid,
+    savepoint_nonhydro_init,
+    is_iau_active,
+    iau_wgt_dyn,
+    grid_savepoint,
+    metrics_savepoint,
+    interpolation_savepoint,
+    experiment,
+    backend,
+):
+    init_savepoint = savepoint_nonhydro_init
+    interpolation_state = utils.construct_interpolation_state(interpolation_savepoint)
+    metric_state_nonhydro = utils.construct_metric_state(metrics_savepoint, grid_savepoint)
+    vertical_params = utils.create_vertical_params(experiment.config.vertical_grid, grid_savepoint)
+    at_first_substep = substep_init == 1
+
+    def run_corrector(num_chunks: int) -> dict[str, gtx.Field]:
+        config = dataclasses.replace(
+            experiment.config.nonhydrostatic, halo_overlap_chunks=num_chunks
+        )
+        solve_nonhydro = solve_nh.SolveNonhydro(
+            grid=icon_grid,
+            config=config,
+            params=solve_nh.NonHydrostaticParams(config),
+            metric_state_nonhydro=metric_state_nonhydro,
+            interpolation_state=interpolation_state,
+            vertical_params=vertical_params,
+            edge_geometry=grid_savepoint.construct_edge_geometry(),
+            cell_geometry=grid_savepoint.construct_cell_geometry(),
+            owner_mask=grid_savepoint.c_owner_mask(),
+            exchange=decomp_defs.SingleNodeExchange(),
+            backend=backend,
+            max_nudging_coefficient=experiment.config.interpolation.max_nudging_coefficient,
+        )
+        prep_adv = dycore_states.PrepAdvection(
+            vn_traj=init_savepoint.vn_traj(),
+            mass_flx_me=init_savepoint.mass_flx_me(),
+            dynamical_vertical_mass_flux_at_cells_on_half_levels=init_savepoint.mass_flx_ic(),
+            dynamical_vertical_volumetric_flux_at_cells_on_half_levels=data_alloc.zero_field(
+                icon_grid, dims.CellDim, dims.KHalfDim, allocator=backend
+            ),
+        )
+        diagnostic_state_nh = utils.construct_diagnostics(init_savepoint, icon_grid, backend)
+        if not (at_initial_timestep and at_first_substep):
+            diagnostic_state_nh.vertical_wind_advective_tendency.swap()
+        if not at_first_substep:
+            diagnostic_state_nh.normal_wind_advective_tendency.swap()
+        prognostic_states = utils.create_prognostic_states(init_savepoint)
+        z_fields = solve_nh.IntermediateFields(
+            horizontal_pressure_gradient=init_savepoint.z_gradh_exner(),
+            rho_at_edges_on_model_levels=init_savepoint.z_rho_e(),
+            theta_v_at_edges_on_model_levels=init_savepoint.z_theta_v_e(),
+            horizontal_gradient_of_normal_wind_divergence=init_savepoint.z_graddiv_vn(),
+            dwdz_at_cells_on_model_levels=init_savepoint.z_dwdz_dd(),
+            horizontal_kinetic_energy_at_edges_on_model_levels=init_savepoint.z_kin_hor_e(),
+            tangential_wind_on_half_levels=init_savepoint.z_vt_ie(),
+        )
+
+        solve_nonhydro.run_corrector_step(
+            diagnostic_state_nh=diagnostic_state_nh,
+            prognostic_states=prognostic_states,
+            z_fields=z_fields,
+            prep_adv=prep_adv,
+            second_order_divdamp_factor=init_savepoint.divdamp_fac_o2(),
+            dtime=init_savepoint.dtime(),
+            ndyn_substeps_var=experiment.config.driver.ndyn_substeps,
+            prepare_fluxes_for_advection=init_savepoint.get_metadata("prep_adv").get("prep_adv"),
+            at_first_substep=at_first_substep,
+            at_last_substep=substep_init == experiment.config.driver.ndyn_substeps,
+            is_iau_active=is_iau_active,
+            iau_wgt_dyn=iau_wgt_dyn,
+        )
+        return {
+            "vn": prognostic_states.next.vn,
+            "w": prognostic_states.next.w,
+            "rho": prognostic_states.next.rho,
+            "exner": prognostic_states.next.exner,
+            "theta_v": prognostic_states.next.theta_v,
+            "rho_ic": diagnostic_state_nh.rho_at_cells_on_half_levels,
+            "theta_v_ic": diagnostic_state_nh.theta_v_at_cells_on_half_levels,
+            "mass_fl_e": diagnostic_state_nh.mass_flux_at_edges_on_model_levels,
+            "exner_dyn_incr": diagnostic_state_nh.exner_dynamical_increment,
+            "vn_traj": prep_adv.vn_traj,
+            "mass_flx_me": prep_adv.mass_flx_me,
+            "mass_flx_ic": prep_adv.dynamical_vertical_mass_flux_at_cells_on_half_levels,
+            "vol_flx_ic": prep_adv.dynamical_vertical_volumetric_flux_at_cells_on_half_levels,
+            "z_vn_avg": solve_nonhydro.z_vn_avg,
+            "z_theta_v_fl_e": solve_nonhydro.theta_v_flux_at_edges_on_model_levels,
+        }
+
+    reference = run_corrector(1)
+    split = run_corrector(halo_overlap_chunks)
+    for name, field in reference.items():
+        assert np.array_equal(split[name].asnumpy(), field.asnumpy(), equal_nan=True), name
 
 
 @pytest.mark.embedded_remap_error
