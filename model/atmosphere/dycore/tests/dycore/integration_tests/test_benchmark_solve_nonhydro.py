@@ -51,7 +51,9 @@ def _construct_solve_nonhydro(
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
     metrics_field_source: metrics_factory.MetricsFieldsFactory,
     backend_like: model_backends.BackendLike,
+    *,
     config: solve_nh.NonHydrostaticConfig,
+    exchange: decomposition.ExchangeRuntime | None = None,
 ) -> solve_nh.SolveNonhydro:
     allocator = model_backends.get_allocator(backend_like)
     mesh = geometry_field_source.grid
@@ -210,12 +212,45 @@ def _construct_solve_nonhydro(
         edge_geometry=edge_geometry,
         cell_geometry=cell_geometry,
         owner_mask=geometry_field_source.get(geometry_meta.CELL_OWNER_MASK),
-        exchange=decomposition.SingleNodeExchange(),
+        exchange=decomposition.SingleNodeExchange() if exchange is None else exchange,
         backend=backend_like,
         max_nudging_coefficient=0.375,
     )
 
     return solve_nonhydro
+
+
+class _ProducerFinishedCheckingExchange(decomposition.SingleNodeExchange):
+    """Single-rank exchange that fails if a field changes while its exchange is in flight.
+
+    A change between `start()` and `finish()` means the exchange was started before the
+    producer of the field had finished, which would send stale halo data on multiple ranks.
+    """
+
+    num_started: int = 0
+
+    def start(
+        self,
+        dim: gtx.Dimension,
+        *fields: gtx.Field | data_alloc.NDArray,
+        stream: decomposition.StreamLike = decomposition.DEFAULT_STREAM,
+    ) -> decomposition.ExchangeResult:
+        self.num_started += 1
+        return _UnchangedCheckingResult([(f, data_alloc.as_numpy(f).copy()) for f in fields])
+
+
+class _UnchangedCheckingResult(decomposition.SingleNodeResult):
+    def __init__(self, snapshots: list[tuple[gtx.Field | data_alloc.NDArray, np.ndarray]]):
+        self._snapshots = snapshots
+
+    def finish(
+        self,
+        stream: decomposition.StreamLike | decomposition.BlockType = decomposition.DEFAULT_STREAM,
+    ) -> None:
+        for field, snapshot in self._snapshots:
+            assert np.array_equal(data_alloc.as_numpy(field), snapshot, equal_nan=True), (
+                "field changed while its halo exchange was in flight"
+            )
 
 
 def _config(halo_overlap_chunks: int = 1) -> solve_nh.NonHydrostaticConfig:
@@ -238,7 +273,7 @@ def solve_nonhydro(
         interpolation_field_source,
         metrics_field_source,
         backend_like,
-        _config(),
+        config=_config(),
     )
 
 
@@ -392,12 +427,14 @@ def test_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too-man
     initial_vn = initial_states[2].next.vn.asnumpy()
 
     def run(num_chunks: int) -> dict[str, np.ndarray]:
+        exchange = _ProducerFinishedCheckingExchange()
         solver = _construct_solve_nonhydro(
             geometry_field_source,
             interpolation_field_source,
             metrics_field_source,
             backend_like,
-            _config(num_chunks),
+            config=_config(num_chunks),
+            exchange=exchange,
         )
         prep_adv, diagnostic_state_nh, prognostic_states = copy.deepcopy(initial_states)
         for at_first_substep, at_last_substep in [(True, False), (False, True)]:
@@ -424,6 +461,7 @@ def test_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too-man
             "z_vn_avg": solver.z_vn_avg,
             "theta_v_flux_at_edges_on_model_levels": solver.theta_v_flux_at_edges_on_model_levels,
         }
+        assert exchange.num_started > 0
         return {name: field.asnumpy() for name, field in fields.items()}
 
     reference = run(1)
