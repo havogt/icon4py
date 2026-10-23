@@ -286,6 +286,7 @@ def test_run_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too
     step_date_init: str,
     step_date_exit: str,
     substep_init: int,
+    substep_exit: int,
     experiment: test_defs.Experiment,
     icon_grid: icon.IconGrid,
     savepoint_nonhydro_init: serialbox.IconNonHydroInitSavepoint,
