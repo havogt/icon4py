@@ -1658,7 +1658,7 @@ dependencies = [
   { name = "xxhash" }
 ]
 name = "gt4py"
-source = { git = "https://github.com/havogt/gt4py?branch=integration%2Fjaxad#0b6db518acb8d493f45f92f66490da4e6117a970" }
+source = { git = "https://github.com/havogt/gt4py?branch=integration%2Fjaxad#f61a1dd88ea5f1afff1919d2a450805a16915a28" }
 version = "1.2.3+unknown.version.details"
 
 [package.optional-dependencies]
@@ -2147,7 +2147,7 @@ version = "0.4.1"
 
 [package.metadata]
 requires-dist = [
-  { name = "gt4py", specifier = "==1.2.3" },
+  { name = "gt4py", git = "https://github.com/havogt/gt4py?branch=integration%2Fjaxad" },
   { name = "icon4py-common", editable = "model/common" },
   { name = "packaging", specifier = ">=20.0" }
 ]
