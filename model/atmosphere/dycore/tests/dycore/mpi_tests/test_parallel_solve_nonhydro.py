@@ -49,6 +49,7 @@ def _run_time_step(
     process_props: definitions.ProcessProperties,
     decomposition_info: definitions.DecompositionInfo,
     backend: gtx_typing.Backend | None,
+    num_comm_objects: int = 1,
 ) -> tuple[
     nonhydro_states.DiagnosticStateNonHydro,
     common_utils.TimeStepPair[prognostics.PrognosticState],
@@ -79,7 +80,13 @@ def _run_time_step(
 
     prognostic_states = utils.create_prognostic_states(savepoint_nonhydro_init)
 
-    exchange = definitions.create_exchange(process_props, decomposition_info)
+    exchange = (
+        definitions.create_exchange(process_props, decomposition_info)
+        if num_comm_objects == 1
+        else mpi_decomposition.GHexMultiNodeExchange(
+            process_props, decomposition_info, num_comm_objects=num_comm_objects
+        )
+    )
 
     solve_nonhydro = nh.SolveNonhydro(
         grid=icon_grid,
@@ -118,6 +125,7 @@ def _run_time_step(
     return diagnostic_state_nh, prognostic_states, prep_adv
 
 
+@pytest.mark.parametrize("num_comm_objects", [1, 2, 3])
 @pytest.mark.parametrize("halo_overlap_chunks", [1, 3])
 @pytest.mark.parametrize("process_props", [True], indirect=True)
 @pytest.mark.datatest
@@ -138,6 +146,7 @@ def _run_time_step(
 @pytest.mark.mpi
 def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-arguments]
     halo_overlap_chunks: int,
+    num_comm_objects: int,
     istep_init: int,
     istep_exit: int,
     step_date_init: str,
@@ -203,6 +212,7 @@ def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-a
         process_props=process_props,
         decomposition_info=decomposition_info,
         backend=backend,
+        num_comm_objects=num_comm_objects,
     )
 
     expected_theta_v = savepoint_nonhydro_step_final.theta_v_new().asnumpy()
@@ -279,8 +289,10 @@ def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-a
         ),
     ],
 )
+@pytest.mark.parametrize("num_comm_objects", [1, 2, 3])
 @pytest.mark.mpi
 def test_run_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too-many-positional-arguments]
+    num_comm_objects: int,
     istep_init: int,
     istep_exit: int,
     step_date_init: str,
@@ -306,7 +318,7 @@ def test_run_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too
     base_config = experiment.config.nonhydrostatic
     assert base_config is not None
 
-    def run(num_chunks: int) -> dict[str, np.ndarray]:
+    def run(num_chunks: int, num_comm_objects: int) -> dict[str, np.ndarray]:
         diagnostic_state_nh, prognostic_states, prep_adv = _run_time_step(
             dataclasses.replace(base_config, halo_overlap_chunks=num_chunks),
             experiment=experiment,
@@ -321,6 +333,7 @@ def test_run_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too
             process_props=process_props,
             decomposition_info=decomposition_info,
             backend=backend,
+            num_comm_objects=num_comm_objects,
         )
         fields = {
             f"next.{name}": getattr(prognostic_states.next, name)
@@ -335,14 +348,15 @@ def test_run_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too
         }
         return {name: field.asnumpy() for name, field in fields.items()}
 
-    reference = run(1)
-    split = run(3)
+    reference = run(1, num_comm_objects=1)
 
     edge_halo = ~data_alloc.as_numpy(decomposition_info.owner_mask(dims.EdgeDim))
     assert edge_halo.any()
-    mismatches = [
-        name
-        for name, values in reference.items()
-        if not np.array_equal(split[name], values, equal_nan=True)
-    ]
-    assert not mismatches, f"rank={process_props.rank}: {mismatches}"
+    for num_chunks in (1, 3):
+        variant = run(num_chunks, num_comm_objects)
+        mismatches = [
+            name
+            for name, values in reference.items()
+            if not np.array_equal(variant[name], values, equal_nan=True)
+        ]
+        assert not mismatches, f"rank={process_props.rank}, chunks={num_chunks}: {mismatches}"

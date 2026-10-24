@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import ModuleType
@@ -212,7 +213,12 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         self,
         process_props: decomp_defs.ProcessProperties,
         domain_decomposition: decomp_defs.DecompositionInfo,
+        num_comm_objects: int | None = None,
     ):
+        if num_comm_objects is None:
+            num_comm_objects = int(os.environ.get("ICON4PY_GHEX_COMM_OBJECTS", "1"))
+        if num_comm_objects < 1:
+            raise ValueError(f"num_comm_objects must be >= 1, got {num_comm_objects}")
         self._context = make_context(process_props.comm, False)
         self._domain_id_gen = decomp_defs.DomainDescriptorIdGenerator(process_props)
         self._decomposition_info = domain_decomposition
@@ -226,11 +232,15 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         log.info(f"domain descriptors for dimensions {self._domain_descriptors.keys()} initialized")
         self._patterns = {dim: self._create_pattern(dim) for dim in dims.horizontal_dims()}
         log.info(f"patterns for dimensions {self._patterns.keys()} initialized ")
-        self._comm = make_communication_object(self._context)
+        # A communication object allows one exchange in flight and its `start()` waits on the host for
+        # its previous exchange, so exchanges cycle through several objects. All ranks must start
+        # exchanges in the same order: the objects share one MPI/NCCL communicator and tags.
+        self._comms = [make_communication_object(self._context) for _ in range(num_comm_objects)]
+        self._next_comm = 0
 
         self._applied_patterns_cache: dict = {}
 
-        log.info("communication object initialized")
+        log.info(f"{num_comm_objects} communication object(s) initialized")
 
     def _domain_descriptor_info(self, descr: DomainDescriptor) -> str:
         return f" domain_descriptor=[id='{descr.domain_id()}', size='{descr.size()}', inner_size='{descr.inner_size()}' (halo size='{descr.size() - descr.inner_size()}')"
@@ -327,12 +337,14 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         )
 
         applied_patterns = [self._get_applied_pattern(dim, f) for f in fields]
+        comm = self._comms[self._next_comm]
+        self._next_comm = (self._next_comm + 1) % len(self._comms)
         if not ghex.__config__["gpu"]:
             # No GPU support fall back to the regular exchange function.
-            handle = self._comm.exchange(applied_patterns)
+            handle = comm.exchange(applied_patterns)
         else:
             assert stream is not None
-            handle = self._comm.schedule_exchange(
+            handle = comm.schedule_exchange(
                 patterns=applied_patterns,
                 stream=stream,
             )
