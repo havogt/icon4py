@@ -15,7 +15,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Union
+from typing import Any, Literal, Union
 
 import numpy as np
 from gt4py import next as gtx
@@ -213,12 +213,13 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         self,
         process_props: decomp_defs.ProcessProperties,
         domain_decomposition: decomp_defs.DecompositionInfo,
-        num_comm_objects: int | None = None,
+        num_comm_objects: int | Literal["site"] | None = None,
     ):
         if num_comm_objects is None:
-            num_comm_objects = int(os.environ.get("ICON4PY_GHEX_COMM_OBJECTS", "1"))
-        if num_comm_objects < 1:
-            raise ValueError(f"num_comm_objects must be >= 1, got {num_comm_objects}")
+            env_value = os.environ.get("ICON4PY_GHEX_COMM_OBJECTS", "1")
+            num_comm_objects = "site" if env_value == "site" else int(env_value)
+        if num_comm_objects != "site" and num_comm_objects < 1:
+            raise ValueError(f"num_comm_objects must be >= 1 or 'site', got {num_comm_objects}")
         self._context = make_context(process_props.comm, False)
         self._domain_id_gen = decomp_defs.DomainDescriptorIdGenerator(process_props)
         self._decomposition_info = domain_decomposition
@@ -233,9 +234,16 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         self._patterns = {dim: self._create_pattern(dim) for dim in dims.horizontal_dims()}
         log.info(f"patterns for dimensions {self._patterns.keys()} initialized ")
         # A communication object allows one exchange in flight and its `start()` waits on the host for
-        # its previous exchange, so exchanges cycle through several objects. All ranks must start
-        # exchanges in the same order: the objects share one MPI/NCCL communicator and tags.
-        self._comms = [make_communication_object(self._context) for _ in range(num_comm_objects)]
+        # its previous exchange, so exchanges cycle through several objects ("site": one object per
+        # exchanged field set, so its buffers never change size). All ranks must start exchanges in the
+        # same order: the objects share one MPI/NCCL communicator and tags.
+        self._per_site = num_comm_objects == "site"
+        self._comms = (
+            [make_communication_object(self._context) for _ in range(num_comm_objects)]
+            if isinstance(num_comm_objects, int)
+            else []
+        )
+        self._site_comms: dict[tuple, Any] = {}
         self._next_comm = 0
 
         self._applied_patterns_cache: dict = {}
@@ -306,6 +314,14 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
             arch=Architecture.CPU if isinstance(array, np.ndarray) else Architecture.GPU,
         )
 
+    @staticmethod
+    def _buffer_key(f: gtx.Field | data_alloc.NDArray) -> Any:
+        if isinstance(f, gtx.Field):
+            assert hasattr(f, "__gt_buffer_info__")
+            return f.__gt_buffer_info__.hash_key
+        interface = getattr(f, "__cuda_array_interface__", None) or f.__array_interface__
+        return (interface["data"][0], f.shape, f.strides)
+
     def _get_applied_pattern(self, dim: gtx.Dimension, f: gtx.Field | data_alloc.NDArray) -> str:
         if isinstance(f, gtx.Field):
             assert hasattr(f, "__gt_buffer_info__")
@@ -337,8 +353,13 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         )
 
         applied_patterns = [self._get_applied_pattern(dim, f) for f in fields]
-        comm = self._comms[self._next_comm]
-        self._next_comm = (self._next_comm + 1) % len(self._comms)
+        if self._per_site:
+            site = (dim, *(self._buffer_key(f) for f in fields))
+            if (comm := self._site_comms.get(site)) is None:
+                comm = self._site_comms[site] = make_communication_object(self._context)
+        else:
+            comm = self._comms[self._next_comm]
+            self._next_comm = (self._next_comm + 1) % len(self._comms)
         if not ghex.__config__["gpu"]:
             # No GPU support fall back to the regular exchange function.
             handle = comm.exchange(applied_patterns)

@@ -9,6 +9,7 @@
 
 import dataclasses
 import logging
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -49,7 +50,7 @@ def _run_time_step(
     process_props: definitions.ProcessProperties,
     decomposition_info: definitions.DecompositionInfo,
     backend: gtx_typing.Backend | None,
-    num_comm_objects: int = 1,
+    num_comm_objects: int | Literal["site"] = 1,
 ) -> tuple[
     nonhydro_states.DiagnosticStateNonHydro,
     common_utils.TimeStepPair[prognostics.PrognosticState],
@@ -125,7 +126,7 @@ def _run_time_step(
     return diagnostic_state_nh, prognostic_states, prep_adv
 
 
-@pytest.mark.parametrize("num_comm_objects", [1, 2, 3])
+@pytest.mark.parametrize("num_comm_objects", [1, 2, 3, "site"])
 @pytest.mark.parametrize("halo_overlap_chunks", [1, 3])
 @pytest.mark.parametrize("process_props", [True], indirect=True)
 @pytest.mark.datatest
@@ -146,7 +147,7 @@ def _run_time_step(
 @pytest.mark.mpi
 def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-arguments]
     halo_overlap_chunks: int,
-    num_comm_objects: int,
+    num_comm_objects: int | Literal["site"],
     istep_init: int,
     istep_exit: int,
     step_date_init: str,
@@ -289,10 +290,10 @@ def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-a
         ),
     ],
 )
-@pytest.mark.parametrize("num_comm_objects", [1, 2, 3])
+@pytest.mark.parametrize("num_comm_objects", [1, 2, 3, "site"])
 @pytest.mark.mpi
 def test_run_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too-many-positional-arguments]
-    num_comm_objects: int,
+    num_comm_objects: int | Literal["site"],
     istep_init: int,
     istep_exit: int,
     step_date_init: str,
@@ -318,7 +319,7 @@ def test_run_solve_nonhydro_halo_overlap_is_bit_identical(  # noqa: PLR0917 [too
     base_config = experiment.config.nonhydrostatic
     assert base_config is not None
 
-    def run(num_chunks: int, num_comm_objects: int) -> dict[str, np.ndarray]:
+    def run(num_chunks: int, num_comm_objects: int | Literal["site"]) -> dict[str, np.ndarray]:
         diagnostic_state_nh, prognostic_states, prep_adv = _run_time_step(
             dataclasses.replace(base_config, halo_overlap_chunks=num_chunks),
             experiment=experiment,
