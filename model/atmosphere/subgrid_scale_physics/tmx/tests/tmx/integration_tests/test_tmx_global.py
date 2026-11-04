@@ -89,6 +89,8 @@ def test_tmx_global_single_step(
     date: str,
     experiment: definitions.Experiment,
 ) -> None:
+    if backend is not None:
+        pytest.skip("global step is the JAX/embedded path; gtfn witness is the granule")
     config = experiment.config.tmx
     assert config is not None
     allocator = model_backends.get_allocator(backend)
