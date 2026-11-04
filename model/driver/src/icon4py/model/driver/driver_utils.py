@@ -28,17 +28,20 @@ from icon4py.model.atmosphere.dycore import (
 )
 from icon4py.model.atmosphere.subgrid_scale_physics.muphys import (
     component as muphys_component,
+    muphys_global,
     state as muphys_state,
 )
 from icon4py.model.atmosphere.subgrid_scale_physics.physics_driver import physics_driver
 from icon4py.model.atmosphere.subgrid_scale_physics.surface import (
     component as surface_component,
     state as surface_state,
+    surface_global,
 )
 from icon4py.model.atmosphere.subgrid_scale_physics.tmx import (
     component as tmx_component,
     state as tmx_state,
     static_fields as tmx_static_fields,
+    tmx_global,
 )
 from icon4py.model.atmosphere.tracer_advection import (
     tracer_advection,
@@ -80,6 +83,7 @@ from icon4py.model.driver import (
     driver_constants,
     driver_states,
     jax_utils,
+    physics_global,
     spmd_layout,
 )
 
@@ -637,6 +641,7 @@ class GlobalGranules:
     diffusion: diffusion_global.DiffusionGlobal | None = None
     solve_nonhydro: solve_nonhydro_global.SolveNonhydroGlobal | None = None
     tracer_advection: tracer_advection_global.TracerAdvectionGlobal | None = None
+    physics: physics_global.PhysicsGlobal | None = None
 
 
 class HaloExchange(enum.StrEnum):
@@ -765,6 +770,23 @@ def initialize_global_granules(
     jnp = jax_utils.import_jax().numpy
     states = create_dynamics_states(static_field_factories)
     transport_tracers = config.tracer_advection is not None and bool(config.tracer_config)
+    physics_states: dict[str, Any] | None = None
+    if config.muphys is not None or config.surface is not None or config.tmx is not None:
+        interpolation_source = static_field_factories.interpolation
+        physics_states = {
+            "ddqz_z_full": static_field_factories.metrics.get(metrics_attributes.DDQZ_Z_FULL),
+            "rbf_vec_coeff_c1": interpolation_source.get(interpolation_attributes.RBF_VEC_COEFF_C1),
+            "rbf_vec_coeff_c2": interpolation_source.get(interpolation_attributes.RBF_VEC_COEFF_C2),
+            "c_lin_e": interpolation_source.get(interpolation_attributes.C_LIN_E),
+            "tmx_metric_state": tmx_static_fields.build_metric_state(static_field_factories.metrics)
+            if config.tmx is not None
+            else None,
+            "tmx_interpolation_state": tmx_static_fields.build_interpolation_state(
+                interpolation_source
+            )
+            if config.tmx is not None
+            else None,
+        }
     tracer_states = (
         create_tracer_advection_states(static_field_factories, grid, allocator=None)
         if transport_tracers
@@ -777,9 +799,12 @@ def initialize_global_granules(
     if layout is not None:
         states = pad_fields(states, layout)
         tracer_states = pad_fields(tracer_states, layout)
+        physics_states = pad_fields(physics_states, layout)
         grid = padded_grid(grid, layout)
     states = jax_utils.to_jax(states)
     tracer_states = jax_utils.to_jax(tracer_states)
+    if physics_states is not None:
+        physics_states = {k: jax_utils.to_jax(v) for k, v in physics_states.items()}
     jax_grid = dataclasses.replace(
         grid, connectivities={k: jax_utils.to_jax(v) for k, v in grid.connectivities.items()}
     )
@@ -831,10 +856,41 @@ def initialize_global_granules(
             allocator=jnp,
         )
 
+    physics_granule = None
+    if physics_states is not None:
+        physics_granule = physics_global.PhysicsGlobal(
+            grid=jax_grid,
+            ddqz_z_full=physics_states["ddqz_z_full"],
+            rbf_vec_coeff_c1=physics_states["rbf_vec_coeff_c1"],
+            rbf_vec_coeff_c2=physics_states["rbf_vec_coeff_c2"],
+            c_lin_e=physics_states["c_lin_e"],
+            edge_params=states.edge_geometry,
+            muphys=muphys_global.MuphysGlobal(grid=jax_grid, qnc=config.muphys.qnc)
+            if config.muphys is not None
+            else None,
+            surface=surface_global.SurfaceGlobal(
+                grid=jax_grid, config=config.surface, allocator=jnp
+            )
+            if config.surface is not None
+            else None,
+            tmx=tmx_global.TmxGlobal(
+                grid=jax_grid,
+                config=config.tmx,
+                metric_state=physics_states["tmx_metric_state"],
+                interpolation_state=physics_states["tmx_interpolation_state"],
+                edge_params=states.edge_geometry,
+                cell_params=states.cell_geometry,
+                allocator=jnp,
+            )
+            if config.tmx is not None
+            else None,
+        )
+
     return GlobalGranules(
         diffusion=diffusion_granule,
         solve_nonhydro=solve_nonhydro_granule,
         tracer_advection=tracer_advection_granule,
+        physics=physics_granule,
     )
 
 

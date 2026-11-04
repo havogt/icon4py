@@ -43,11 +43,10 @@ _FIELDS = ("vn", "w", "rho", "exner", "theta_v")
             ("2008-09-01T00:05:00.000", "2008-09-01T00:10:00.000", "2008-09-01T00:15:00.000"),
         ),
         (test_defs.Experiments.GAUSS3D, "2001-01-01T00:00:00.000", ("2001-01-01T00:00:04.000",)),
-        pytest.param(
+        (
             test_defs.Experiments.EXCLAIM_APE_AES,
             "2008-09-01T00:00:00.000",
             ("2008-09-01T00:05:00.000",),
-            marks=pytest.mark.xfail(raises=NotImplementedError, strict=True),
         ),
     ],
 )

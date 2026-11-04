@@ -10,7 +10,7 @@ The driver time loop with the single-field-operator global steps under jax.jit.
 
 The setup is the numpy one of `driver.Icon4pyDriver`; the states are converted to JAX once and
 threaded through the stateless `SolveNonhydroGlobal`, `DiffusionGlobal` and
-`TracerAdvectionGlobal` steps. The tracers are passive: no physics, no output.
+`TracerAdvectionGlobal` steps, and `physics_global.PhysicsGlobal` after them. No output.
 
 On a distributed grid the steps return their outputs on the owned points only. Between two jitted
 steps the driver builds new local fields from them, with the halo filled by a halo exchange on the
@@ -270,11 +270,10 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         self._traced_tables: dict[str, Any] | None = None
         if self.io_monitor is not None or self.tendencies is not None:
             raise NotImplementedError("The JAX driver does not write output or apply tendencies.")
-        if any(
-            getattr(self.config, name) is not None
-            for name in ("graupel", "muphys", "tmx", "surface")
-        ):
-            raise NotImplementedError("The JAX driver runs no physics.")
+        if self.config.graupel is not None:
+            raise NotImplementedError("The JAX driver does not run the NWP graupel scheme.")
+        if global_granules.physics is not None and self._distributed:
+            raise NotImplementedError("The JAX driver runs the physics on a single rank only.")
         self._tracer_names = (
             self.config.tracer_config.active_names if self.config.tracer_config is not None else ()
         )
@@ -628,6 +627,26 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             self._jitted[key] = self._jax.jit(run)
         return self._jitted[key]
 
+    def _jitted_physics(self, dtime: float) -> Callable:
+        key = ("physics", dtime)
+        if key not in self._jitted:
+            physics = self.global_granules.physics
+            assert physics is not None
+
+            def run(prognostic: dict, tracers: dict, perturbed_exner: gtx.Field) -> tuple:
+                self._traces += 1
+                return physics.run(
+                    prognostic=prognostic,
+                    tracers=tracers,
+                    perturbed_exner=perturbed_exner,
+                    # the air mass of the state the physics sees, ICON's ``mair``
+                    air_mass=prognostic["rho"] * physics.ddqz_z_full,
+                    dtime=dtime,
+                )
+
+            self._jitted[key] = self._jax.jit(run)
+        return self._jitted[key]
+
     def _time_step(  # noqa: PLR0917 [too-many-positional-arguments]  # positional through jax.jit
         self,
         constants: dict[str, Any],
@@ -719,6 +738,13 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                     )
                 }
             )["tracers"]
+        if self.global_granules.physics is not None:
+            prognostic, tracers, perturbed_exner = self._jitted_physics(dtime)(
+                prognostic, tracers, diagnostic_state.perturbed_exner_at_cells_on_model_levels
+            )
+            diagnostic_state = dataclasses.replace(
+                diagnostic_state, perturbed_exner_at_cells_on_model_levels=perturbed_exner
+            )
         return prognostic, _diagnostic_to_dict(diagnostic_state), intermediate, prep_adv, tracers
 
     def _jitted_time_step(self, key: tuple) -> Callable:
