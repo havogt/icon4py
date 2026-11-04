@@ -25,9 +25,9 @@ from icon4py.model.testing import stencil_tests
 
 @gtx.field_operator(grid_type=gtx.GridType.UNSTRUCTURED)
 def _solve_on_half_levels_mixed_precision(  # noqa: PLR0917 [too-many-positional-arguments]
-    a: fa.CellKHalfField[vpfloat],  # type: ignore[valid-type]
-    b: fa.CellKHalfField[vpfloat],  # type: ignore[valid-type]
-    c: fa.CellKHalfField[vpfloat],  # type: ignore[valid-type]
+    a: fa.CellKHalfField[vpfloat],
+    b: fa.CellKHalfField[vpfloat],
+    c: fa.CellKHalfField[vpfloat],
     d: fa.CellKHalfField[wpfloat],
     vertical_start: gtx.int32,
     vertical_end: gtx.int32,

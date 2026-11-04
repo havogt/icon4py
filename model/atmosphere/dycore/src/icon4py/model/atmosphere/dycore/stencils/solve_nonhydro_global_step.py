@@ -52,7 +52,7 @@ from icon4py.model.common.type_alias import vpfloat, wpfloat
 
 @gtx.field_operator
 def _plus(a: vpfloat, b: vpfloat) -> vpfloat:
-    return a + b  # type: ignore[operator]
+    return a + b
 
 
 @gtx.field_operator
