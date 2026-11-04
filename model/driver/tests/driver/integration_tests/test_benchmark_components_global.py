@@ -674,12 +674,17 @@ def _peak_bytes() -> dict[str, int]:
 
 @pytest.mark.parametrize("component", COMPONENTS)
 def test_global_jax_matches_granule(component: str, setup: _Setup, backend_like: Any) -> None:
-    """JAX jit against the granule on `--backend`, same process; writes the JAX outputs."""
+    """
+    Writes the JAX jit outputs, then checks them against the granule on `--backend` in the same
+    process unless `ICON4PY_BENCH_JAX_ONLY=1`.
+    """
     jnp = _jax_numpy()
     step = _global_step(component, setup, jnp)
     out = step(_as_fields(_perturbed(setup.inputs), jnp))
     jax_out = {k: np.asarray(v.asnumpy()) for k, v in out.items()}
     np.savez(_dump_path(component, setup.mesh), **jax_out)
+    if os.environ.get("ICON4PY_BENCH_JAX_ONLY", "0") == "1":
+        return
     run, outputs = _granule_step(component, setup, backend_like)
     run()
     _compare(
