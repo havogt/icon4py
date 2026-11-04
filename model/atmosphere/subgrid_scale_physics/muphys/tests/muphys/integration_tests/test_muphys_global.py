@@ -25,8 +25,11 @@ from icon4py.model.testing import definitions, test_utils
 from ..fixtures import *  # noqa: F403
 
 
-_DATES = ["2008-09-01T00:00:00.000", "2008-09-01T00:05:00.000", "2008-09-01T00:10:00.000"]
+_DATES = definitions.Experiments.EXCLAIM_APE_AES.dates
 _TRACER_INDEX = {"v": QV, "c": QC, "r": QR, "s": QS, "i": QI, "g": QG}
+# the tolerances of test_muphys_datatest.test_muphys_granule in double precision
+_TRACER_ATOL = 1e-13
+_TEMPERATURE_ATOL = 1e-10
 
 
 def _inputs(sp) -> dict[str, gtx.Field]:
@@ -50,27 +53,36 @@ def _run(step, fields, dtime):
     )
 
 
-def _check_against_savepoints(outputs, inputs, init_savepoint, exit_savepoint):
-    te, q, _, pr, ps, pi, pg, pre = (x for x in outputs)
-    dtime = init_savepoint.dtime()
+def _check_against_savepoints(outputs, inputs, dtime, init_savepoint, exit_savepoint):
+    te, q, _, pr, ps, pi, pg, pre = outputs
     # ICON runs the scheme from jks_cloudy (1-based) down only
     jks = init_savepoint.jks_cloudy() - 1
     for s in SPECIES:
-        tendency = (getattr(q, s).asnumpy() - inputs[f"q{s}"].asnumpy()) / dtime
-        reference = (
-            exit_savepoint.tend_tracer(_TRACER_INDEX[s]).asnumpy()
-            - init_savepoint.tend_tracer(_TRACER_INDEX[s]).asnumpy()
+        new = getattr(q, s).asnumpy()
+        test_utils.assert_dallclose(
+            new[:, jks:],
+            exit_savepoint.tracer(_TRACER_INDEX[s]).asnumpy()[:, jks:],
+            atol=_TRACER_ATOL,
+            err_msg=f"q{s} in cloud",
         )
         test_utils.assert_dallclose(
-            tendency[:, jks:], reference[:, jks:], atol=1e-13, err_msg=f"tend_q{s} in cloud"
+            (new[:, :jks] - inputs[f"q{s}"].asnumpy()[:, :jks]) / dtime,
+            0.0,
+            atol=_TRACER_ATOL / dtime,
+            err_msg=f"tend_q{s} above cloud",
         )
-        test_utils.assert_dallclose(
-            tendency[:, :jks], 0.0, atol=1e-12, err_msg=f"tend_q{s} above cloud"
-        )
-    tend_ta = (te.asnumpy() - inputs["te"].asnumpy()) / dtime
-    tend_ta_reference = exit_savepoint.tend_ta().asnumpy() - init_savepoint.tend_ta().asnumpy()
-    test_utils.assert_dallclose(tend_ta[:, jks:], tend_ta_reference[:, jks:], atol=1e-10)
-    test_utils.assert_dallclose(tend_ta[:, :jks], 0.0, atol=1e-10)
+    test_utils.assert_dallclose(
+        te.asnumpy()[:, jks:],
+        exit_savepoint.temperature().asnumpy()[:, jks:],
+        atol=_TEMPERATURE_ATOL,
+        err_msg="temperature in cloud",
+    )
+    test_utils.assert_dallclose(
+        (te.asnumpy()[:, :jks] - inputs["te"].asnumpy()[:, :jks]) / dtime,
+        0.0,
+        atol=_TEMPERATURE_ATOL / dtime,
+        err_msg="tend_temperature above cloud",
+    )
 
     rain, ice, snow, graupel = (x.asnumpy()[:, -1] for x in (pr, pi, ps, pg))
     test_utils.assert_dallclose(rain, exit_savepoint.rsfl().asnumpy(), atol=1e-10)
@@ -78,35 +90,36 @@ def _check_against_savepoints(outputs, inputs, init_savepoint, exit_savepoint):
     test_utils.assert_dallclose(
         rain + ice + snow + graupel, exit_savepoint.pr().asnumpy(), atol=1e-10
     )
-    test_utils.assert_dallclose(pre.asnumpy()[:, -1], exit_savepoint.ufcs().asnumpy(), atol=1e-10)
+    test_utils.assert_dallclose(pre.asnumpy()[:, -1], exit_savepoint.ufcs().asnumpy(), rtol=1e-12)
 
 
 @pytest.mark.datatest
 @pytest.mark.parametrize("experiment_description", [definitions.Experiments.EXCLAIM_APE_AES])
 @pytest.mark.parametrize("date", _DATES)
-def test_muphys_global(date, *, data_provider, icon_grid, backend):
+def test_muphys_global(date, *, experiment, data_provider, icon_grid, backend):
     if backend is not None:
         pytest.skip("the global step is verified on the embedded backend.")
     init_savepoint = data_provider.from_savepoint_muphys_init(date=date)
     exit_savepoint = data_provider.from_savepoint_muphys_exit(date=date)
     inputs = _inputs(init_savepoint)
+    dtime = experiment.config.driver.dtime.total_seconds()
 
     step = muphys_global.MuphysGlobal(grid=icon_grid, qnc=muphys_config.MuphysConfig().qnc)
-    outputs = _run(step, inputs, init_savepoint.dtime())
+    outputs = _run(step, inputs, dtime)
 
     for name, value in _inputs(init_savepoint).items():
         np.testing.assert_array_equal(inputs[name].asnumpy(), value.asnumpy())
-    _check_against_savepoints(outputs, inputs, init_savepoint, exit_savepoint)
+    _check_against_savepoints(outputs, inputs, dtime, init_savepoint, exit_savepoint)
 
 
 @pytest.mark.datatest
 @pytest.mark.parametrize("experiment_description", [definitions.Experiments.EXCLAIM_APE_AES])
 @pytest.mark.parametrize("date", _DATES)
-def test_muphys_global_matches_granule(date, *, data_provider, icon_grid, backend):
+def test_muphys_global_matches_granule(date, *, experiment, data_provider, icon_grid, backend):
     if backend is None:
         pytest.skip("the granule is the witness on a compiled backend.")
     init_savepoint = data_provider.from_savepoint_muphys_init(date=date)
-    dtime = init_savepoint.dtime()
+    dtime = experiment.config.driver.dtime.total_seconds()
     qnc = muphys_config.MuphysConfig().qnc
 
     granule = muphys_component.MuphysComponent(
@@ -135,7 +148,7 @@ def test_muphys_global_matches_granule(date, *, data_provider, icon_grid, backen
 @pytest.mark.datatest
 @pytest.mark.parametrize("experiment_description", [definitions.Experiments.EXCLAIM_APE_AES])
 @pytest.mark.parametrize("date", _DATES[1:2])
-def test_muphys_global_jax_jit(date, *, data_provider, icon_grid, backend):
+def test_muphys_global_jax_jit(date, *, experiment, data_provider, icon_grid, backend):
     if backend is not None:
         pytest.skip("jax fields run on the embedded backend only.")
     jax = pytest.importorskip("jax")
@@ -145,7 +158,7 @@ def test_muphys_global_jax_jit(date, *, data_provider, icon_grid, backend):
     init_savepoint = data_provider.from_savepoint_muphys_init(date=date)
     exit_savepoint = data_provider.from_savepoint_muphys_exit(date=date)
     inputs = _inputs(init_savepoint)
-    dtime = init_savepoint.dtime()
+    dtime = experiment.config.driver.dtime.total_seconds()
     step = muphys_global.MuphysGlobal(grid=icon_grid, qnc=muphys_config.MuphysConfig().qnc)
 
     outputs = jax.jit(lambda fields: _run(step, fields, dtime))(
@@ -156,4 +169,4 @@ def test_muphys_global_jax_jit(date, *, data_provider, icon_grid, backend):
     )
 
     assert isinstance(outputs[0].ndarray, jax.Array)
-    _check_against_savepoints(outputs, inputs, init_savepoint, exit_savepoint)
+    _check_against_savepoints(outputs, inputs, dtime, init_savepoint, exit_savepoint)
