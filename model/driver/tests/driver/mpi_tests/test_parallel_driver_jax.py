@@ -51,8 +51,9 @@ def run_jw_gathered(
     """
     experiment = test_defs.Experiments.JW
     grid_file_path = grid_utils._download_grid_file(experiment.grid)
-    config = driver_config.read_experiment_config_from_fortran(
+    config = driver_config.read_experiment_config_from_yaml(
         dt_utils.get_path_for_experiment(experiment, decomp_defs.SingleNodeProcessProperties())
+        / "config.yml"
     )
     config = config.with_overrides(
         driver={
