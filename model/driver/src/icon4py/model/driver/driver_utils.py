@@ -40,7 +40,11 @@ from icon4py.model.atmosphere.subgrid_scale_physics.tmx import (
     state as tmx_state,
     static_fields as tmx_static_fields,
 )
-from icon4py.model.atmosphere.tracer_advection import tracer_advection, tracer_advection_states
+from icon4py.model.atmosphere.tracer_advection import (
+    tracer_advection,
+    tracer_advection_global,
+    tracer_advection_states,
+)
 from icon4py.model.common import (
     constants,
     dimension as dims,
@@ -422,6 +426,54 @@ def create_dynamics_states(
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class TracerAdvectionStates:
+    interpolation_state: tracer_advection_states.AdvectionInterpolationState
+    least_squares_state: tracer_advection_states.AdvectionLeastSquaresState
+    metric_state: tracer_advection_states.AdvectionMetricState
+
+
+def create_tracer_advection_states(
+    static_field_factories: static_fields.StaticFieldFactories,
+    grid: icon_grid.IconGrid,
+    allocator: gtx_typing.Allocator | None,
+) -> TracerAdvectionStates:
+    interpolation_field_source = static_field_factories.interpolation
+    lsq_pseudoinv = interpolation_field_source.get(interpolation_attributes.LSQ_PSEUDOINV)
+    deepatmo_shallow_factor = data_alloc.constant_field(grid, 1.0, dims.KDim, allocator=allocator)
+    return TracerAdvectionStates(
+        interpolation_state=tracer_advection_states.AdvectionInterpolationState(
+            geofac_div=interpolation_field_source.get(interpolation_attributes.GEOFAC_DIV),
+            rbf_vec_coeff_e=interpolation_field_source.get(
+                interpolation_attributes.RBF_VEC_COEFF_E
+            ),
+            pos_on_tplane_e_1=interpolation_field_source.get(
+                interpolation_attributes.POS_ON_TPLANE_E_X
+            ),
+            pos_on_tplane_e_2=interpolation_field_source.get(
+                interpolation_attributes.POS_ON_TPLANE_E_Y
+            ),
+        ),
+        least_squares_state=tracer_advection_states.AdvectionLeastSquaresState(
+            lsq_pseudoinv_1=lsq_pseudoinv[:, 0, :],
+            lsq_pseudoinv_2=lsq_pseudoinv[:, 1, :],
+        ),
+        metric_state=tracer_advection_states.AdvectionMetricState(
+            # Shallow atmosphere: the deep-atmosphere modification factors are 1, as
+            # in ICON with 'ldeepatmo = .FALSE.' (mo_nonhydro_state.f90 initialises
+            # them to 1 and only mo_vertical_grid.f90 overwrites them, guarded by
+            # 'ldeepatmo'). Using the factory's deep-atmosphere values here would be
+            # inconsistent with the dycore, which has no deep-atmosphere mode, and
+            # with the airmass (rho * ddqz_z_full * deepatmo_vol) that tracer
+            # advection divides by.
+            deepatmo_divh=deepatmo_shallow_factor,
+            deepatmo_divzl=deepatmo_shallow_factor,
+            deepatmo_divzu=deepatmo_shallow_factor,
+            ddqz_z_full=static_field_factories.metrics.get(metrics_attributes.DDQZ_Z_FULL),
+        ),
+    )
+
+
 def initialize_granules(
     *,
     config: driver_config.ExperimentConfig,
@@ -484,43 +536,16 @@ def initialize_granules(
 
     tracer_advection_granule: tracer_advection.Advection | None = None
     if config.tracer_advection is not None:
-        lsq_pseudoinv = interpolation_field_source.get(interpolation_attributes.LSQ_PSEUDOINV)
-        deepatmo_shallow_factor = data_alloc.constant_field(
-            grid, 1.0, dims.KDim, allocator=model_backends.get_allocator(backend)
+        tracer_states = create_tracer_advection_states(
+            static_field_factories, grid, model_backends.get_allocator(backend)
         )
         tracer_advection_granule = tracer_advection.convert_config_to_advection(
             grid=grid,
             backend=backend,
             config=config.tracer_advection,
-            interpolation_state=tracer_advection_states.AdvectionInterpolationState(
-                geofac_div=interpolation_field_source.get(interpolation_attributes.GEOFAC_DIV),
-                rbf_vec_coeff_e=interpolation_field_source.get(
-                    interpolation_attributes.RBF_VEC_COEFF_E
-                ),
-                pos_on_tplane_e_1=interpolation_field_source.get(
-                    interpolation_attributes.POS_ON_TPLANE_E_X
-                ),
-                pos_on_tplane_e_2=interpolation_field_source.get(
-                    interpolation_attributes.POS_ON_TPLANE_E_Y
-                ),
-            ),
-            least_squares_state=tracer_advection_states.AdvectionLeastSquaresState(
-                lsq_pseudoinv_1=lsq_pseudoinv[:, 0, :],
-                lsq_pseudoinv_2=lsq_pseudoinv[:, 1, :],
-            ),
-            metric_state=tracer_advection_states.AdvectionMetricState(
-                # Shallow atmosphere: the deep-atmosphere modification factors are 1, as
-                # in ICON with 'ldeepatmo = .FALSE.' (mo_nonhydro_state.f90 initialises
-                # them to 1 and only mo_vertical_grid.f90 overwrites them, guarded by
-                # 'ldeepatmo'). Using the factory's deep-atmosphere values here would be
-                # inconsistent with the dycore, which has no deep-atmosphere mode, and
-                # with the airmass (rho * ddqz_z_full * deepatmo_vol) that tracer
-                # advection divides by.
-                deepatmo_divh=deepatmo_shallow_factor,
-                deepatmo_divzl=deepatmo_shallow_factor,
-                deepatmo_divzu=deepatmo_shallow_factor,
-                ddqz_z_full=metrics_field_source.get(metrics_attributes.DDQZ_Z_FULL),
-            ),
+            interpolation_state=tracer_states.interpolation_state,
+            least_squares_state=tracer_states.least_squares_state,
+            metric_state=tracer_states.metric_state,
             edge_params=edge_geometry,
             cell_params=cell_geometry,
             exchange=exchange,
@@ -611,6 +636,7 @@ def initialize_granules(
 class GlobalGranules:
     diffusion: diffusion_global.DiffusionGlobal | None = None
     solve_nonhydro: solve_nonhydro_global.SolveNonhydroGlobal | None = None
+    tracer_advection: tracer_advection_global.TracerAdvectionGlobal | None = None
 
 
 class HaloExchange(enum.StrEnum):
@@ -738,21 +764,29 @@ def initialize_global_granules(
     """
     jnp = jax_utils.import_jax().numpy
     states = create_dynamics_states(static_field_factories)
+    transport_tracers = config.tracer_advection is not None and bool(config.tracer_config)
+    tracer_states = (
+        create_tracer_advection_states(static_field_factories, grid, allocator=None)
+        if transport_tracers
+        else None
+    )
     if grid.config.distributed:
         # The factories need the skip values at the rank rim. Embedded field operators cannot
         # restrict a neighbor table that has them, and the global steps never read that far.
         grid = icon_grid.with_skip_values_replaced(grid)
     if layout is not None:
         states = pad_fields(states, layout)
+        tracer_states = pad_fields(tracer_states, layout)
         grid = padded_grid(grid, layout)
     states = jax_utils.to_jax(states)
+    tracer_states = jax_utils.to_jax(tracer_states)
     jax_grid = dataclasses.replace(
         grid, connectivities={k: jax_utils.to_jax(v) for k, v in grid.connectivities.items()}
     )
     jax_vertical_grid = v_grid.VerticalGrid(
         config=vertical_grid.config,
-        vct_a=jax_utils.to_jax(vertical_grid.vct_a),  # type: ignore[attr-defined]  # mypy sees the InitVar, not the property
-        vct_b=jax_utils.to_jax(vertical_grid.vct_b),  # type: ignore[attr-defined]
+        vct_a=jax_utils.to_jax(vertical_grid.vct_a),
+        vct_b=jax_utils.to_jax(vertical_grid.vct_b),
     )
 
     solve_nonhydro_granule = None
@@ -784,7 +818,24 @@ def initialize_global_granules(
             ndyn_substeps=config.driver.ndyn_substeps,
         )
 
-    return GlobalGranules(diffusion=diffusion_granule, solve_nonhydro=solve_nonhydro_granule)
+    tracer_advection_granule = None
+    if tracer_states is not None:
+        assert config.tracer_advection is not None
+        tracer_advection_granule = tracer_advection_global.TracerAdvectionGlobal(
+            grid=jax_grid,
+            config=config.tracer_advection,
+            interpolation_state=tracer_states.interpolation_state,
+            least_squares_state=tracer_states.least_squares_state,
+            metric_state=tracer_states.metric_state,
+            edge_params=states.edge_geometry,
+            allocator=jnp,
+        )
+
+    return GlobalGranules(
+        diffusion=diffusion_granule,
+        solve_nonhydro=solve_nonhydro_granule,
+        tracer_advection=tracer_advection_granule,
+    )
 
 
 def spinup_second_order_divdamp_factor(

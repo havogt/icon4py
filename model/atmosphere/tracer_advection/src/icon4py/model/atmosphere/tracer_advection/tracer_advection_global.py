@@ -106,6 +106,10 @@ class TracerAdvectionGlobal:
             "vertical_limiter": config.vertical_advection_limiter.value,
         }
 
+    def air_mass(self, rho: fa.CellKField[ta.wpfloat]) -> fa.CellKField[ta.wpfloat]:
+        """The mass of air per cell area in each layer, as `run` takes `airmass_now/new`."""
+        return rho * self._static_args["ddqz_z_full"]
+
     def run(
         self,
         *,

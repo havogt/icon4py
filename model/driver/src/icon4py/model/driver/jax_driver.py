@@ -9,8 +9,8 @@
 The driver time loop with the single-field-operator global steps under jax.jit.
 
 The setup is the numpy one of `driver.Icon4pyDriver`; the states are converted to JAX once and
-threaded through the stateless `SolveNonhydroGlobal` and `DiffusionGlobal` steps. No tracer
-transport, no physics, no output.
+threaded through the stateless `SolveNonhydroGlobal`, `DiffusionGlobal` and
+`TracerAdvectionGlobal` steps. The tracers are passive: no physics, no output.
 
 On a distributed grid the steps return their outputs on the owned points only. Between two jitted
 steps the driver builds new local fields from them, with the halo filled by a halo exchange on the
@@ -39,7 +39,12 @@ from icon4py.model.atmosphere.dycore import dycore_states, solve_nonhydro_global
 from icon4py.model.common import dimension as dims
 from icon4py.model.common.decomposition import definitions as decomposition_defs
 from icon4py.model.common.grid import base as grid_base
-from icon4py.model.common.states import nonhydro_states, prognostic_state as prognostics
+from icon4py.model.common.states import (
+    nonhydro_states,
+    prognostic_state as prognostics,
+    tracer_prep_adv_states,
+    tracer_states,
+)
 from icon4py.model.common.utils import data_allocation as data_alloc
 from icon4py.model.driver import driver, driver_states, driver_utils, jax_utils, spmd_layout
 
@@ -76,6 +81,13 @@ _DYCORE_HALO_READS = frozenset(
     }
 )
 _DIFFUSION_HALO_READS = frozenset({"prognostic.vn", "prognostic.w", "prognostic.theta_v"})
+#: The dynamical core's fluxes for tracer advection, by the name `TracerPrepAdvState` gives them.
+_TRACER_PREP_ADV = {
+    "vn_traj": "vn_traj",
+    "mass_flx_me": "mass_flx_me",
+    "mass_flx_ic": "dynamical_vertical_mass_flux_at_cells_on_half_levels",
+}
+_TRACER_ADVECTION_HALO_READS = frozenset(f"prep_adv.{name}" for name in _TRACER_PREP_ADV.values())
 
 
 def _shallow_dict(obj: Any) -> dict[str, Any]:
@@ -258,19 +270,30 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         self._traced_tables: dict[str, Any] | None = None
         if self.io_monitor is not None or self.tendencies is not None:
             raise NotImplementedError("The JAX driver does not write output or apply tendencies.")
-        if self.config.tracer_config is not None and self.config.tracer_config.nactive > 0:
-            raise NotImplementedError("The JAX driver does not transport tracers.")
+        if any(
+            getattr(self.config, name) is not None
+            for name in ("graupel", "muphys", "tmx", "surface")
+        ):
+            raise NotImplementedError("The JAX driver runs no physics.")
+        self._tracer_names = (
+            self.config.tracer_config.active_names if self.config.tracer_config is not None else ()
+        )
+        if self._tracer_names and global_granules.tracer_advection is None:
+            raise ValueError("Active tracers need a tracer advection configuration.")
         self.global_granules = global_granules
         self.halo_exchange = driver_utils.HaloExchange(halo_exchange)
         self.exchange_read_fields_only = exchange_read_fields_only
         # passed as arguments, the static fields are not constants of the jitted programs
         self._constants = {
-            name: _constants_of(granule) if constants_as_arguments else None
+            name: _constants_of(granule) if constants_as_arguments and granule is not None else None
             for name, granule in (
                 ("solve_nonhydro", global_granules.solve_nonhydro),
                 ("diffusion", global_granules.diffusion),
+                ("tracer_advection", global_granules.tracer_advection),
             )
         }
+        # the Godunov splitting order, flipped once per time step for all tracers as in ICON
+        self._even_timestep = False
         self._traces = 0
         self.jit_time_step = jit_time_step
         if jit_time_step and self._distributed and layout is None:
@@ -570,23 +593,61 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             self._jitted[key] = self._jax.jit(run)
         return self._jitted[key]
 
-    def _time_step(
+    def _jitted_tracer_advection(self, dtime: float, even_timestep: bool) -> Callable:
+        key = ("tracer_advection", dtime, even_timestep)
+        if key not in self._jitted:
+            advection = self.global_granules.tracer_advection
+            assert advection is not None
+
+            def run(
+                constants: dict | None,
+                rho_now: gtx.Field,
+                rho_new: gtx.Field,
+                prep_adv: dict,
+                tracers: dict,
+            ) -> dict:
+                self._traces += 1
+                bound = advection if constants is None else _with_constants(advection, constants)
+                tracer_prep_adv = tracer_prep_adv_states.TracerPrepAdvState(
+                    **{name: prep_adv[field] for name, field in _TRACER_PREP_ADV.items()}
+                )
+                airmass_now = bound.air_mass(rho_now)
+                airmass_new = bound.air_mass(rho_new)
+                return {
+                    name: bound.run(
+                        p_tracer_now=tracer,
+                        airmass_now=airmass_now,
+                        airmass_new=airmass_new,
+                        prep_adv=tracer_prep_adv,
+                        dtime=dtime,
+                        even_timestep=even_timestep,
+                    )[0]
+                    for name, tracer in tracers.items()
+                }
+
+            self._jitted[key] = self._jax.jit(run)
+        return self._jitted[key]
+
+    def _time_step(  # noqa: PLR0917 [too-many-positional-arguments]  # positional through jax.jit
         self,
         constants: dict[str, Any],
         prognostic: dict,
         diagnostic: dict,
         intermediate: dict,
         prep_adv: dict,
+        tracers: dict,
         *,
         key: tuple,
-    ) -> tuple[dict, dict, dict, dict]:
+    ) -> tuple[dict, dict, dict, dict, dict]:
         (
             at_initial_timestep,
             substep_dtime,
             ndyn_substeps_var,
             second_order_divdamp_factor,
             dtime,
+            even_timestep,
         ) = key
+        rho_now = prognostic["rho"]
         if self._layout is not None:
             self._traced_tables = constants["halo_tables"]
         diagnostic_state = _diagnostic_from_dict(diagnostic)
@@ -624,9 +685,13 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                     )
                 ),
                 reads=self._reads(
-                    _DYCORE_HALO_READS | _DIFFUSION_HALO_READS
-                    if at_last_substep
-                    else _DYCORE_HALO_READS
+                    _DYCORE_HALO_READS
+                    | (
+                        _DIFFUSION_HALO_READS
+                        | (_TRACER_ADVECTION_HALO_READS if tracers else frozenset())
+                        if at_last_substep
+                        else frozenset()
+                    )
                 ),
             )
             prognostic, diagnostic, intermediate, prep_adv = (
@@ -642,7 +707,19 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 {"prognostic": self._jitted_diffusion(dtime)(constants["diffusion"], prognostic)},
                 reads=self._reads(_DYCORE_HALO_READS),
             )["prognostic"]
-        return prognostic, _diagnostic_to_dict(diagnostic_state), intermediate, prep_adv
+        if tracers:
+            tracers = self._with_halo(
+                {
+                    "tracers": self._jitted_tracer_advection(dtime, even_timestep)(
+                        constants["tracer_advection"],
+                        rho_now,
+                        prognostic["rho"],
+                        prep_adv,
+                        tracers,
+                    )
+                }
+            )["tracers"]
+        return prognostic, _diagnostic_to_dict(diagnostic_state), intermediate, prep_adv, tracers
 
     def _jitted_time_step(self, key: tuple) -> Callable:
         if ("time_step", *key) not in self._jitted:
@@ -689,13 +766,15 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                     constants,
                     is_leaf=lambda x: isinstance(x, gtx_common.Connectivity),
                 )
-                prognostic, diagnostic, intermediate, prep_adv = self._time_step(
+                prognostic, diagnostic, intermediate, prep_adv, tracers = self._time_step(
                     constants, *state, key=key
                 )
                 diagnostic["max_vertical_cfl"] = jax.lax.pmax(
                     diagnostic["max_vertical_cfl"], _MESH_AXIS
                 )
-                return jax.tree_util.tree_leaves((prognostic, diagnostic, intermediate, prep_adv))
+                return jax.tree_util.tree_leaves(
+                    (prognostic, diagnostic, intermediate, prep_adv, tracers)
+                )
 
             self._jitted[("spmd_time_step", *key)] = jax.jit(
                 jax.shard_map(
@@ -735,7 +814,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             return tree
         return self._jax.tree_util.tree_map(lambda x: x.addressable_shards[0].data, tree)
 
-    def _prepare(self, ds: driver_states.DriverStates) -> tuple[dict, dict, dict, dict, dict]:
+    def _prepare(self, ds: driver_states.DriverStates) -> tuple[dict, dict, dict, dict, dict, dict]:
         """The state of `ds` and the constants as the jitted steps take them."""
         assert ds.solve_nonhydro_diagnostic is not None
         assert ds.prep_advection_prognostic is not None
@@ -745,6 +824,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             "prognostic": {k: getattr(ds.prognostics.current, k) for k in _PROGNOSTICS},
             "diagnostic": ds.solve_nonhydro_diagnostic,
             "prep_adv": ds.prep_advection_prognostic,
+            "tracers": {name: getattr(ds.tracers.current, name) for name in self._tracer_names},
         }
         if self._layout is not None:
             state = driver_utils.pad_fields(state, self._layout)
@@ -752,6 +832,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             "prognostic": {k: jax_utils.to_jax(v) for k, v in state["prognostic"].items()},
             "diagnostic": _diagnostic_to_dict(jax_utils.to_jax(state["diagnostic"])),
             "prep_adv": _shallow_dict(jax_utils.to_jax(state["prep_adv"])),
+            "tracers": {k: jax_utils.to_jax(v) for k, v in state["tracers"].items()},
         }
         intermediate = solve_nonhydro.initial_intermediate_state()._asdict()
         constants = self._constants
@@ -775,13 +856,20 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             )
         else:
             state = self._with_halo(state)
-        return state["prognostic"], state["diagnostic"], intermediate, state["prep_adv"], constants
+        return (
+            state["prognostic"],
+            state["diagnostic"],
+            intermediate,
+            state["prep_adv"],
+            state["tracers"],
+            constants,
+        )
 
     def time_integration(self, ds: driver_states.DriverStates) -> None:
         assert self.config.nonhydrostatic is not None
         time_vars = self.model_time_variables
 
-        prognostic, diagnostic, intermediate, prep_adv, constants = self._prepare(ds)
+        prognostic, diagnostic, intermediate, prep_adv, tracers, constants = self._prepare(ds)
         diagnostic_state = _diagnostic_from_dict(diagnostic)
 
         wall_clock_starting_time = datetime.datetime.now()
@@ -799,6 +887,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 time_vars.ndyn_substeps_var,
                 second_order_divdamp_factor,
                 float(time_vars.dtime_in_seconds),
+                self._even_timestep,
             )
             args = (
                 constants,
@@ -806,11 +895,14 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                 _diagnostic_to_dict(diagnostic_state),
                 intermediate,
                 prep_adv,
+                tracers,
             )
             if self._layout is not None:
                 spmd_step, state_treedef = self._jitted_spmd_time_step(key, args)
-                prognostic, diagnostic, intermediate, prep_adv = self._jax.tree_util.tree_unflatten(
-                    state_treedef, spmd_step(*self._jax.tree_util.tree_leaves(args))
+                prognostic, diagnostic, intermediate, prep_adv, tracers = (
+                    self._jax.tree_util.tree_unflatten(
+                        state_treedef, spmd_step(*self._jax.tree_util.tree_leaves(args))
+                    )
                 )
             else:
                 if self.jit_time_step:
@@ -818,16 +910,19 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                     step = self._jitted_time_step(key)
                 else:
                     step = functools.partial(self._time_step, key=key)
-                prognostic, diagnostic, intermediate, prep_adv = step(*args)
+                prognostic, diagnostic, intermediate, prep_adv, tracers = step(*args)
             diagnostic_state = _diagnostic_from_dict(diagnostic)
             self._jax.block_until_ready(prognostic["vn"].ndarray)
 
             time_vars.is_first_step_in_simulation = False
+            if tracers:
+                self._even_timestep = not self._even_timestep
             self._adjust_ndyn_substeps_var(diagnostic_state)
             if self.on_step_end is not None:
                 self.on_step_end(time_step, prognostics.PrognosticState(**self._local(prognostic)))
 
         ds.prognostics.first = prognostics.PrognosticState(**self._local(prognostic))  # type: ignore[method-assign]  # Pair.first is a named_property with a setter
+        ds.tracers.first = tracer_states.TracerState(**self._local(tracers))  # type: ignore[method-assign]
         log.info(
             f"JAX time loop: {time_vars.n_time_steps} steps in "
             f"{(datetime.datetime.now() - wall_clock_starting_time).total_seconds():.1f} s, "

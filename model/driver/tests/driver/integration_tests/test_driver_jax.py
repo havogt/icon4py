@@ -15,7 +15,7 @@ import pytest
 
 from icon4py.model.common import model_backends
 from icon4py.model.common.decomposition import definitions as decomp_defs
-from icon4py.model.common.states import prognostic_state as prognostics
+from icon4py.model.common.states import prognostic_state as prognostics, tracer_states
 from icon4py.model.driver import config as driver_config, driver, driver_utils
 from icon4py.model.testing import (
     datatest_utils as dt_utils,
@@ -42,13 +42,22 @@ _FIELDS = ("vn", "w", "rho", "exner", "theta_v")
             "2008-09-01T00:00:00.000",
             ("2008-09-01T00:05:00.000", "2008-09-01T00:10:00.000", "2008-09-01T00:15:00.000"),
         ),
+        (test_defs.Experiments.GAUSS3D, "2001-01-01T00:00:00.000", ("2001-01-01T00:00:04.000",)),
+        pytest.param(
+            test_defs.Experiments.EXCLAIM_APE_AES,
+            "2008-09-01T00:00:00.000",
+            ("2008-09-01T00:05:00.000",),
+            marks=pytest.mark.xfail(raises=NotImplementedError, strict=True),
+        ),
     ],
 )
 @pytest.mark.parametrize("jit_time_step", [False, True])
+@pytest.mark.parametrize("passive_qv", [False, True])
 def test_driver_jax(
     experiment_description: test_defs.ExperimentDescription,
     timeloop_date_init: str,
     step_dates_exit: tuple[str, ...],
+    passive_qv: bool,
     *,
     tmp_path: pathlib.Path,
     process_props: decomp_defs.ProcessProperties,
@@ -73,6 +82,11 @@ def test_driver_jax(
             "end_of_simulation": len(step_dates_exit),
         }
     )
+    if passive_qv:
+        if config.tracer_config:
+            pytest.skip("the experiment transports its own tracers.")
+        # without physics, qv does not feed back on the dynamics: the savepoints still hold
+        config = config.with_overrides(tracer_config=tracer_states.TracerConfig(qv=True))
     grid_manager = driver_utils.create_grid_manager(
         grid_file_path=grid_file_path,
         vertical_grid_config=config.vertical_grid,
@@ -116,6 +130,21 @@ def test_driver_jax(
                 for name in _FIELDS
             )
         )
+    tracers = {tracer.name: tracer.field.asnumpy() for tracer in ds.tracers.current.active_fields()}
+    if passive_qv:
+        assert tuple(tracers) == ("qv",)
+        assert np.all(np.isfinite(tracers["qv"])) and np.max(tracers["qv"]) > 0.0
+    else:
+        exit_savepoint = data_provider.from_savepoint_time_step_exit(date=step_dates_exit[-1])
+        for name, tracer in tracers.items():
+            atol, rtol = tolerances[name]
+            test_utils.assert_dallclose(
+                tracer,
+                getattr(exit_savepoint, name)().asnumpy(),
+                atol=atol,
+                rtol=rtol,
+                err_msg=name,
+            )
     for step, date in enumerate(step_dates_exit):
         for name in _FIELDS:
             atol, rtol = tolerances[name]
