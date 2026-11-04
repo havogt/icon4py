@@ -78,9 +78,7 @@ def _check_against_savepoints(outputs, inputs, init_savepoint, exit_savepoint):
     test_utils.assert_dallclose(
         rain + ice + snow + graupel, exit_savepoint.pr().asnumpy(), atol=1e-10
     )
-    test_utils.assert_dallclose(
-        pre.asnumpy()[:, -1], exit_savepoint.ufcs().asnumpy(), atol=1e-10
-    )
+    test_utils.assert_dallclose(pre.asnumpy()[:, -1], exit_savepoint.ufcs().asnumpy(), atol=1e-10)
 
 
 @pytest.mark.datatest
