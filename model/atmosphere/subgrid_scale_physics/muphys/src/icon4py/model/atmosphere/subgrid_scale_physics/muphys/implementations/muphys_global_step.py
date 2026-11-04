@@ -278,7 +278,9 @@ def _precip_and_t_branchless(  # noqa: PLR0917 [too-many-positional-arguments]
 
 
 @gtx.field_operator
-def _power_of_nonnegative(x: fa.CellKField[ta.wpfloat], exponent: ta.wpfloat) -> fa.CellKField[ta.wpfloat]:
+def _power_of_nonnegative(
+    x: fa.CellKField[ta.wpfloat], exponent: ta.wpfloat
+) -> fa.CellKField[ta.wpfloat]:
     # 0**exponent is 0 for a positive exponent, but its derivative is infinite, which `where`
     # turns into NaN in the gradient of the branch it discards.
     positive = x > wpfloat(0.0)
@@ -584,7 +586,6 @@ def _vapor_x_snow_guarded(  # noqa: PLR0917 [too-many-positional-arguments]
     return where((qs > GraupelConsts.qmin), maximum(result, -qs / dt), wpfloat(0.0))
 
 
-
 @gtx.field_operator
 def _snow_lambda_guarded(
     rho_s: fa.CellKField[ta.wpfloat],
@@ -605,7 +606,6 @@ def _snow_lambda_guarded(
 
     has_snow = rho_s > GraupelConsts.qmin
     return where(has_snow, power((A2 * ns / where(has_snow, rho_s, wpfloat(1.0))), BX), LMD_0)
-
 
 
 @gtx.field_operator
@@ -651,7 +651,10 @@ def _cloud_to_rain_guarded(
         + x
         * (AesGraupelConsts.a_ac_3 + x * (AesGraupelConsts.a_ac_4 + x * AesGraupelConsts.a_ac_5))
     )
-    tau = maximum(TAU_MIN, minimum(wpfloat(1.0) - qc / where(qc + qr > wpfloat(0.0), qc + qr, wpfloat(1.0)), TAU_MAX))
+    tau = maximum(
+        TAU_MIN,
+        minimum(wpfloat(1.0) - qc / where(qc + qr > wpfloat(0.0), qc + qr, wpfloat(1.0)), TAU_MAX),
+    )
     phi = power(tau, B_PHI)
     phi = A_PHI * phi * power(wpfloat(1.0) - phi, wpfloat(3.0))
     xau = (
@@ -661,7 +664,6 @@ def _cloud_to_rain_guarded(
     )
     xac = ac_kernel * qc * qr * power(tau / (tau + C_PHI), wpfloat(4.0))
     return where((qc > QMIN_AC) & (t > GraupelConsts.tfrz_hom), xau + xac, wpfloat(0.0))
-
 
 
 @gtx.field_operator
@@ -750,9 +752,13 @@ def _q_t_update_guarded(  # noqa: PLR0917 [too-many-positional-arguments]
         wpfloat(0.0),
     )
     i2g = where(
-        t_below_tmelt & is_sig_present, _ice_to_graupel_guarded(rho, q.r, q.g, q.i, x_ice), wpfloat(0.0)
+        t_below_tmelt & is_sig_present,
+        _ice_to_graupel_guarded(rho, q.r, q.g, q.i, x_ice),
+        wpfloat(0.0),
     )
-    s2g = where(t_below_tmelt & is_sig_present, _snow_to_graupel_guarded(t, rho, q.c, q.s), wpfloat(0.0))
+    s2g = where(
+        t_below_tmelt & is_sig_present, _snow_to_graupel_guarded(t, rho, q.c, q.s), wpfloat(0.0)
+    )
     r2g = where(
         t_below_tmelt & is_sig_present,
         _rain_to_graupel(t, rho, q.c, q.r, q.i, q.s, m_ice, dvsw, dt),
@@ -781,8 +787,12 @@ def _q_t_update_guarded(  # noqa: PLR0917 [too-many-positional-arguments]
 
     UNUSED = broadcast(wpfloat(0.0), (dims.CellDim, dims.KDim))
     EVERYWHERE = broadcast(True, (dims.CellDim, dims.KDim))
-    sink_v, v2s, v2i, v2g, _ = _sink_saturation_guarded((v2s, v2i, v2g, UNUSED), q.v, dt, where_=EVERYWHERE)
-    sink_c, c2r, c2s, c2i, c2g = _sink_saturation_guarded((c2r, c2s, c2i, c2g), q.c, dt, where_=EVERYWHERE)
+    sink_v, v2s, v2i, v2g, _ = _sink_saturation_guarded(
+        (v2s, v2i, v2g, UNUSED), q.v, dt, where_=EVERYWHERE
+    )
+    sink_c, c2r, c2s, c2i, c2g = _sink_saturation_guarded(
+        (c2r, c2s, c2i, c2g), q.c, dt, where_=EVERYWHERE
+    )
     sink_r, r2v, r2g, _, __ = _sink_saturation_guarded(
         (r2v, r2g, UNUSED, UNUSED), q.r, dt, where_=EVERYWHERE
     )
@@ -833,8 +843,6 @@ def _q_t_update_guarded(  # noqa: PLR0917 [too-many-positional-arguments]
         / cv
     )
     return Q(v=qv, c=qc, r=qr, s=qs, i=qi, g=qg), t
-
-
 
 
 @gtx.field_operator
