@@ -68,7 +68,7 @@ def _surface_and_hydrostatic_pressure(
     # `compute_pressure.compute_surface_and_hydrostatic_pressure`, with the surface pressure as
     # the scan's start instead of a flag in its carry: a scan that branches on a carried value
     # runs per column in embedded execution, which JAX cannot trace
-    pressure, pressure_ifc_on_model_levels = scan(
+    pressure, pressure_ifc_on_model_levels = scan(  # type: ignore[misc]  # the scan of a tuple carry returns a tuple
         _pressure_pass,
         range=(dims.KDim, 0, num_levels),
         forward=False,
