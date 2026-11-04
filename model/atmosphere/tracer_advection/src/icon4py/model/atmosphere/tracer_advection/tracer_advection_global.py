@@ -99,7 +99,7 @@ class TracerAdvectionGlobal:
         }
         self._scalar_args: dict[str, Any] = {
             "num_levels": self._num_levels,
-            "dbl_eps": float(constants.DBL_EPS),
+            "wp_eps": float(constants.WP_EPS),
             "horizontal_advection_type": config.horizontal_advection_type.value,
             "horizontal_limiter": config.horizontal_advection_limiter.value,
             "vertical_advection_type": config.vertical_advection_type.value,

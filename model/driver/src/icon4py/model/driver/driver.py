@@ -25,7 +25,6 @@ from icon4py.model.atmosphere.dycore.stencils import compute_airmass
 from icon4py.model.atmosphere.tracer_advection import tracer_advection_states
 from icon4py.model.common import (
     dimension as dims,
-    initial_condition,
     model_backends,
     model_options,
     prescribed_tendencies,
@@ -40,6 +39,7 @@ from icon4py.model.common.grid import (
     vertical as v_grid,
 )
 from icon4py.model.common.grid.icon import IconGrid
+from icon4py.model.common.initial_condition import apply as ic_apply
 from icon4py.model.common.interpolation import interpolation_attributes as intp_attr
 from icon4py.model.common.io import io as common_io
 from icon4py.model.common.metrics import metrics_attributes as metrics_attr
@@ -551,7 +551,7 @@ class Icon4pyDriver:
 
         # reset max_vertical_cfl to zero
         solve_nonhydro_diagnostic_state.max_vertical_cfl = data_alloc.scalar_like_array(
-            0.0, self._allocator
+            ta.wpfloat(0.0), self._allocator
         )
 
     def _diffuse_before_time_loop(
@@ -615,7 +615,7 @@ class Icon4pyDriver:
             not self.config.driver.apply_extra_second_order_divdamp
             or elapsed_time_in_seconds > spinup_cutoff
         ):
-            return ta.wpfloat("0.0")
+            return ta.wpfloat(0.0)
 
         return driver_utils.spinup_second_order_divdamp_factor(
             elapsed_time_in_seconds=elapsed_time_in_seconds,
@@ -851,6 +851,78 @@ def initialize_driver(
     return icon4py_driver
 
 
+def initialize_driver_states(
+    icon4py_driver: Icon4pyDriver,
+    allocator: gtx.typing.Allocator,
+    *,
+    validate_granules: bool = True,
+) -> driver_states.DriverStates:
+    """Build and validate the initial driver states from a freshly initialized driver.
+
+    This wraps the creation of the prognostic/tracer/nonhydro/diagnostic states, the
+    application of the initial condition, the assembly of ``DriverStates``, and the
+    consistency check that precedes the time loop.
+    """
+    prognostic_state_now = prognostics.initialize_prognostic_state(
+        grid=icon4py_driver.grid,
+        allocator=allocator,
+    )
+    tracer_state_now = tracer_states.initialize_tracer_state(
+        grid=icon4py_driver.grid,
+        allocator=allocator,
+        tracer_config=icon4py_driver.config.tracer_config,
+    )
+    solve_nonhydro_diagnostic_state = (
+        nonhydro_states.initialize_solve_nonhydro_diagnostic_state(
+            grid=icon4py_driver.grid, allocator=allocator
+        )
+        if icon4py_driver.config.nonhydrostatic is not None
+        else None
+    )
+    tracer_prep_adv_state = (
+        prep_adv_states.initialize_tracer_prep_adv_state(
+            grid=icon4py_driver.grid, allocator=allocator
+        )
+        if icon4py_driver.config.tracer_advection is not None
+        else None
+    )
+    ic_apply(
+        config=driver_utils.make_ic_config_ctx(icon4py_driver.config),
+        grid=icon4py_driver.grid,
+        static_fields=icon4py_driver.static_field_factories,
+        prognostic_state_now=prognostic_state_now,
+        tracer_state_now=tracer_state_now,
+        solve_nonhydro_diagnostic_state=solve_nonhydro_diagnostic_state,
+        tracer_prep_adv_state=tracer_prep_adv_state,
+        backend=icon4py_driver.backend,
+        exchange=icon4py_driver.exchange,
+        global_reductions=icon4py_driver.global_reductions,
+    )
+    diagnostic_state = diagnostics.initialize_diagnostic_state(
+        grid=icon4py_driver.grid, allocator=allocator
+    )
+    ds = driver_states.assemble_driver_states(
+        grid=icon4py_driver.grid,
+        allocator=allocator,
+        backend=icon4py_driver.backend,
+        exchange=icon4py_driver.exchange,
+        static_fields=icon4py_driver.static_field_factories,
+        prognostic_state_now=prognostic_state_now,
+        tracer_state_now=tracer_state_now,
+        diagnostic_state=diagnostic_state,
+        experiment_config=icon4py_driver.config,
+        solve_nonhydro_diagnostic_state=solve_nonhydro_diagnostic_state,
+        tracer_prep_adv_state=tracer_prep_adv_state,
+    )
+    if validate_granules:
+        driver_utils.validate_granule_state_consistency(
+            config=icon4py_driver.config,
+            granules=icon4py_driver.granules,
+            states=ds,
+        )
+    return ds
+
+
 def run_driver(
     *,
     config: driver_config.ExperimentConfig,
@@ -882,65 +954,10 @@ def run_driver(
         jax_spmd_transport=jax_spmd_transport,
     )
     allocator = model_backends.get_allocator(backend)
-    prognostic_state_now = prognostics.initialize_prognostic_state(
-        grid=icon4py_driver.grid,
-        allocator=allocator,
-    )
-    tracer_state_now = tracer_states.initialize_tracer_state(
-        grid=icon4py_driver.grid,
-        allocator=allocator,
-        tracer_config=icon4py_driver.config.tracer_config,
-    )
-    solve_nonhydro_diagnostic_state = (
-        nonhydro_states.initialize_solve_nonhydro_diagnostic_state(
-            grid=icon4py_driver.grid, allocator=allocator
-        )
-        if icon4py_driver.config.nonhydrostatic is not None
-        else None
-    )
-    tracer_prep_adv_state = (
-        prep_adv_states.initialize_tracer_prep_adv_state(
-            grid=icon4py_driver.grid, allocator=allocator
-        )
-        if icon4py_driver.config.tracer_advection is not None
-        else None
-    )
-    initial_condition.create(
-        config=icon4py_driver.config.initial_condition,
-        vertical_config=icon4py_driver.config.vertical_grid,
-        grid=icon4py_driver.grid,
-        static_fields=icon4py_driver.static_field_factories,
-        prognostic_state_now=prognostic_state_now,
-        tracer_state_now=tracer_state_now,
-        solve_nonhydro_diagnostic_state=solve_nonhydro_diagnostic_state,
-        tracer_prep_adv_state=tracer_prep_adv_state,
-        backend=icon4py_driver.backend,
-        exchange=icon4py_driver.exchange,
-        global_reductions=icon4py_driver.global_reductions,
-    )
-    diagnostic_state = diagnostics.initialize_diagnostic_state(
-        grid=icon4py_driver.grid, allocator=allocator
-    )
-    ds = driver_states.assemble_driver_states(
-        grid=icon4py_driver.grid,
-        allocator=allocator,
-        backend=icon4py_driver.backend,
-        exchange=icon4py_driver.exchange,
-        static_fields=icon4py_driver.static_field_factories,
-        prognostic_state_now=prognostic_state_now,
-        tracer_state_now=tracer_state_now,
-        diagnostic_state=diagnostic_state,
-        experiment_config=icon4py_driver.config,
-        solve_nonhydro_diagnostic_state=solve_nonhydro_diagnostic_state,
-        tracer_prep_adv_state=tracer_prep_adv_state,
+    ds = initialize_driver_states(
+        icon4py_driver=icon4py_driver, allocator=allocator, validate_granules=not jax
     )
     if jax:
         icon4py_driver.on_step_end = on_step_end  # type: ignore[attr-defined]  # only the JAX driver has the hook
-    else:
-        driver_utils.validate_granule_state_consistency(
-            config=icon4py_driver.config,
-            granules=icon4py_driver.granules,
-            states=ds,
-        )
     icon4py_driver.time_integration(ds)
     return ds, icon4py_driver

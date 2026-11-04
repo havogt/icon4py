@@ -943,7 +943,7 @@ def vertically_implicit_solver_at_corrector_step(
     next_theta_v: fa.CellKField[ta.wpfloat],
     dynamical_vertical_mass_flux_at_cells_on_half_levels: fa.CellKHalfField[ta.wpfloat],
     dynamical_vertical_volumetric_flux_at_cells_on_half_levels: fa.CellKHalfField[ta.wpfloat],
-    exner_dynamical_increment: fa.CellKField[ta.wpfloat],
+    exner_dynamical_increment: fa.CellKField[vpfloat],
     geofac_div: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], ta.wpfloat],
     mass_flux_at_edges_on_model_levels: fa.EdgeKField[ta.wpfloat],
     theta_v_flux_at_edges_on_model_levels: fa.EdgeKField[ta.wpfloat],

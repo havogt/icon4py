@@ -9,26 +9,16 @@ import gt4py.next as gtx
 from gt4py.next.experimental import concat_where
 
 from icon4py.model.atmosphere.diffusion.diffusion_utils import _scale_k
-from icon4py.model.atmosphere.diffusion.stencils.apply_diffusion_to_theta_and_exner import (
+from icon4py.model.atmosphere.diffusion.stencils.diffusion_global_operators import (
     _apply_diffusion_to_theta_and_exner,
-)
-from icon4py.model.atmosphere.diffusion.stencils.apply_nabla2_and_nabla4_global_to_vn import (
     _apply_nabla2_and_nabla4_global_to_vn,
-)
-from icon4py.model.atmosphere.diffusion.stencils.apply_nabla2_to_w import _apply_nabla2_to_w
-from icon4py.model.atmosphere.diffusion.stencils.apply_nabla2_to_w_in_upper_damping_layer import (
+    _apply_nabla2_to_w,
     _apply_nabla2_to_w_in_upper_damping_layer,
-)
-from icon4py.model.atmosphere.diffusion.stencils.calculate_enhanced_diffusion_coefficients_for_grid_point_cold_pools import (
     _calculate_enhanced_diffusion_coefficients_for_grid_point_cold_pools,
-)
-from icon4py.model.atmosphere.diffusion.stencils.calculate_nabla2_and_smag_coefficients_for_vn import (
     _calculate_nabla2_and_smag_coefficients_for_vn,
-)
-from icon4py.model.atmosphere.diffusion.stencils.calculate_nabla2_for_w import (
     _calculate_nabla2_for_w,
+    _calculate_nabla4,
 )
-from icon4py.model.atmosphere.diffusion.stencils.calculate_nabla4 import _calculate_nabla4
 from icon4py.model.common import dimension as dims, field_type_aliases as fa
 from icon4py.model.common.interpolation.stencils.mo_intp_rbf_rbf_vec_interpol_vertex import (
     _mo_intp_rbf_rbf_vec_interpol_vertex,

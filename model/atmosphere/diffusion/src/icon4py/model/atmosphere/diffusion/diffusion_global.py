@@ -93,7 +93,7 @@ class DiffusionGlobal:
         self.thresh_tdiff: float = -5.0
         self.smag_offset: float = float(0.25 * params.K4 * ndyn_substeps_as_float)
         self.diff_multfac_w: float = float(min(1.0 / 48.0, params.K4W * ndyn_substeps_as_float))
-        self._smallest_vpfloat = float(constants.DBL_EPS)
+        self._smallest_vpfloat = float(constants.VP_NEG_HUGE)
         self._nrdmax = int(vertical_grid.end_index_of_damping_layer) + 1
         self._num_levels = int(self._grid.num_levels)
         self._determine_horizontal_domains()

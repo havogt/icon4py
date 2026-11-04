@@ -185,7 +185,7 @@ def _solve_nonhydro_global_step(
     rhotheta_explicit_weight_parameter: wpfloat,
     rhotheta_implicit_weight_parameter: wpfloat,
     grav_o_cpd: wpfloat,
-    dbl_eps: wpfloat,
+    wp_eps: wpfloat,
     at_first_substep: bool,
     at_last_substep: bool,
     skip_compute_predictor_vertical_advection: bool,
@@ -622,7 +622,7 @@ def _solve_nonhydro_global_step(
         mean_cell_area=mean_cell_area,
         second_order_divdamp_factor=second_order_divdamp_factor,
         max_nudging_coefficient=wpfloat("0.0"),
-        dbl_eps=dbl_eps,
+        wp_eps=wp_eps,
     )
 
     (

@@ -153,7 +153,7 @@ def _courant_number(
     k_half: fa.KHalfField[gtx.int32],
     zero_half: fa.CellKHalfField[ta.wpfloat],
     num_levels: gtx.int32,
-    dbl_eps: ta.wpfloat,
+    wp_eps: ta.wpfloat,
     p_dtime: ta.wpfloat,
 ) -> fa.CellKHalfField[ta.wpfloat]:
     # `compute_ppm4gpu_courant_number` with nlev = num_levels - 1 and slevp1_ti = 1.
@@ -191,7 +191,7 @@ def _courant_number(
     # Only the boundary half levels, whose result is discarded, divide by the zero mass of the
     # cell beyond the column; the 0/0 there would make a gradient NaN.
     frac_below = where(z_mass_pos, zm / where(jks_below == 0.0, 1.0, jks_below), 0.0)
-    cfl_below = cfl_below + where(frac_below < 1.0, frac_below, 1.0 - dbl_eps)
+    cfl_below = cfl_below + where(frac_below < 1.0, frac_below, 1.0 - wp_eps)
 
     # above
     z_mass_neg = z_mass <= 0.0
@@ -212,7 +212,7 @@ def _courant_number(
         + where(gt_m3, 1.0, 0.0)
     )
     frac_above = where(z_mass_neg, zm / where(jks_above == 0.0, 1.0, jks_above), 0.0)
-    cfl_above = cfl_above + where(abs(frac_above) < 1.0, frac_above, dbl_eps - 1.0)
+    cfl_above = cfl_above + where(abs(frac_above) < 1.0, frac_above, wp_eps - 1.0)
 
     return concat_where(
         (dims.KHalfDim >= 1) & (dims.KHalfDim < num_levels), cfl_below + cfl_above, zero_half
@@ -306,7 +306,7 @@ def _ppm_vertical_flux(
     zero_full: fa.CellKField[ta.wpfloat],
     zero_half: fa.CellKHalfField[ta.wpfloat],
     num_levels: gtx.int32,
-    dbl_eps: ta.wpfloat,
+    wp_eps: ta.wpfloat,
     p_dtime: ta.wpfloat,
     vertical_limiter: gtx.int32,
 ) -> fa.CellKHalfField[ta.wpfloat]:
@@ -317,7 +317,7 @@ def _ppm_vertical_flux(
         k_half=k_half,
         zero_half=zero_half,
         num_levels=num_levels,
-        dbl_eps=dbl_eps,
+        wp_eps=wp_eps,
         p_dtime=p_dtime,
     )
 
@@ -405,7 +405,7 @@ def _vertical_advection(
     zero_full: fa.CellKField[ta.wpfloat],
     zero_half: fa.CellKHalfField[ta.wpfloat],
     num_levels: gtx.int32,
-    dbl_eps: ta.wpfloat,
+    wp_eps: ta.wpfloat,
     p_dtime: ta.wpfloat,
     vertical_advection_type: gtx.int32,
     vertical_limiter: gtx.int32,
@@ -429,7 +429,7 @@ def _vertical_advection(
             zero_full=zero_full,
             zero_half=zero_half,
             num_levels=num_levels,
-            dbl_eps=dbl_eps,
+            wp_eps=wp_eps,
             p_dtime=p_dtime,
             vertical_limiter=vertical_limiter,
         )
@@ -468,7 +468,7 @@ def _horizontal_advection(
     geofac_div: gtx.Field[gtx.Dims[dims.CellDim, dims.C2EDim], ta.wpfloat],
     lsq_pseudoinv_1: gtx.Field[gtx.Dims[dims.CellDim, dims.C2E2CDim], ta.wpfloat],
     lsq_pseudoinv_2: gtx.Field[gtx.Dims[dims.CellDim, dims.C2E2CDim], ta.wpfloat],
-    dbl_eps: ta.wpfloat,
+    wp_eps: ta.wpfloat,
     p_dtime: ta.wpfloat,
     horizontal_advection_type: gtx.int32,
     horizontal_limiter: gtx.int32,
@@ -497,7 +497,7 @@ def _horizontal_advection(
                 p_rhodz_now=rhodz_now,
                 p_mflx_tracer_h=flux,
                 p_dtime=p_dtime,
-                dbl_eps=dbl_eps,
+                wp_eps=wp_eps,
             )
             flux = _apply_positive_definite_horizontal_multiplicative_flux_factor(
                 r_m=r_m, p_mflx_tracer_h=flux
@@ -548,7 +548,7 @@ def _tracer_advection_global_step(
     zero_half: fa.CellKHalfField[ta.wpfloat],
     zero_edge: fa.EdgeKField[ta.wpfloat],
     num_levels: gtx.int32,
-    dbl_eps: ta.wpfloat,
+    wp_eps: ta.wpfloat,
     p_dtime: ta.wpfloat,
     even_timestep: bool,
     horizontal_advection_type: gtx.int32,
@@ -600,7 +600,7 @@ def _tracer_advection_global_step(
             zero_full=zero_full,
             zero_half=zero_half,
             num_levels=num_levels,
-            dbl_eps=dbl_eps,
+            wp_eps=wp_eps,
             p_dtime=p_dtime,
             vertical_advection_type=vertical_advection_type,
             vertical_limiter=vertical_limiter,
@@ -618,7 +618,7 @@ def _tracer_advection_global_step(
             geofac_div=geofac_div,
             lsq_pseudoinv_1=lsq_pseudoinv_1,
             lsq_pseudoinv_2=lsq_pseudoinv_2,
-            dbl_eps=dbl_eps,
+            wp_eps=wp_eps,
             p_dtime=p_dtime,
             horizontal_advection_type=horizontal_advection_type,
             horizontal_limiter=horizontal_limiter,
@@ -637,7 +637,7 @@ def _tracer_advection_global_step(
             geofac_div=geofac_div,
             lsq_pseudoinv_1=lsq_pseudoinv_1,
             lsq_pseudoinv_2=lsq_pseudoinv_2,
-            dbl_eps=dbl_eps,
+            wp_eps=wp_eps,
             p_dtime=p_dtime,
             horizontal_advection_type=horizontal_advection_type,
             horizontal_limiter=horizontal_limiter,
@@ -655,7 +655,7 @@ def _tracer_advection_global_step(
             zero_full=zero_full,
             zero_half=zero_half,
             num_levels=num_levels,
-            dbl_eps=dbl_eps,
+            wp_eps=wp_eps,
             p_dtime=p_dtime,
             vertical_advection_type=vertical_advection_type,
             vertical_limiter=vertical_limiter,

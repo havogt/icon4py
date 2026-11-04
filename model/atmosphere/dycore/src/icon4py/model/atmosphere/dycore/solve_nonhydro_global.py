@@ -323,7 +323,7 @@ class SolveNonhydroGlobal:
             rhotheta_explicit_weight_parameter=params.rhotheta_explicit_weight_parameter,
             rhotheta_implicit_weight_parameter=params.rhotheta_implicit_weight_parameter,
             grav_o_cpd=constants.GRAV_O_CPD,
-            dbl_eps=constants.DBL_EPS,
+            wp_eps=constants.WP_EPS,
             at_first_substep=at_first_substep,
             at_last_substep=at_last_substep,
             skip_compute_predictor_vertical_advection=(

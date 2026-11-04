@@ -38,7 +38,7 @@ from icon4py.model.common.grid import (
 from icon4py.model.common.interpolation import interpolation_attributes, interpolation_factory
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import factory, nonhydro_states, prognostic_state as prognostics
-from icon4py.model.common.utils import data_allocation as data_alloc
+from icon4py.model.common.utils import data_allocation as data_alloc, device_utils
 from icon4py.model.testing.fixtures.benchmark import (
     geometry_field_source,
     interpolation_field_source,
@@ -83,7 +83,7 @@ def _setup(
         cell_center_lat=geometry_field_source.get(geometry_meta.CELL_LAT),
         cell_center_lon=geometry_field_source.get(geometry_meta.CELL_LON),
         area=geometry_field_source.get(geometry_meta.CELL_AREA),
-        mean_cell_area=geometry_field_source.get(geometry_meta.MEAN_CELL_AREA),  # type: ignore[arg-type]
+        mean_cell_area=geometry_field_source.get_scalar(geometry_meta.MEAN_CELL_AREA),
     )
     edge_geometry = grid_states.EdgeParams(
         tangent_orientation=geometry_field_source.get(geometry_meta.TANGENT_ORIENTATION),
@@ -186,7 +186,7 @@ def _setup(
         ddxn_z_full=metrics_field_source.get(metrics_attributes.DDXN_Z_FULL),
         zdiff_gradp=metrics_field_source.get(metrics_attributes.ZDIFF_GRADP),
         vertoffset_gradp=metrics_field_source.get(metrics_attributes.VERTOFFSET_GRADP),
-        nflat_gradp=metrics_field_source.get_int32(metrics_attributes.NFLAT_GRADP),
+        nflat_gradp=metrics_field_source.get_scalar(metrics_attributes.NFLAT_GRADP),  # type: ignore[arg-type]
         pg_exdist=metrics_field_source.get(metrics_attributes.PG_EXDIST_DSL),
         ddqz_z_full_e=metrics_field_source.get(metrics_attributes.DDQZ_Z_FULL_E),
         ddxt_z_full=metrics_field_source.get(metrics_attributes.DDXT_Z_FULL),
@@ -215,7 +215,7 @@ def _setup(
         vertical_params=vertical_grid,
         edge_geometry=edge_geometry,
         cell_geometry=cell_geometry,
-        owner_mask=geometry_field_source.get("cell_owner_mask"),
+        owner_mask=geometry_field_source.get(geometry_meta.CELL_OWNER_MASK),
     )
 
 
@@ -354,7 +354,7 @@ def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-argumen
     prep_adv, diagnostic_state_nh, prognostic_states = _states(mesh, allocator)
 
     solve_nonhydro_timestep_variants = functools.partial(
-        solve_nonhydro.time_step,
+        device_utils.synchronized_function(solve_nonhydro.time_step, allocator=allocator),
         diagnostic_state_nh=diagnostic_state_nh,
         prognostic_states=prognostic_states,
         prep_adv=prep_adv,

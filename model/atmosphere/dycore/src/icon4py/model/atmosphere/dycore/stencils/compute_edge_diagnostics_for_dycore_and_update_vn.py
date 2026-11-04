@@ -51,7 +51,7 @@ from icon4py.model.atmosphere.dycore.stencils.compute_vn_on_lateral_boundary imp
 from icon4py.model.common import dimension as dims, field_type_aliases as fa, type_alias as ta
 from icon4py.model.common.constants import PhysicsConstants
 from icon4py.model.common.math.value_of_size import value_of_size_on_edges_on_model_levels_wp
-from icon4py.model.common.type_alias import wpfloat
+from icon4py.model.common.type_alias import vpfloat, wpfloat
 
 
 @gtx.field_operator
@@ -78,7 +78,7 @@ def apply_hydrostatic_correction_to_horizontal_gradient_of_exner_pressure(
     # Note: In the original Fortran code `pg_exdist` is implemented as a list,
     # in ICON4Py it's a full field intialized with zeros for points that are not in the list.
     z_gradh_exner_vp = where(
-        pg_exdist != 0.0, z_gradh_exner + z_hydro_corr * pg_exdist, z_gradh_exner
+        pg_exdist != vpfloat(0.0), z_gradh_exner + z_hydro_corr * pg_exdist, z_gradh_exner
     )
     return z_gradh_exner_vp
 
@@ -195,7 +195,7 @@ def _compute_rho_theta_pgrad_and_update_vn(
             dual_normal_cell_1=dual_normal_cell_x,
             primal_normal_cell_2=primal_normal_cell_y,
             dual_normal_cell_2=dual_normal_cell_y,
-            p_dthalf=wpfloat("0.5") * dtime,
+            p_dthalf=wpfloat(0.5) * dtime,
             rho_ref_me=reference_rho_at_edges_on_model_levels,
             theta_ref_me=reference_theta_at_edges_on_model_levels,
             perturbed_rho_at_cells_on_model_levels=perturbed_rho_at_cells_on_model_levels,
@@ -293,10 +293,10 @@ def _apply_divergence_damping_and_update_vn(
     apply_2nd_order_divergence_damping: bool,
     apply_4th_order_divergence_damping: bool,
     divdamp_order: gtx.int32,
-    mean_cell_area: float,
-    second_order_divdamp_factor: float,
-    max_nudging_coefficient: float,
-    dbl_eps: float,
+    mean_cell_area: wpfloat,
+    second_order_divdamp_factor: wpfloat,
+    max_nudging_coefficient: wpfloat,
+    wp_eps: wpfloat,
 ) -> fa.EdgeKField[ta.wpfloat]:
     # add dw/dz for divergence damping term. In ICON, this stencil starts from k = kstart_dd3d until k = nlev - 1.
     # Since scaling_factor_for_3d_divdamp is zero when k < kstart_dd3d, it is meaningless to execute computation
@@ -344,7 +344,7 @@ def _apply_divergence_damping_and_update_vn(
                 mean_cell_area=mean_cell_area,
                 second_order_divdamp_factor=second_order_divdamp_factor,
                 max_nudging_coefficient=max_nudging_coefficient,
-                dbl_eps=dbl_eps,
+                wp_eps=wp_eps,
             )
         else:
             next_vn = _apply_4th_order_divergence_damping(
@@ -569,10 +569,10 @@ def apply_divergence_damping_and_update_vn(
     apply_2nd_order_divergence_damping: bool,
     apply_4th_order_divergence_damping: bool,
     divdamp_order: gtx.int32,
-    mean_cell_area: float,
-    second_order_divdamp_factor: float,
-    max_nudging_coefficient: float,
-    dbl_eps: float,
+    mean_cell_area: wpfloat,
+    second_order_divdamp_factor: wpfloat,
+    max_nudging_coefficient: wpfloat,
+    wp_eps: wpfloat,
     horizontal_start: gtx.int32,
     horizontal_end: gtx.int32,
     vertical_start: gtx.int32,
@@ -616,7 +616,7 @@ def apply_divergence_damping_and_update_vn(
         - mean_cell_area
         - second_order_divdamp_factor
         - max_nudging_coefficient
-        - dbl_eps
+        - wp_eps
 
     Returns:
         - next_vn: normal wind to be updated [m s-1]
@@ -651,7 +651,7 @@ def apply_divergence_damping_and_update_vn(
         mean_cell_area=mean_cell_area,
         second_order_divdamp_factor=second_order_divdamp_factor,
         max_nudging_coefficient=max_nudging_coefficient,
-        dbl_eps=dbl_eps,
+        wp_eps=wp_eps,
         out=next_vn,
         domain={
             dims.EdgeDim: (horizontal_start, horizontal_end),
