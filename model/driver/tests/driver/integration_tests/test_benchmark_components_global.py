@@ -630,15 +630,12 @@ def _dump_path(component: str, mesh: Any) -> pathlib.Path:
 
 
 def _perturbed(inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    """Negative control: `ICON4PY_BENCH_PERTURB` scales the temperature (and the tracer)."""
+    """Negative control: `ICON4PY_BENCH_PERTURB` scales the temperature, pressure and qv."""
     factor = float(os.environ.get("ICON4PY_BENCH_PERTURB", "0"))
     if not factor:
         return inputs
-    return {
-        **inputs,
-        "temperature": inputs["temperature"] * (1.0 + factor),
-        "qv": inputs["qv"] * (1.0 + factor),
-    }
+    scaled = ("temperature", "pressure", "surface_pressure", "qv")
+    return {**inputs, **{name: inputs[name] * (1.0 + factor) for name in scaled}}
 
 
 def _jax_numpy() -> Any:
