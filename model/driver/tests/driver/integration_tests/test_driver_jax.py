@@ -83,8 +83,8 @@ def test_driver_jax(
         }
     )
     if passive_qv:
-        if config.tracer_config:
-            pytest.skip("the experiment transports its own tracers.")
+        if experiment_description is not test_defs.Experiments.JW:
+            pytest.skip("only the JW initial condition sets qv.")
         # without physics, qv does not feed back on the dynamics: the savepoints still hold
         config = config.with_overrides(tracer_config=tracer_states.TracerConfig(qv=True))
     grid_manager = driver_utils.create_grid_manager(
