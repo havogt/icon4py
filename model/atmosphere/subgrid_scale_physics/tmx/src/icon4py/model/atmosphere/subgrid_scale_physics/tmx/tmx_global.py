@@ -12,17 +12,12 @@ The same step as `tmx.Tmx`, as one field operator call that returns the new stat
 and the diagnostics instead of writing into its arguments. The step keeps no state between calls.
 
 The step does no halo exchange: on a distributed grid its inputs must already be valid on every
-halo point it reads, and it computes its outputs on the owned points only. Counted in neighbour
-hops from an owned cell, the step reads:
-
-- `u`, `v`, `w`, `rho`, `temperature`, `virtual_temperature`, `pressure`, `qv`, `qc`, `qi`, `qr`,
-  `qs`, `qg` and `air_mass` on cells up to C2E2C2E2C, the vertices of their edges included: `km_ic`
-  enters the w and vn stress on the vertices and edges of each cell's neighbours, and it gathers
-  over V2C;
-- the surface fluxes on the cells of the edges of each owned cell, through C2E2C.
-
-This is the read set of the granule's exchanges moved to the inputs; it is not measured on a
-distributed run.
+halo point it reads, and it computes its outputs on the owned points only. In rings of
+vertex-neighbour cells around an owned cell, the step reads `u` and `v` 4 rings deep, `w` 3, `rho`
+and `virtual_temperature` 2, `pressure`, `temperature`, the six moisture tracers and the wind stress
+1, and `air_mass`, the evapotranspiration and the energy fluxes on the cell itself. `u` and `v` reach
+furthest because the eddy viscosity built from them is interpolated to vertices and edges and then
+read by the stress divergence of the neighbours.
 """
 
 from __future__ import annotations
