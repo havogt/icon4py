@@ -22,7 +22,7 @@ resolution-markers = [
   "python_full_version < '3.13' and sys_platform == 'emscripten'",
   "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'"
 ]
-revision = 5
+revision = 3
 version = 1
 
 [manifest]
@@ -1180,9 +1180,9 @@ dependencies = [
   { name = "typing-extensions" }
 ]
 name = "dace"
-sdist = { url = "https://files.pythonhosted.org/packages/f3/29/83c0d23a228c5f5cd5f6bdae1a124fcc2dd45fba239bc2b05925b99a3451/dace-2.0.0a10.tar.gz", hash = "sha256:8cfe968729be96ac66c5fd8c0f7c85c705182d30e9a49e3418cd4aafda238c30", size = 6616842, upload-time = "2026-10-03T13:32:04.812Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/07/08/e02a771ee94c47f5bede9d70f8299f29a2bd088b0f54a9a22b81f3923b82/dace-2.0.0b1.tar.gz", hash = "sha256:a645f17cf6155a8cf13543df2daf2823f7d1cc88984276e73206a652fe305698", size = 7104619, upload-time = "2026-10-26T08:06:49.246Z" }
 source = { registry = "https://pypi.org/simple" }
-version = "2.0.0a10"
+version = "2.0.0b1"
 
 [[package]]
 dependencies = [
@@ -1658,7 +1658,7 @@ dependencies = [
   { name = "xxhash" }
 ]
 name = "gt4py"
-source = { git = "https://github.com/havogt/gt4py?branch=integration%2Fjaxad#201d12f26be39e32374983523f66becdcae9b826" }
+source = { git = "https://github.com/havogt/gt4py?branch=integration%2Fjaxad#cb60226f78e4241a239ad068b5122ff97e864b0f" }
 version = "1.2.3+unknown.version.details"
 
 [package.optional-dependencies]
