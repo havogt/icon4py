@@ -667,6 +667,16 @@ class SpmdTransport(enum.StrEnum):
 #: Halo rings beyond the ICON-like one (a ring: the cells sharing a vertex with the local cells)
 #: that the global dynamical core and diffusion steps read around the owned cells.
 JAX_EXTRA_HALO_RINGS = 2
+#: The extra halo rings of the JAX driver with physics: the physics step reads vn 6 rings deep, through
+#: the reconstruction of u and v and tmx's stress divergence.
+JAX_PHYSICS_EXTRA_HALO_RINGS = 5
+
+
+def jax_extra_halo_rings(config: driver_config.ExperimentConfig) -> int:
+    """The extra halo rings the JAX driver needs on a distributed grid for `config`."""
+    if config.muphys is not None or config.surface is not None or config.tmx is not None:
+        return JAX_PHYSICS_EXTRA_HALO_RINGS
+    return JAX_EXTRA_HALO_RINGS
 
 
 def _pad_field(field: gtx.Field, layout: spmd_layout.PaddedLayout) -> gtx.Field:

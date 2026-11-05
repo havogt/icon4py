@@ -205,7 +205,9 @@ def main(
         allocator=allocator,
         process_props=process_props,
         extra_halo_rings=(
-            driver_utils.JAX_EXTRA_HALO_RINGS if jax and not process_props.is_single_rank() else 0
+            driver_utils.jax_extra_halo_rings(config)
+            if jax and not process_props.is_single_rank()
+            else 0
         ),
     )
 

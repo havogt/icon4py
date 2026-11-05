@@ -11,9 +11,9 @@ tmx turbulent mixing for grids without lateral boundaries.
 The same step as `tmx.Tmx`, as one field operator call that returns the new state, the tendencies
 and the diagnostics instead of writing into its arguments. The step keeps no state between calls.
 
-The step does no halo exchange: on a distributed grid its inputs must already be valid on every
-halo point it reads, and it computes its outputs on the owned points only. In rings of
-vertex-neighbour cells around an owned cell, the step reads `u` and `v` 4 rings deep, `w` 3, `rho`
+The step does no halo exchange. It computes its outputs on every local cell; an output is valid
+where the inputs are valid on every halo point it reads. In rings of vertex-neighbour cells around
+a cell, the step reads `u` and `v` 4 rings deep, `w` 3, `rho`
 and `virtual_temperature` 2, `pressure`, `temperature`, the six moisture tracers and the wind stress
 1, and `air_mass`, the evapotranspiration and the energy fluxes on the cell itself. `u` and `v` reach
 furthest because the eddy viscosity built from them is interpolated to vertices and edges and then
@@ -66,9 +66,12 @@ class TmxGlobal:
         self._offset_provider = grid.connectivities
 
         cell_domain = h_grid.domain(dims.CellDim)
+        # every local cell, the halo included: on a distributed grid the next process and the
+        # dynamics read the outputs there, and the outermost rows that read past the local grid
+        # are never read back
         self._cells = (
             int(grid.start_index(cell_domain(h_grid.Zone.NUDGING))),
-            int(grid.end_index(cell_domain(h_grid.Zone.LOCAL))),
+            int(grid.end_index(cell_domain(h_grid.Zone.END))),
         )
         num_levels = self._num_levels
         all_cells = (0, grid.num_cells)

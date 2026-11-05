@@ -17,7 +17,7 @@ steps the driver builds new local fields from them, with the halo filled by a ha
 host or, from CuPy buffers, on the device (`driver_utils.HaloExchange`); with `jit_time_step` the
 whole time step is one jitted function, and the exchange a `buffer_callback` inside it, on XLA's
 stream on a GPU, whatever `halo_exchange` says. The halo must be deep enough for one step:
-`driver_utils.JAX_EXTRA_HALO_RINGS`.
+`driver_utils.JAX_EXTRA_HALO_RINGS`, with physics `driver_utils.JAX_PHYSICS_EXTRA_HALO_RINGS`.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from collections.abc import Callable
 from typing import Any
 
 import gt4py.next as gtx
+import numpy as np
 from gt4py.next import common as gtx_common
 
 import icon4py.model.common.utils as common_utils
@@ -181,6 +182,25 @@ def _unfilled_local(owned: Any, num_local: int, finite_padding: bool) -> Any:
     return jax.numpy.concatenate([owned, padding])
 
 
+def _cell_halo_rings(grid: grid_base.Grid, owned: Any) -> int:
+    """How many rings of vertex-neighbour cells around the owned cells the local grid holds."""
+    c2v = grid.connectivities["C2V"].asnumpy()
+    v2c = grid.connectivities["V2C"].asnumpy()
+    reached = np.asarray(owned, dtype=bool).copy()
+    rings = 0
+    while not reached.all():
+        vertices = np.unique(c2v[reached])
+        cells = v2c[vertices[vertices >= 0]]
+        ring = np.zeros_like(reached)
+        ring[cells[cells >= 0]] = True
+        ring &= ~reached
+        if not ring.any():
+            break
+        reached |= ring
+        rings += 1
+    return rings
+
+
 def exchange_collective(
     owned: Any, send: Any, recv: Any, num_local: int, finite_padding: bool = False
 ) -> Any:
@@ -273,7 +293,14 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         if self.config.graupel is not None:
             raise NotImplementedError("The JAX driver does not run the NWP graupel scheme.")
         if global_granules.physics is not None and self._distributed:
-            raise NotImplementedError("The JAX driver runs the physics on a single rank only.")
+            rings = _cell_halo_rings(
+                self.grid, self._xp.asarray(self.decomposition_info.owner_mask(dims.CellDim))
+            )
+            if rings < 1 + driver_utils.JAX_PHYSICS_EXTRA_HALO_RINGS:
+                raise ValueError(
+                    f"The JAX driver's physics needs {driver_utils.JAX_PHYSICS_EXTRA_HALO_RINGS} extra "
+                    f"halo rings on a distributed grid; this one has {rings - 1}."
+                )
         self._tracer_names = (
             self.config.tracer_config.active_names if self.config.tracer_config is not None else ()
         )
@@ -742,8 +769,23 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             prognostic, tracers, perturbed_exner = self._jitted_physics(dtime)(
                 prognostic, tracers, diagnostic_state.perturbed_exner_at_cells_on_model_levels
             )
+            # the physics computed the halo from a halo it read beyond, and the next step reads it
+            state = self._with_halo(
+                {
+                    "prognostic": prognostic,
+                    "tracers": tracers,
+                    "diagnostic": {"perturbed_exner_at_cells_on_model_levels": perturbed_exner},
+                },
+                reads=self._reads(
+                    _DYCORE_HALO_READS | frozenset(f"tracers.{name}" for name in tracers)
+                ),
+            )
+            prognostic, tracers = state["prognostic"], state["tracers"]
             diagnostic_state = dataclasses.replace(
-                diagnostic_state, perturbed_exner_at_cells_on_model_levels=perturbed_exner
+                diagnostic_state,
+                perturbed_exner_at_cells_on_model_levels=state["diagnostic"][
+                    "perturbed_exner_at_cells_on_model_levels"
+                ],
             )
         return prognostic, _diagnostic_to_dict(diagnostic_state), intermediate, prep_adv, tracers
 

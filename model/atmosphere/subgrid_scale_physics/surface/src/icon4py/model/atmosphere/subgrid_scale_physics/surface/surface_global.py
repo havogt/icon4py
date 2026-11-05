@@ -50,9 +50,12 @@ class SurfaceGlobal:
             gtx.GridType.UNSTRUCTURED
         ).with_backend(backend)
         cell_domain = h_grid.domain(dims.CellDim)
+        # every local cell, the halo included: on a distributed grid the next process and the
+        # dynamics read the outputs there, and the outermost rows that read past the local grid
+        # are never read back
         self._cells = (
             int(grid.start_index(cell_domain(h_grid.Zone.NUDGING))),
-            int(grid.end_index(cell_domain(h_grid.Zone.LOCAL))),
+            int(grid.end_index(cell_domain(h_grid.Zone.END))),
         )
         self.surface_temperature = data_alloc.constant_field(
             grid,
