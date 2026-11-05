@@ -106,7 +106,10 @@ class IconState:
     """
     The prognostics, the tracers and what the next step reads of this one.
 
-    `carry` holds the dynamical core's diagnostic, intermediate and advection states.
+    `carry` holds the dynamical core's diagnostic, intermediate and advection states. Its
+    `carry["diagnostic"]["max_vertical_cfl"]` is the maximum vertical CFL number of the step that
+    returned the state, for the caller to check against `vertical_cfl_threshold`: the number of
+    substeps is fixed.
     `at_initial_timestep` and `even_timestep`, the tracers' splitting order, are metadata: a
     jitted step is traced once per value.
     """
@@ -219,13 +222,23 @@ def init_from_grid_file(
 
 
 def dynamics_step(static: IconStatic, state: IconState) -> IconState:
-    """The dynamical substeps, diffusion and tracer advection of one time step."""
+    """
+    The dynamical substeps, diffusion and tracer advection of one time step.
+
+    `ndyn_substeps` is fixed: where the driver adds substeps for a vertical CFL number above
+    `vertical_cfl_threshold`, the returned state's `max_vertical_cfl` is above it.
+    """
     granules = static.setup.granules
     config = static.setup.config
     solver = _bound(static, "solve_nonhydro")
     prognostic = state.prognostic
     tracers = state.tracers
     diagnostic = jax_driver._diagnostic_from_dict(state.carry["diagnostic"])
+    # the substeps take the maximum with it: it starts from zero each step, as after
+    # `Icon4pyDriver._adjust_ndyn_substeps_var`
+    diagnostic = dataclasses.replace(
+        diagnostic, max_vertical_cfl=_jax.numpy.zeros_like(diagnostic.max_vertical_cfl)
+    )
     intermediate = state.carry["intermediate"]
     prep_adv = state.carry["prep_adv"]
     rho_now = prognostic["rho"]
@@ -277,10 +290,6 @@ def dynamics_step(static: IconStatic, state: IconState) -> IconState:
             )[0]
             for name, tracer in tracers.items()
         }
-    # what `Icon4pyDriver._adjust_ndyn_substeps_var` leaves, the number of substeps being fixed
-    diagnostic = dataclasses.replace(
-        diagnostic, max_vertical_cfl=_jax.numpy.zeros_like(diagnostic.max_vertical_cfl)
-    )
     return IconState(
         prognostic=prognostic,
         tracers=tracers,
