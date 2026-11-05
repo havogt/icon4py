@@ -218,22 +218,93 @@ class _Setup:
     inputs: dict[str, np.ndarray]
 
 
+def _host_factories(grid_manager: Any, backend_like: Any) -> tuple[Any, Any, Any]:
+    """The factories of `icon4py.model.testing.fixtures.benchmark`, not cached by pytest."""
+    from icon4py.model.common import model_options, topography
+    from icon4py.model.common.grid import (
+        geometry as grid_geometry,
+        geometry_config,
+        vertical as v_grid,
+    )
+    from icon4py.model.common.interpolation import interpolation_factory
+    from icon4py.model.common.metrics import metrics_factory
+    from icon4py.model.common.topography.analytical import jablonowski_williamson as jw_topo
+
+    mesh = grid_manager.grid
+    backend = model_options.customize_backend(None, backend_like)
+    allocator = model_backends.get_allocator(backend_like)
+    props = decomp_defs.SingleNodeProcessProperties()
+    geometry = grid_geometry.GridGeometry(
+        grid=mesh,
+        decomposition_info=grid_manager.decomposition_info,
+        backend=backend,
+        coordinates=grid_manager.coordinates,
+        extra_fields=grid_manager.geometry_fields,
+        metadata=geometry_meta.attrs,
+        config=geometry_config.GeometryConfig(),
+        process_props=props,
+    )
+    interpolation = interpolation_factory.InterpolationFieldsFactory(
+        config=interpolation_factory.InterpolationConfig(),
+        grid=mesh,
+        decomposition_info=grid_manager.decomposition_info,
+        geometry_source=geometry,
+        backend=backend,
+        metadata=interpolation_attributes.attrs,
+        process_props=props,
+    )
+    vertical_config = v_grid.VerticalGridConfig(
+        mesh.num_levels,
+        lowest_layer_thickness=50,
+        model_top_height=23500.0,
+        stretch_factor=1.0,
+        rayleigh_damping_height=1.0,
+    )
+    vct_a, vct_b = v_grid.get_vct_a_and_vct_b(vertical_config, allocator)
+    topo_c = topography.create(
+        config=jw_topo.JablonowskiWilliamsonConfig(),
+        grid_manager=grid_manager,
+        backend=backend,
+        exchange=decomp_defs.SingleNodeExchange(),
+    )
+    metrics = metrics_factory.MetricsFieldsFactory(
+        grid=mesh,
+        vertical_grid=v_grid.VerticalGrid(config=vertical_config, vct_a=vct_a, vct_b=vct_b),
+        decomposition_info=grid_manager.decomposition_info,
+        geometry_source=geometry,
+        topography=gtx.as_field((dims.CellDim,), data=topo_c),
+        interpolation_source=interpolation,
+        config=metrics_factory.MetricsConfig(),
+        backend=backend,
+        metadata=metrics_attributes.attrs,
+        process_props=props,
+    )
+    return geometry, interpolation, metrics
+
+
 @pytest.fixture
-def setup(
-    grid_manager: Any,
-    geometry_field_source: Any,
-    interpolation_field_source: Any,
-    metrics_field_source: Any,
-) -> _Setup:
+def setup(request: pytest.FixtureRequest, grid_manager: Any, backend_like: Any) -> _Setup:
+    """
+    With `ICON4PY_BENCH_CONSTANTS_ON_HOST=1` the constants are computed the same way, copied to
+    host memory, and the factories that hold their device copies are dropped: only the JAX tests
+    run in that mode, which otherwise hold every constant twice on the device.
+    """
+    on_host = os.environ.get("ICON4PY_BENCH_CONSTANTS_ON_HOST", "0") == "1"
+    if on_host:
+        geometry, interp, metrics = _host_factories(grid_manager, backend_like)
+    else:
+        geometry = request.getfixturevalue("geometry_field_source")
+        interp = request.getfixturevalue("interpolation_field_source")
+        metrics = request.getfixturevalue("metrics_field_source")
     config = _config()
     mesh = grid_manager.grid
     dtime = _dtime(config, mesh.num_cells)
-    interp = interpolation_field_source
-    metrics = metrics_field_source
     lsq_pseudoinv = interp.get(interpolation_attributes.LSQ_PSEUDOINV)
+    from icon4py.model.atmosphere.subgrid_scale_physics.tmx import static_fields
+
     constants = {
-        "edge_params": _edge_geometry(geometry_field_source),
-        "cell_params": _cell_geometry(geometry_field_source),
+        "edge_params": _edge_geometry(geometry),
+        "cell_params": _cell_geometry(geometry),
         "geofac_div": interp.get(interpolation_attributes.GEOFAC_DIV),
         "rbf_vec_coeff_e": interp.get(interpolation_attributes.RBF_VEC_COEFF_E),
         "pos_on_tplane_e_1": interp.get(interpolation_attributes.POS_ON_TPLANE_E_X),
@@ -241,10 +312,25 @@ def setup(
         "lsq_pseudoinv_1": lsq_pseudoinv[:, 0, :],
         "lsq_pseudoinv_2": lsq_pseudoinv[:, 1, :],
         "ddqz_z_full": metrics.get(metrics_attributes.DDQZ_Z_FULL),
-        "metrics_source": metrics,
-        "interpolation_source": interp,
+        "tmx_metric_state": static_fields.build_metric_state(metrics),
+        "tmx_interpolation_state": static_fields.build_interpolation_state(interp),
     }
-    return _Setup(mesh, config, dtime, constants, _synthetic_inputs(mesh, metrics, dtime))
+    inputs = _synthetic_inputs(mesh, metrics, dtime)
+    if on_host:
+        import gc
+
+        constants = {k: _to_jax(v, np) for k, v in constants.items()}
+        del geometry, interp, metrics, lsq_pseudoinv
+        gc.collect()
+        try:
+            import cupy
+
+            cupy.get_default_memory_pool().free_all_blocks()
+            free, total = cupy.cuda.runtime.memGetInfo()
+            print(f"CONSTANTS_ON_HOST device used after freeing {(total - free) / 2**30:.2f} GiB")
+        except ImportError:
+            pass
+    return _Setup(mesh, config, dtime, constants, inputs)
 
 
 # --- the stateless global steps ------------------------------------------------------------------
@@ -284,14 +370,10 @@ def _tracer_states(setup: _Setup, allocator: Any, convert: Any) -> dict[str, Any
 
 
 def _tmx_states(setup: _Setup, convert: Any) -> dict[str, Any]:
-    from icon4py.model.atmosphere.subgrid_scale_physics.tmx import static_fields
-
     c = setup.constants
     return {
-        "metric_state": convert(static_fields.build_metric_state(c["metrics_source"])),
-        "interpolation_state": convert(
-            static_fields.build_interpolation_state(c["interpolation_source"])
-        ),
+        "metric_state": convert(c["tmx_metric_state"]),
+        "interpolation_state": convert(c["tmx_interpolation_state"]),
         "edge_params": convert(c["edge_params"]),
         "cell_params": convert(c["cell_params"]),
     }
