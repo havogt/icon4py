@@ -12,10 +12,14 @@ The same coupling as `physics_driver.PhysicsDriver` with its `PhysicsState`: the
 once (dyn2phy), muphys, the surface scheme and tmx run in turn, each process's tendencies are added
 to the state before the next one reads it, and exner, theta_v, the perturbed exner and vn follow
 from the final state (phy2dyn). Every process runs on every step. The step does no halo exchange.
+
+Each of these is a method of its own, on `ColumnState` and `ColumnTendencies`; `PhysicsGlobal.run`
+composes them.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import gt4py.next as gtx
@@ -42,9 +46,98 @@ from icon4py.model.common.physics.thermodynamics.compute_temperature import (
 from icon4py.model.common.physics.thermodynamics.compute_tendencies import (
     _compute_virtual_temperature_tendency,
 )
+from icon4py.model.common.states.surface_flux_state import SurfaceFluxState
 
 
 _MOISTURE = ("qv", "qc", "qi", "qr", "qs", "qg")
+_MUPHYS_DIAGNOSTICS = ("pflx", "pr", "ps", "pi", "pg", "pre")
+
+
+@dataclasses.dataclass(frozen=True)
+class ColumnState:
+    """The cell-centred state the physics processes read, on full levels unless noted."""
+
+    temperature: fa.CellKField[ta.wpfloat]
+    virtual_temperature: fa.CellKField[ta.wpfloat]
+    pressure: fa.CellKField[ta.wpfloat]
+    pressure_ifc: fa.CellKHalfField[ta.wpfloat]
+    rho: fa.CellKField[ta.wpfloat]
+    u: fa.CellKField[ta.wpfloat]
+    v: fa.CellKField[ta.wpfloat]
+    w: fa.CellKHalfField[ta.wpfloat]
+    q: dict[str, fa.CellKField[ta.wpfloat]]
+    air_mass: fa.CellKField[ta.wpfloat]
+    dz: fa.CellKField[ta.wpfloat]
+
+
+@dataclasses.dataclass(frozen=True)
+class ColumnTendencies:
+    """Tendencies per second of the fields of `ColumnState`; None, or a missing tracer, is zero."""
+
+    temperature: fa.CellKField[ta.wpfloat] | None = None
+    q: dict[str, fa.CellKField[ta.wpfloat]] = dataclasses.field(default_factory=dict)
+    u: fa.CellKField[ta.wpfloat] | None = None
+    v: fa.CellKField[ta.wpfloat] | None = None
+    w: fa.CellKHalfField[ta.wpfloat] | None = None
+
+
+def _add(a: gtx.Field | None, b: gtx.Field | None) -> gtx.Field | None:
+    if a is None:
+        return b
+    return a if b is None else a + b
+
+
+def sum_column_tendencies(*tendencies: ColumnTendencies) -> ColumnTendencies:
+    total = ColumnTendencies()
+    for t in tendencies:
+        total = ColumnTendencies(
+            temperature=_add(total.temperature, t.temperature),
+            q={
+                name: _add(total.q.get(name), t.q.get(name)) for name in total.q.keys() | t.q.keys()
+            },
+            u=_add(total.u, t.u),
+            v=_add(total.v, t.v),
+            w=_add(total.w, t.w),
+        )
+    return total
+
+
+def apply_column_tendencies(
+    col: ColumnState,
+    tend: ColumnTendencies,
+    dtime: float,
+    *,
+    recompute_virtual_temperature: bool = True,
+) -> ColumnState:
+    """
+    `col` advanced by `dtime` times `tend`, as one step of the sequential splitting.
+
+    The pressure stays. With `recompute_virtual_temperature` the virtual temperature follows the
+    new temperature and moisture; without, it stays at its value from dyn2phy, as in
+    `physics_driver.PhysicsState.update`.
+    """
+
+    def advanced(field: gtx.Field, tendency: gtx.Field | None) -> gtx.Field:
+        return field if tendency is None else field + dtime * tendency
+
+    temperature = advanced(col.temperature, tend.temperature)
+    q = {name: advanced(field, tend.q.get(name)) for name, field in col.q.items()}
+    virtual_temperature = col.virtual_temperature
+    if recompute_virtual_temperature:
+        virtual_temperature = temperature * (
+            1.0
+            + PhysicsConstants.rv_o_rd_minus_1 * q["qv"]
+            - (q["qc"] + q["qi"] + q["qr"] + q["qs"] + q["qg"])
+        )
+    return dataclasses.replace(
+        col,
+        temperature=temperature,
+        virtual_temperature=virtual_temperature,
+        u=advanced(col.u, tend.u),
+        v=advanced(col.v, tend.v),
+        w=advanced(col.w, tend.w),
+        q=q,
+    )
 
 
 @gtx.field_operator
@@ -97,6 +190,7 @@ class PhysicsGlobal:
         muphys: muphys_global.MuphysGlobal | None = None,
         surface: surface_global.SurfaceGlobal | None = None,
         tmx: tmx_global.TmxGlobal | None = None,
+        recompute_virtual_temperature: bool = False,
     ) -> None:
         if tmx is not None and surface is None:
             raise ValueError(
@@ -105,6 +199,7 @@ class PhysicsGlobal:
         self.muphys = muphys
         self.surface = surface
         self.tmx = tmx
+        self.recompute_virtual_temperature = recompute_virtual_temperature
         self._num_levels = int(grid.num_levels)
         self._num_cells = int(grid.num_cells)
         self._num_edges = int(grid.num_edges)
@@ -120,7 +215,6 @@ class PhysicsGlobal:
         self._tv_tendency = unstructured(_compute_virtual_temperature_tendency)
         self._exner = unstructured(_update_exner_theta_v_and_perturbed_exner)
         self._vn_from_uv = unstructured(_compute_vn_from_uv)
-        self.ddqz_z_full = ddqz_z_full
         self._static_args: dict[str, gtx.Field] = {
             "ddqz_z_full": ddqz_z_full,
             "rbf_vec_coeff_c1": rbf_vec_coeff_c1,
@@ -130,32 +224,33 @@ class PhysicsGlobal:
             "primal_normal_cell_y": edge_params.primal_normal_cell[1],
         }
 
-    def run(
-        self,
-        *,
-        prognostic: dict[str, gtx.Field],
-        tracers: dict[str, gtx.Field],
-        perturbed_exner: fa.CellKField[ta.wpfloat],
-        air_mass: fa.CellKField[ta.wpfloat],
-        dtime: float,
-    ) -> tuple[dict[str, gtx.Field], dict[str, gtx.Field], fa.CellKField[ta.wpfloat]]:
-        """Return the new prognostics (exner, theta_v, vn, w), tracers and perturbed exner."""
+    @property
+    def _cell_k(self) -> dict:
+        return {dims.CellDim: (0, self._num_cells), dims.KDim: (0, self._num_levels)}
+
+    def _virtual_temperature_and_temperature(
+        self, prognostic: dict[str, gtx.Field], q: dict[str, gtx.Field]
+    ) -> tuple[gtx.Field, gtx.Field]:
+        return self._temperature(
+            *(q[name] for name in _MOISTURE),
+            prognostic["theta_v"],
+            prognostic["exner"],
+            domain=self._cell_k,
+            offset_provider={},
+        )
+
+    def dyn2phy(
+        self, prognostic: dict[str, gtx.Field], tracers: dict[str, gtx.Field]
+    ) -> ColumnState:
+        """The column state of the prognostics and tracers; the tracers pass through by name."""
         if missing := [name for name in _MOISTURE if name not in tracers]:
             raise ValueError(f"Physics requires all moisture species, missing: {missing}.")
         static = self._static_args
         nlev = self._num_levels
-        cell_k = {dims.CellDim: (0, self._num_cells), dims.KDim: (0, nlev)}
+        cell_k = self._cell_k
         cell_khalf = {dims.CellDim: (0, self._num_cells), dims.KHalfDim: (0, nlev + 1)}
-        rho, w = prognostic["rho"], prognostic["w"]
-        q = dict(tracers)
-
-        # dyn2phy
-        virtual_temperature, temperature = self._temperature(
-            *(q[name] for name in _MOISTURE),
-            prognostic["theta_v"],
-            prognostic["exner"],
-            domain=cell_k,
-            offset_provider={},
+        virtual_temperature, temperature = self._virtual_temperature_and_temperature(
+            prognostic, tracers
         )
         surface_pressure = self._surface_pressure(
             prognostic["exner"],
@@ -180,81 +275,171 @@ class PhysicsGlobal:
             domain=cell_k,
             offset_provider=self._offset_provider,
         )
+        return ColumnState(
+            temperature=temperature,
+            virtual_temperature=virtual_temperature,
+            pressure=pressure,
+            pressure_ifc=pressure_ifc,
+            rho=prognostic["rho"],
+            u=u,
+            v=v,
+            w=prognostic["w"],
+            q=dict(tracers),
+            # ICON's ``mair``
+            air_mass=prognostic["rho"] * static["ddqz_z_full"],
+            dz=static["ddqz_z_full"],
+        )
 
-        # the processes, each reading the state the previous ones advanced
-        wind_tendencies = None
-        if self.muphys is not None:
-            new_temperature, new_q, *_ = self.muphys.run(
-                dz=static["ddqz_z_full"],
-                te=temperature,
-                p=pressure,
-                rho=rho,
-                q=Q(v=q["qv"], c=q["qc"], r=q["qr"], s=q["qs"], i=q["qi"], g=q["qg"]),
-                dtime=dtime,
-            )
-            temperature = temperature + dtime * ((new_temperature - temperature) / dtime)
-            for species, new in new_q._asdict().items():
-                name = f"q{species}"
-                q[name] = q[name] + dtime * ((new - q[name]) / dtime)
-        if self.surface is not None:
-            fluxes = self.surface.run(
-                input_state=surface_states.SurfaceInputState(
-                    surface_pressure=pressure_ifc[dims.KHalfDim(nlev)],
-                    temperature=temperature[dims.KDim(nlev - 1)],
-                )
-            )
-        if self.tmx is not None:
-            _, tendencies, _ = self.tmx.run(
-                input_state=tmx_states.TmxInputState(
-                    temperature=temperature,
-                    virtual_temperature=virtual_temperature,
-                    pressure=pressure,
-                    u=u,
-                    v=v,
-                    w=w,
-                    **{name: q[name] for name in _MOISTURE},
-                    rho=rho,
-                    air_mass=air_mass,
-                ),
-                surface_flux_state=fluxes,
-                dtime=dtime,
-            )
-            temperature = temperature + dtime * tendencies.tend_temperature
-            w = w + dtime * tendencies.tend_w
-            for name in ("qv", "qc", "qi"):
-                q[name] = q[name] + dtime * getattr(tendencies, f"tend_{name}")
-            wind_tendencies = (tendencies.tend_u, tendencies.tend_v)
+    def run_muphys(
+        self, col: ColumnState, dtime: float
+    ) -> tuple[ColumnTendencies, dict[str, gtx.Field]]:
+        """The tendencies of temperature and moisture, and the precipitation fluxes."""
+        assert self.muphys is not None
+        q = col.q
+        new_temperature, new_q, *fluxes = self.muphys.run(
+            dz=col.dz,
+            te=col.temperature,
+            p=col.pressure,
+            rho=col.rho,
+            q=Q(v=q["qv"], c=q["qc"], r=q["qr"], s=q["qs"], i=q["qi"], g=q["qg"]),
+            dtime=dtime,
+        )
+        return (
+            ColumnTendencies(
+                temperature=(new_temperature - col.temperature) / dtime,
+                q={
+                    f"q{species}": (new - q[f"q{species}"]) / dtime
+                    for species, new in new_q._asdict().items()
+                },
+            ),
+            dict(zip(_MUPHYS_DIAGNOSTICS, fluxes, strict=True)),
+        )
 
-        # phy2dyn
+    def surface_input(self, col: ColumnState) -> surface_states.SurfaceInputState:
+        return surface_states.SurfaceInputState(
+            surface_pressure=col.pressure_ifc[dims.KHalfDim(self._num_levels)],
+            temperature=col.temperature[dims.KDim(self._num_levels - 1)],
+        )
+
+    def run_surface(self, input_state: surface_states.SurfaceInputState) -> SurfaceFluxState:
+        assert self.surface is not None
+        return self.surface.run(input_state=input_state)
+
+    def run_tmx(
+        self, col: ColumnState, fluxes: SurfaceFluxState, dtime: float
+    ) -> tuple[ColumnTendencies, dict[str, gtx.Field]]:
+        """The tendencies of temperature, qv, qc, qi, u, v and w, and the tmx diagnostics."""
+        assert self.tmx is not None
+        _, tendencies, diagnostics = self.tmx.run(
+            input_state=tmx_states.TmxInputState(
+                temperature=col.temperature,
+                virtual_temperature=col.virtual_temperature,
+                pressure=col.pressure,
+                u=col.u,
+                v=col.v,
+                w=col.w,
+                **{name: col.q[name] for name in _MOISTURE},
+                rho=col.rho,
+                air_mass=col.air_mass,
+            ),
+            surface_flux_state=fluxes,
+            dtime=dtime,
+        )
+        return (
+            ColumnTendencies(
+                temperature=tendencies.tend_temperature,
+                q={name: getattr(tendencies, f"tend_{name}") for name in ("qv", "qc", "qi")},
+                u=tendencies.tend_u,
+                v=tendencies.tend_v,
+                w=tendencies.tend_w,
+            ),
+            diagnostics,
+        )
+
+    def phy2dyn(
+        self,
+        prognostic: dict[str, gtx.Field],
+        perturbed_exner: fa.CellKField[ta.wpfloat],
+        col: ColumnState,
+        tend: ColumnTendencies,
+        dtime: float,
+    ) -> tuple[dict[str, gtx.Field], dict[str, gtx.Field], fa.CellKField[ta.wpfloat]]:
+        """
+        The prognostics, tracers and perturbed exner of the advanced column `col`.
+
+        At constant volume: rho stays, exner and theta_v follow from the virtual temperature of
+        `col`'s temperature and moisture, w and the tracers are `col`'s, and vn takes the wind
+        tendencies of `tend`, the sum over the processes.
+        """
+        nlev = self._num_levels
+        q = col.q
+        virtual_temperature, _ = self._virtual_temperature_and_temperature(prognostic, q)
         exner, theta_v, perturbed_exner = self._exner(
-            rho,
+            prognostic["rho"],
             virtual_temperature,
             self._tv_tendency(
                 dtime,
                 *(q[name] for name in _MOISTURE),
-                temperature,
+                col.temperature,
                 virtual_temperature,
-                domain=cell_k,
+                domain=self._cell_k,
                 offset_provider={},
             ),
             prognostic["exner"],
             perturbed_exner,
             dtime,
-            domain=cell_k,
+            domain=self._cell_k,
             offset_provider={},
         )
         vn = prognostic["vn"]
-        if wind_tendencies is not None:
+        if tend.u is not None or tend.v is not None:
+            assert tend.u is not None and tend.v is not None, "the wind tendencies come as a pair"
             vn = vn + dtime * self._vn_from_uv(
-                *wind_tendencies,
-                static["primal_normal_cell_x"],
-                static["primal_normal_cell_y"],
-                static["c_lin_e"],
+                tend.u,
+                tend.v,
+                self._static_args["primal_normal_cell_x"],
+                self._static_args["primal_normal_cell_y"],
+                self._static_args["c_lin_e"],
                 domain={dims.EdgeDim: (0, self._num_edges), dims.KDim: (0, nlev)},
                 offset_provider=self._offset_provider,
             )
         return (
-            {**prognostic, "exner": exner, "theta_v": theta_v, "vn": vn, "w": w},
-            q,
+            {**prognostic, "exner": exner, "theta_v": theta_v, "vn": vn, "w": col.w},
+            dict(q),
             perturbed_exner,
+        )
+
+    def run(
+        self,
+        *,
+        prognostic: dict[str, gtx.Field],
+        tracers: dict[str, gtx.Field],
+        perturbed_exner: fa.CellKField[ta.wpfloat],
+        dtime: float,
+    ) -> tuple[dict[str, gtx.Field], dict[str, gtx.Field], fa.CellKField[ta.wpfloat]]:
+        """Return the new prognostics (exner, theta_v, vn, w), tracers and perturbed exner."""
+        col = self.dyn2phy(prognostic, tracers)
+        applied = []
+        fluxes = None
+        if self.muphys is not None:
+            tend, _ = self.run_muphys(col, dtime)
+            col = self._apply(col, tend, dtime)
+            applied.append(tend)
+        if self.surface is not None:
+            fluxes = self.run_surface(self.surface_input(col))
+        if self.tmx is not None:
+            assert fluxes is not None
+            tend, _ = self.run_tmx(col, fluxes, dtime)
+            col = self._apply(col, tend, dtime)
+            applied.append(tend)
+        return self.phy2dyn(
+            prognostic, perturbed_exner, col, sum_column_tendencies(*applied), dtime
+        )
+
+    def _apply(self, col: ColumnState, tend: ColumnTendencies, dtime: float) -> ColumnState:
+        return apply_column_tendencies(
+            col,
+            tend,
+            dtime,
+            recompute_virtual_temperature=self.recompute_virtual_temperature,
         )

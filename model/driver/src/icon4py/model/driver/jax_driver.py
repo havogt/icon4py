@@ -666,8 +666,6 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                     prognostic=prognostic,
                     tracers=tracers,
                     perturbed_exner=perturbed_exner,
-                    # the air mass of the state the physics sees, ICON's ``mair``
-                    air_mass=prognostic["rho"] * physics.ddqz_z_full,
                     dtime=dtime,
                 )
 
