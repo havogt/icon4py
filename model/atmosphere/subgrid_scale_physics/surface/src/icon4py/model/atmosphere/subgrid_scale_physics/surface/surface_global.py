@@ -52,11 +52,9 @@ class SurfaceGlobal:
         cell_domain = h_grid.domain(dims.CellDim)
         # every local cell, the halo included: on a distributed grid the next process and the
         # dynamics read the outputs there, and the outermost rows that read past the local grid
-        # are never read back
-        self._cells = (
-            int(grid.start_index(cell_domain(h_grid.Zone.NUDGING))),
-            int(grid.end_index(cell_domain(h_grid.Zone.END))),
-        )
+        # are never read back. A global grid has no lateral boundary: the cells start at 0, also on
+        # the SPMD padded grid, which defines no other zones than the interior and the end.
+        self._cells = (0, int(grid.end_index(cell_domain(h_grid.Zone.END))))
         self.surface_temperature = data_alloc.constant_field(
             grid,
             config.sea_surface_temperature,
