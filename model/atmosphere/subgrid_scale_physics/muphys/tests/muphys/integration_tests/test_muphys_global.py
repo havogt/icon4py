@@ -170,3 +170,48 @@ def test_muphys_global_jax_jit(date, *, experiment, data_provider, icon_grid, ba
 
     assert isinstance(outputs[0].ndarray, jax.Array)
     _check_against_savepoints(outputs, inputs, dtime, init_savepoint, exit_savepoint)
+
+
+@pytest.mark.datatest
+@pytest.mark.parametrize("experiment_description", [definitions.Experiments.EXCLAIM_APE_AES])
+@pytest.mark.parametrize("date", _DATES[1:2])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_muphys_global_torch(date, compiled, *, experiment, data_provider, icon_grid, backend):
+    if backend is not None:
+        pytest.skip("torch fields run on the embedded backend only.")
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    jnp = jax.numpy
+
+    init_savepoint = data_provider.from_savepoint_muphys_init(date=date)
+    exit_savepoint = data_provider.from_savepoint_muphys_exit(date=date)
+    inputs = _inputs(init_savepoint)
+    dtime = experiment.config.driver.dtime.total_seconds()
+    step = muphys_global.MuphysGlobal(grid=icon_grid, qnc=muphys_config.MuphysConfig().qnc)
+
+    def run(fields):
+        return _run(step, fields, dtime)
+
+    if compiled:
+        run = torch.compile(run, fullgraph=True)
+    outputs = run(
+        {
+            name: gtx.as_field(f.domain, torch.asarray(f.asnumpy()), allocator=torch)
+            for name, f in inputs.items()
+        }
+    )
+    jax_outputs = jax.jit(lambda fields: _run(step, fields, dtime))(
+        {
+            name: gtx.as_field(f.domain, jnp.asarray(f.asnumpy()), allocator=jnp)
+            for name, f in inputs.items()
+        }
+    )
+
+    assert isinstance(outputs[0].ndarray, torch.Tensor)
+    _check_against_savepoints(outputs, inputs, dtime, init_savepoint, exit_savepoint)
+    flat, jax_flat = ([out[0], *out[1], *out[2:]] for out in (outputs, jax_outputs))
+    for torch_field, jax_field in zip(flat, jax_flat, strict=True):
+        actual, expected = torch_field.asnumpy(), jax_field.asnumpy()
+        print(f"max |torch - jax| {np.max(np.abs(actual - expected)):.3e}")
+        test_utils.assert_dallclose(actual, expected, rtol=1e-12, atol=1e-16)

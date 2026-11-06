@@ -350,3 +350,102 @@ def test_tmx_global_single_step_jax_jit(
         use_km_const=config.use_km_const,
         owner_mask=data_alloc.as_numpy(decomposition_info.owner_mask(dims.CellDim)),
     )
+
+
+@pytest.mark.datatest
+@pytest.mark.parametrize("experiment_description, date", _DATES[:1])
+@pytest.mark.parametrize("compiled", ["eager", "fullgraph", "graph_breaks"])
+def test_tmx_global_single_step_torch(
+    *,
+    data_provider: sb.IconSerialDataProvider,
+    grid_savepoint: sb.IconGridSavepoint,
+    metrics_savepoint: sb.MetricSavepoint,
+    interpolation_savepoint: sb.InterpolationSavepoint,
+    icon_grid: icon_grid_.IconGrid,
+    decomposition_info: decomposition.DecompositionInfo,
+    backend: gtx_typing.Backend | None,
+    date: str,
+    experiment: definitions.Experiment,
+    compiled: str,
+) -> None:
+    if backend is not None:
+        pytest.skip("torch fields run on the embedded backend only.")
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    jnp = jax.numpy
+
+    config = experiment.config.tmx
+    assert config is not None
+    setup = _setup(
+        data_provider=data_provider,
+        grid_savepoint=grid_savepoint,
+        metrics_savepoint=metrics_savepoint,
+        interpolation_savepoint=interpolation_savepoint,
+        allocator=None,
+    )
+
+    def make_step(xp: Any) -> tmx_global.TmxGlobal:
+        return tmx_global.TmxGlobal(
+            grid=dataclasses.replace(
+                icon_grid,
+                connectivities={k: _to_jax(v, xp) for k, v in icon_grid.connectivities.items()},
+            ),
+            config=config,
+            **{name: _to_jax(value, xp) for name, value in setup.items()},
+            allocator=xp,
+        )
+
+    dtime = experiment.config.driver.dtime.total_seconds()
+    input_state, surface_flux_state = _inputs(data_provider, date, None)
+
+    def runner(step: tmx_global.TmxGlobal) -> Any:
+        def run(inputs: dict[str, gtx.Field], fluxes: dict[str, gtx.Field]) -> Any:
+            _, tendencies, diagnostics = step.run(
+                input_state=tmx_states.TmxInputState(**inputs),
+                surface_flux_state=SurfaceFluxState(**fluxes),
+                dtime=dtime,
+            )
+            return _fields_of(tendencies), diagnostics
+
+        return run
+
+    run = runner(make_step(torch))
+    torch_inputs = (
+        _fields_of(_to_jax(input_state, torch)),
+        _fields_of(_to_jax(surface_flux_state, torch)),
+    )
+    if compiled == "graph_breaks":
+        try:
+            explanation = torch._dynamo.explain(run)(*torch_inputs)
+        except Exception as error:
+            print(f"TORCH_EXPLAIN fails: {type(error).__name__}: {str(error).splitlines()[0]}")
+        else:
+            print(
+                f"TORCH_EXPLAIN graphs {explanation.graph_count}, "
+                f"graph breaks {explanation.graph_break_count}, "
+                f"reasons {[str(r.reason).splitlines()[0] for r in explanation.break_reasons]}"
+            )
+    eager_tendencies, eager_diagnostics = run(*torch_inputs)
+    if compiled != "eager":
+        run = torch.compile(run, fullgraph=compiled == "fullgraph")
+    tendencies, diagnostics = run(*torch_inputs)
+    for name, field in {**tendencies, **diagnostics}.items():
+        actual = field.asnumpy()
+        expected = {**eager_tendencies, **eager_diagnostics}[name].asnumpy()
+        scale = np.max(np.abs(expected))
+        print(f"{name}: max |torch - eager| {np.max(np.abs(actual - expected)):.3e}")
+        test_utils.assert_dallclose(actual, expected, rtol=0.0, atol=1e-12 * scale, err_msg=name)
+    jax_tendencies, jax_diagnostics = jax.jit(runner(make_step(jnp)))(
+        _fields_of(_to_jax(input_state, jnp)), _fields_of(_to_jax(surface_flux_state, jnp))
+    )
+
+    assert isinstance(tendencies["tend_temperature"].ndarray, torch.Tensor)
+    for name, field in {**tendencies, **diagnostics}.items():
+        actual = field.asnumpy()
+        expected = {**jax_tendencies, **jax_diagnostics}[name].asnumpy()
+        diff = np.max(np.abs(actual - expected))
+        scale = np.max(np.abs(expected))
+        print(f"{name}: max |torch - jax| {diff:.3e}, max abs {scale:.3e}")
+        # the tendencies of the implicit vertical solver cancel to many orders below their maximum
+        test_utils.assert_dallclose(actual, expected, rtol=0.0, atol=1e-10 * scale, err_msg=name)
