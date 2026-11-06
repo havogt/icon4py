@@ -262,11 +262,15 @@ def _diffusion_global_step(
                     for k, v in mesh.connectivities.items()
                 },
             )
-            constants = torch_steps.converted(constants, xp, "constants")
+            constants = torch_steps.converted(constants, xp, "constants", init_only=True)
             vertical_grid = v_grid.VerticalGrid(
                 config=vertical_grid.config,
-                vct_a=torch_steps.converted(vertical_grid.vct_a, xp, "vertical_grid.vct_a"),
-                vct_b=torch_steps.converted(vertical_grid.vct_b, xp, "vertical_grid.vct_b"),
+                vct_a=torch_steps.converted(
+                    vertical_grid.vct_a, xp, "vertical_grid.vct_a", init_only=True
+                ),
+                vct_b=torch_steps.converted(
+                    vertical_grid.vct_b, xp, "vertical_grid.vct_b", init_only=True
+                ),
             )
             prognostic_input = torch_steps.converted(prognostic_input, xp, "prognostic_input")
             allocator, backend = xp, None

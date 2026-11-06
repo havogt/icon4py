@@ -404,7 +404,7 @@ def _component_run(component: str, setup: _Setup, jnp: Any) -> Any:
     from icon4py.model.common.states import tracer_prep_adv_states as prep_adv_states
     from icon4py.model.common.states.surface_flux_state import SurfaceFluxState
 
-    convert = lambda obj: torch_steps.converted(obj, jnp, type(obj).__name__)  # noqa: E731
+    convert = lambda obj: torch_steps.converted(obj, jnp, type(obj).__name__, init_only=True)  # noqa: E731
     mesh = dataclasses.replace(
         setup.mesh, connectivities={k: convert(v) for k, v in setup.mesh.connectivities.items()}
     )

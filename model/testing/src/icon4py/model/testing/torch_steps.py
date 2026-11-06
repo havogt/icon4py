@@ -86,21 +86,25 @@ def to_array_ns(obj: Any, xp: Any) -> Any:  # noqa: PLR0911 [too-many-return-sta
     return obj
 
 
-def _foreign_leaves(obj: Any, xp: Any, path: str) -> list[str]:  # noqa: PLR0911 [too-many-return-statements]
+def _foreign_leaves(obj: Any, xp: Any, path: str, init_only: bool) -> list[str]:  # noqa: PLR0911 [too-many-return-statements]
     if isinstance(obj, gtx.Field):
-        return _foreign_leaves(obj.ndarray, xp, f"{path}.ndarray")
+        return _foreign_leaves(obj.ndarray, xp, f"{path}.ndarray", init_only)
     if isinstance(obj, (tuple, list)):
-        return [p for i, x in enumerate(obj) for p in _foreign_leaves(x, xp, f"{path}[{i}]")]
+        return [
+            p for i, x in enumerate(obj) for p in _foreign_leaves(x, xp, f"{path}[{i}]", init_only)
+        ]
     if isinstance(obj, dict):
-        return [p for k, v in obj.items() for p in _foreign_leaves(v, xp, f"{path}[{k!r}]")]
+        return [
+            p for k, v in obj.items() for p in _foreign_leaves(v, xp, f"{path}[{k!r}]", init_only)
+        ]
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return [
             p
             for f in dataclasses.fields(obj)
-            for p in _foreign_leaves(getattr(obj, f.name), xp, f"{path}.{f.name}")
+            for p in _foreign_leaves(getattr(obj, f.name), xp, f"{path}.{f.name}", init_only)
         ]
     if isinstance(obj, np.generic):
-        return [f"{path}: numpy scalar {type(obj).__name__}"]
+        return [] if init_only else [f"{path}: numpy scalar {type(obj).__name__}"]
     if not hasattr(obj, "shape"):
         return []
     if xp.__name__ == "torch":
@@ -116,13 +120,17 @@ def _foreign_leaves(obj: Any, xp: Any, path: str) -> list[str]:  # noqa: PLR0911
     return []
 
 
-def converted(obj: Any, xp: Any, path: str) -> Any:
+def converted(obj: Any, xp: Any, path: str, *, init_only: bool = False) -> Any:
     """
     `to_array_ns(obj, xp)`, checked: every array in it is an `xp` array, a torch tensor on the
     torch device; no NumPy or CuPy array and no NumPy scalar is left. Raises naming the paths.
+
+    With `init_only`, for what only a component's `__init__` reads, NumPy scalars are allowed: the
+    component turns those it passes to its step into Python scalars, and the check of the step's
+    inputs names any that it does not.
     """
     result = to_array_ns(obj, xp)
-    if foreign := _foreign_leaves(result, xp, path):
+    if foreign := _foreign_leaves(result, xp, path, init_only):
         raise TypeError(
             f"{len(foreign)} arrays not converted to {xp.__name__}:\n  " + "\n  ".join(foreign[:20])
         )

@@ -421,10 +421,14 @@ def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
                 ),
                 vertical_params=v_grid.VerticalGrid(
                     config=vertical_params.config,
-                    vct_a=torch_steps.converted(vertical_params.vct_a, xp, "vertical_params.vct_a"),
-                    vct_b=torch_steps.converted(vertical_params.vct_b, xp, "vertical_params.vct_b"),
+                    vct_a=torch_steps.converted(
+                        vertical_params.vct_a, xp, "vertical_params.vct_a", init_only=True
+                    ),
+                    vct_b=torch_steps.converted(
+                        vertical_params.vct_b, xp, "vertical_params.vct_b", init_only=True
+                    ),
                 ),
-                **torch_steps.converted(setup, xp, "setup"),
+                **torch_steps.converted(setup, xp, "setup", init_only=True),
                 allocator=xp,
             )
             states = torch_steps.converted(
