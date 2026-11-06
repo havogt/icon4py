@@ -171,6 +171,63 @@ def _constants_of(granule: Any) -> dict[str, Any]:
     }
 
 
+_PHYSICS_PROCESSES = ("muphys", "surface", "tmx")
+
+
+def _physics_constants_of(physics: Any) -> dict[str, Any]:
+    """`_constants_of` the physics and of each of its processes."""
+    return {
+        "physics": _constants_of(physics),
+        **{
+            process: _constants_of(granule)
+            for process in _PHYSICS_PROCESSES
+            if (granule := getattr(physics, process)) is not None
+        },
+    }
+
+
+def _with_physics_constants(physics: Any, constants: dict[str, Any]) -> Any:
+    bound = _with_constants(physics, constants["physics"])
+    for process in _PHYSICS_PROCESSES:
+        if (granule := getattr(physics, process)) is not None:
+            setattr(bound, process, _with_constants(granule, constants[process]))
+    return bound
+
+
+def _granule_constants(
+    granules: driver_utils.GlobalGranules, as_arguments: bool, *, spmd: bool
+) -> dict[str, Any]:
+    """
+    The lifted static fields of each granule, None for a granule that closes over them.
+
+    Passed as arguments, the static fields are not constants of the jitted programs.
+    """
+    constants = {
+        f.name: (
+            None
+            if not as_arguments or (granule := getattr(granules, f.name)) is None
+            else _physics_constants_of(granule)
+            if f.name == "physics"
+            else _constants_of(granule)
+        )
+        for f in dataclasses.fields(granules)
+    }
+    if spmd and (
+        closed_over := [
+            name
+            for name, lifted in constants.items()
+            if getattr(granules, name) is not None and lifted is None
+        ]
+    ):
+        # each rank would embed its own static fields in the program: the ranks lower different
+        # programs, and the collectives in them wait for each other forever
+        raise ValueError(
+            "One SPMD program needs the static fields of every granule passed as arguments; "
+            f"closed over: {closed_over}."
+        )
+    return constants
+
+
 def _unfilled_local(owned: Any, num_local: int, finite_padding: bool) -> Any:
     jax = jax_utils.import_jax()
     shape = (num_local - owned.shape[0], *owned.shape[1:])
@@ -309,15 +366,9 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         self.global_granules = global_granules
         self.halo_exchange = driver_utils.HaloExchange(halo_exchange)
         self.exchange_read_fields_only = exchange_read_fields_only
-        # passed as arguments, the static fields are not constants of the jitted programs
-        self._constants = {
-            name: _constants_of(granule) if constants_as_arguments and granule is not None else None
-            for name, granule in (
-                ("solve_nonhydro", global_granules.solve_nonhydro),
-                ("diffusion", global_granules.diffusion),
-                ("tracer_advection", global_granules.tracer_advection),
-            )
-        }
+        self._constants = _granule_constants(
+            global_granules, constants_as_arguments, spmd=layout is not None
+        )
         # the Godunov splitting order, flipped once per time step for all tracers as in ICON
         self._even_timestep = False
         self._traces = 0
@@ -660,9 +711,14 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             physics = self.global_granules.physics
             assert physics is not None
 
-            def run(prognostic: dict, tracers: dict, perturbed_exner: gtx.Field) -> tuple:
+            def run(
+                constants: dict | None, prognostic: dict, tracers: dict, perturbed_exner: gtx.Field
+            ) -> tuple:
                 self._traces += 1
-                return physics.run(
+                bound = (
+                    physics if constants is None else _with_physics_constants(physics, constants)
+                )
+                return bound.run(
                     prognostic=prognostic,
                     tracers=tracers,
                     perturbed_exner=perturbed_exner,
@@ -765,7 +821,10 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             )["tracers"]
         if self.global_granules.physics is not None:
             prognostic, tracers, perturbed_exner = self._jitted_physics(dtime)(
-                prognostic, tracers, diagnostic_state.perturbed_exner_at_cells_on_model_levels
+                constants["physics"],
+                prognostic,
+                tracers,
+                diagnostic_state.perturbed_exner_at_cells_on_model_levels,
             )
             # the physics computed the halo from a halo it read beyond, and the next step reads it
             state = self._with_halo(

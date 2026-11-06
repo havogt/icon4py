@@ -149,12 +149,7 @@ def _physics(static: IconStatic) -> physics_global.PhysicsGlobal:
     physics = static.setup.granules.physics
     if physics is None:
         raise ValueError("The experiment configures no physics.")
-    constants = static.constants["physics"]
-    bound = jax_driver._with_constants(physics, constants["physics"])
-    for process in ("muphys", "surface", "tmx"):
-        if (granule := getattr(physics, process)) is not None:
-            setattr(bound, process, jax_driver._with_constants(granule, constants[process]))
-    return bound
+    return jax_driver._with_physics_constants(physics, static.constants["physics"])
 
 
 def init_from_grid_file(
@@ -189,19 +184,6 @@ def init_from_grid_file(
     ds = driver.initialize_driver_states(icon_driver, allocator, validate_granules=False)
     prognostic, diagnostic, intermediate, prep_adv, tracers, constants = icon_driver._prepare(ds)
     granules = icon_driver.global_granules
-    physics = granules.physics
-    if physics is not None:
-        constants = {
-            **constants,
-            "physics": {
-                "physics": jax_driver._constants_of(physics),
-                **{
-                    process: jax_driver._constants_of(granule)
-                    for process in ("muphys", "surface", "tmx")
-                    if (granule := getattr(physics, process)) is not None
-                },
-            },
-        }
     time_vars = icon_driver.model_time_variables
     static = IconStatic(
         constants=constants,
