@@ -31,8 +31,7 @@ from icon4py.model.common import utils as common_utils
 
 #: the components `torch.compile` cannot build yet, with the reason
 COMPILE_BLOCKED = {
-    "muphys": "gt4py: a NamedTuple argument (muphys' Q) fails torch_compile_call (jaxad-33 f4)",
-    "solve_nonhydro": "gt4py: as_offset with a field offset is data-dependent (jaxad-33 f6)",
+    "solve_nonhydro": "gt4py: a data-dependent guard Eq(u0, 1) in the non-strict call (jaxad-33 f7)",
 }
 
 
