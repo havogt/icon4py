@@ -78,6 +78,7 @@ class SolveNonhydroGlobal:
         # The scalars passed to the step are Python ints, floats and bools: torch.compile traces
         # numpy scalars into the compiled region as arrays, which gt4py's entry point rejects.
         self._mean_cell_area = float(cell_geometry.mean_cell_area)
+        self._fourth_order_divdamp_factor = float(config.fourth_order_divdamp_factor)
 
         def unstructured(op: gtx_typing.FieldOperator) -> gtx_typing.FieldOperator:
             return op.with_grid_type(gtx.GridType.UNSTRUCTURED).with_backend(backend)
@@ -215,7 +216,7 @@ class SolveNonhydroGlobal:
             config.divdamp_order == dycore_states.DivergenceDampingOrder.FOURTH_ORDER
             or (
                 combined_divdamp
-                and second_order_divdamp_factor <= (4.0 * config.fourth_order_divdamp_factor)
+                and second_order_divdamp_factor <= (4.0 * self._fourth_order_divdamp_factor)
             )
         )
 
