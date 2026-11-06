@@ -30,9 +30,7 @@ from icon4py.model.common import utils as common_utils
 
 
 #: the components `torch.compile` cannot build yet, with the reason
-COMPILE_BLOCKED = {
-    "solve_nonhydro": "gt4py: a data-dependent guard Eq(u0, 1) in the non-strict call (jaxad-33 f7)",
-}
+COMPILE_BLOCKED: dict[str, str] = {}
 
 
 def compile_blocked(component: str) -> str | None:
