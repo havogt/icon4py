@@ -42,6 +42,7 @@ from icon4py.model.common.interpolation import interpolation_attributes, interpo
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import factory, nonhydro_states, prognostic_state as prognostics
 from icon4py.model.common.utils import data_allocation as data_alloc, device_utils
+from icon4py.model.driver import jax_driver
 from icon4py.model.testing import torch_steps
 from icon4py.model.testing.fixtures.benchmark import (
     geometry_field_source,
@@ -417,9 +418,11 @@ def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
     The `SolveNonhydroGlobal` substep and its prognostic input for each execution, on the same
     constants and states; the prognostic input is `_atmosphere_at_rest_in_solid_body_rotation`.
 
-    `"jax"` jits it on JAX arrays on the default JAX device, `"torch"` and `"torch_compile"`
-    run it on torch tensors on the torch device, eager and under `torch.compile`; the constant
-    fields are computed with `--backend` and then converted. Every call ends synchronised.
+    `"jax"` jits it on JAX arrays on the default JAX device closing over the solver and the
+    states, `"jax_args"` with the solver's static fields and the states as arguments, as the JAX
+    driver passes them; `"torch"` and `"torch_compile"` run it on torch tensors on the torch
+    device, eager and under `torch.compile`. The constant fields are computed with `--backend` and
+    then converted. Every call ends synchronised.
     """
     setup = _setup(
         geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
@@ -494,6 +497,40 @@ def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
                 torch_steps.step(step, torch, compiled=execution == "torch_compile"),
                 prognostic_input,
             )
+        elif execution == "jax_args":
+
+            def call(
+                solver: solve_nonhydro_global.SolveNonhydroGlobal,
+                fields: dict[str, gtx.Field],
+                state_args: dict[str, dict[str, Any]],
+                step: Any = step,
+            ) -> dict[str, gtx.Field]:
+                return step(
+                    fields,
+                    solver,
+                    {
+                        "diagnostic_state_nh": jax_driver._diagnostic_from_dict(
+                            state_args["diagnostic"]
+                        ),
+                        "prep_adv": dycore_states.PrepAdvection(**state_args["prep_adv"]),
+                        "intermediate_state": solve_nonhydro_global.IntermediateState(
+                            **state_args["intermediate"]
+                        ),
+                    },
+                )
+
+            state_args = {
+                "diagnostic": jax_driver._diagnostic_to_dict(states["diagnostic_state_nh"]),
+                "prep_adv": jax_driver._shallow_dict(states["prep_adv"]),
+                "intermediate": states["intermediate_state"]._asdict(),
+            }
+            jitted = torch_steps.jax_constants_as_arguments(
+                call, solver, jax_driver._constants_of, jax_driver._with_constants
+            )
+            steps[execution] = (
+                lambda fields, jitted=jitted, state_args=state_args: jitted(fields, state_args),
+                prognostic_input,
+            )
         else:
             jax = pytest.importorskip("jax")
             jitted = jax.jit(step)
@@ -507,7 +544,7 @@ def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
 @pytest.mark.parametrize(
     "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
 )
-@pytest.mark.parametrize("execution", ["jax", "torch", "torch_compile"])
+@pytest.mark.parametrize("execution", torch_steps.EXECUTIONS)
 @pytest.mark.benchmark
 @pytest.mark.benchmark_only
 def test_benchmark_solve_nonhydro_global(  # noqa: PLR0917 [too-many-positional-arguments]
@@ -559,7 +596,10 @@ def test_solve_nonhydro_global_torch_matches_jax(  # noqa: PLR0917 [too-many-pos
     at_last_substep: bool,
     backend_like: model_backends.BackendLike,
 ) -> None:
-    """The substep under `torch.compile` and eager on torch against `jax.jit`, same inputs."""
+    """
+    The substep in each of `torch_steps.checked_executions` on the same inputs, checked by
+    `torch_steps.compare_outputs`.
+    """
     steps = _global_step(
         geometry_field_source,
         interpolation_field_source,
@@ -567,20 +607,13 @@ def test_solve_nonhydro_global_torch_matches_jax(  # noqa: PLR0917 [too-many-pos
         backend_like,
         at_first_substep,
         at_last_substep,
-        ("jax", "torch")
-        if torch_steps.compile_blocked("solve_nonhydro")
-        else ("jax", "torch", "torch_compile"),
+        torch_steps.checked_executions("solve_nonhydro"),
     )
     outputs = {
         execution: {k: v.asnumpy() for k, v in step(step_input).items()}
         for execution, (step, step_input) in steps.items()
     }
-    failures = torch_steps.compare(outputs["torch"], outputs["jax"], "eager-vs-jax")
-    if "torch_compile" in outputs:
-        failures += torch_steps.compare(
-            outputs["torch_compile"], outputs["torch"], "compile-vs-eager"
-        )
-        failures += torch_steps.compare(outputs["torch_compile"], outputs["jax"], "compile-vs-jax")
+    failures = torch_steps.compare_outputs(outputs)
     assert not failures, failures
 
 

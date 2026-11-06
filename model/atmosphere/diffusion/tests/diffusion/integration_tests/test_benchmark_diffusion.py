@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,7 @@ from icon4py.model.common.interpolation import interpolation_attributes, interpo
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import prognostic_state as prognostics
 from icon4py.model.common.utils import data_allocation as data_alloc, device_utils
+from icon4py.model.driver import jax_driver
 from icon4py.model.testing import torch_steps
 from icon4py.model.testing.fixtures.benchmark import (
     geometry_field_source,
@@ -232,10 +234,11 @@ def _diffusion_global_step(
     """
     The `DiffusionGlobal` step and its prognostic input.
 
-    `execution="jax"` jits it on JAX arrays on the default JAX device, `"torch"` and
-    `"torch_compile"` run it on torch tensors on the torch device, eager and under
-    `torch.compile`; the constant fields are computed with `--backend` and then converted.
-    `execution="backend"` runs it on `--backend`. Every call ends synchronised.
+    `execution="jax"` jits it on JAX arrays on the default JAX device, closing over the static
+    fields, `"jax_args"` with them as arguments, `"torch"` and `"torch_compile"` run it on torch
+    tensors on the torch device, eager and under `torch.compile`; the constant fields are computed
+    with `--backend` and then converted. `execution="backend"` runs it on `--backend`. Every call
+    ends synchronised.
     """
     mesh = setup["mesh"]
     if mesh.limited_area:
@@ -289,9 +292,11 @@ def _diffusion_global_step(
         )
     dtime = setup["dtime"]
 
-    def step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
+    def call(granule: Any, fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
         new = granule.run(prognostic_state=prognostics.PrognosticState(**fields), dtime=dtime)
         return {k: getattr(new, k) for k in _PROGNOSTIC_FIELDS}
+
+    step = functools.partial(call, granule)
 
     if torch is not None:
         return torch_steps.step(
@@ -301,6 +306,10 @@ def _diffusion_global_step(
         jax = pytest.importorskip("jax")
         jitted = jax.jit(step)
         return lambda fields: jax.block_until_ready(jitted(fields)), prognostic_input
+    if execution == "jax_args":
+        return torch_steps.jax_constants_as_arguments(
+            call, granule, jax_driver._constants_of, jax_driver._with_constants
+        ), prognostic_input
     sync = device_utils.synchronized_function(
         step, allocator=model_backends.get_allocator(backend_like)
     )
@@ -309,7 +318,7 @@ def _diffusion_global_step(
 
 @pytest.mark.benchmark
 @pytest.mark.benchmark_only
-@pytest.mark.parametrize("execution", ["jax", "backend", "torch", "torch_compile"])
+@pytest.mark.parametrize("execution", ["jax", "jax_args", "backend", "torch", "torch_compile"])
 def test_diffusion_global_benchmark(  # noqa: PLR0917 [too-many-positional-arguments]
     geometry_field_source: grid_geometry.GridGeometry,
     grid_manager: gm.GridManager,
@@ -340,6 +349,12 @@ def test_diffusion_global_benchmark(  # noqa: PLR0917 [too-many-positional-argum
     step(prognostic_input)
     benchmark.extra_info["first_call_s"] = time.perf_counter() - start
     benchmark(step, prognostic_input)
+    if execution != "backend":
+        benchmark.extra_info.update(
+            torch_steps.peak_bytes(
+                pytest.importorskip("torch") if execution.startswith("torch") else None
+            )
+        )
 
 
 def test_diffusion_global_torch_matches_jax(
@@ -349,7 +364,10 @@ def test_diffusion_global_torch_matches_jax(
     metrics_field_source: metrics_factory.MetricsFieldsFactory,
     backend_like: model_backends.BackendLike,
 ) -> None:
-    """`DiffusionGlobal` under `torch.compile` and eager on torch against `jax.jit`, same inputs."""
+    """
+    `DiffusionGlobal` in each of `torch_steps.checked_executions` on the same inputs, checked by
+    `torch_steps.compare_outputs`.
+    """
     setup = _setup(
         geometry_field_source,
         grid_manager,
@@ -358,17 +376,8 @@ def test_diffusion_global_torch_matches_jax(
         backend_like,
     )
     outputs = {}
-    for execution in (
-        ("jax", "torch")
-        if torch_steps.compile_blocked("diffusion")
-        else ("jax", "torch", "torch_compile")
-    ):
+    for execution in torch_steps.checked_executions("diffusion"):
         step, step_input = _diffusion_global_step(setup, execution, backend_like)
         outputs[execution] = {k: v.asnumpy() for k, v in step(step_input).items()}
-    failures = torch_steps.compare(outputs["torch"], outputs["jax"], "eager-vs-jax")
-    if "torch_compile" in outputs:
-        failures += torch_steps.compare(
-            outputs["torch_compile"], outputs["torch"], "compile-vs-eager"
-        )
-        failures += torch_steps.compare(outputs["torch_compile"], outputs["jax"], "compile-vs-jax")
+    failures = torch_steps.compare_outputs(outputs)
     assert not failures, failures

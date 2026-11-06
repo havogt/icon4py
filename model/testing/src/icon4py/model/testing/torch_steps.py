@@ -14,8 +14,11 @@ The torch device is `ICON4PY_BENCH_TORCH_DEVICE` (default `cuda` when available)
 timed only with `ICON4PY_BENCH_TORCH_EAGER=1`. A component in `COMPILE_BLOCKED` is not compiled
 unless named in `ICON4PY_BENCH_TORCH_COMPILE_FORCE` (comma separated).
 
-The split check writes each execution's outputs, one process each, to `ICON4PY_BENCH_DUMP_DIR`
-(`dump`), and `compare_dumps` compares them there.
+The executions: `jax` is `jax.jit` closing over the granule, its static fields constants of the
+program; `jax_args` passes them as arguments, as the JAX driver does
+(`jax_constants_as_arguments`); `torch` and `torch_compile` are eager torch and `torch.compile`,
+which lifts closed-over tensors to graph inputs. The split check writes each execution's outputs,
+one process each, to `ICON4PY_BENCH_DUMP_DIR` (`dump`), and `compare_dumps` compares them there.
 """
 
 from __future__ import annotations
@@ -210,7 +213,14 @@ def compare(
     return failures
 
 
-EXECUTIONS = ("jax", "torch", "torch_compile")
+EXECUTIONS = ("jax", "jax_args", "torch", "torch_compile")
+#: checked at the bar; jax_args against jax is printed as information
+_CHECKED_PAIRS = (
+    ("torch_compile", "torch"),
+    ("torch_compile", "jax"),
+    ("torch", "jax"),
+    ("jax_args", "torch"),
+)
 
 
 def _dump_path(component: str, execution: str) -> pathlib.Path | None:
@@ -229,31 +239,65 @@ def dump(outputs: dict[str, np.ndarray], component: str, execution: str) -> path
     return path
 
 
+def checked_executions(component: str) -> tuple[str, ...]:
+    """
+    The executions an in-process check of `component` runs: `ICON4PY_BENCH_CHECK_EXECUTIONS`
+    (space separated, default all), without torch_compile while it is blocked.
+    """
+    selected = os.environ.get("ICON4PY_BENCH_CHECK_EXECUTIONS", " ".join(EXECUTIONS)).split()
+    return tuple(e for e in selected if not (e == "torch_compile" and compile_blocked(component)))
+
+
+def compare_outputs(
+    outputs: dict[str, dict[str, np.ndarray]], relative: float = 1e-10
+) -> list[str]:
+    """
+    Every checked pair of the executions in `outputs` within `relative` of the field's max; jax
+    and torch must be there. `jax_args` against `jax` is printed only.
+    """
+    assert {"jax", "torch"} <= outputs.keys(), sorted(outputs)
+    failures = []
+    for computed, reference in _CHECKED_PAIRS:
+        if computed in outputs and reference in outputs:
+            label = f"{computed}-vs-{reference}"
+            failures += [
+                f"{label} {name}"
+                for name in compare(outputs[computed], outputs[reference], label, relative)
+            ]
+    if {"jax_args", "jax"} <= outputs.keys():
+        compare(outputs["jax_args"], outputs["jax"], "jax_args-vs-jax (information)", relative)
+    return failures
+
+
 def compare_dumps(component: str, relative: float = 1e-10) -> list[str]:
-    """
-    Every pair of the executions' dumps of `component`: compile against eager and JAX, eager
-    against JAX. The compiled dump may be missing only when `component` is `compile_blocked`.
-    """
+    """`compare_outputs` of the dumps of `component` there are."""
     loaded = {}
     for execution in EXECUTIONS:
         path = _dump_path(component, execution)
         assert path is not None, "needs ICON4PY_BENCH_DUMP_DIR"
-        if not path.exists():
-            assert execution == "torch_compile" and compile_blocked(component), f"no dump {path}"
-            continue
-        with np.load(path) as data:
-            loaded[execution] = dict(data)
-    pairs = [("torch_compile", "torch"), ("torch_compile", "jax"), ("torch", "jax")]
-    failures = []
-    for computed, reference in pairs:
-        if computed in loaded and reference in loaded:
-            failures += [
-                f"{computed}-vs-{reference} {name}"
-                for name in compare(
-                    loaded[computed], loaded[reference], f"{computed}-vs-{reference}", relative
-                )
-            ]
-    return failures
+        if path.exists():
+            with np.load(path) as data:
+                loaded[execution] = dict(data)
+    print(f"DUMPS {component}: {sorted(loaded)}")
+    return compare_outputs(loaded, relative)
+
+
+def jax_constants_as_arguments(
+    call: Callable[..., Any],
+    granule: Any,
+    constants_of: Callable[[Any], Any],
+    with_constants: Callable[[Any, Any], Any],
+) -> Callable[..., Any]:
+    """
+    `call(granule, *args)` under `jax.jit` with the static fields of `granule` as arguments, lifted
+    by `constants_of` and bound to a copy by `with_constants` (the JAX driver's
+    `_constants_of` / `_with_constants`); synchronised after every call.
+    """
+    import jax  # noqa: PLC0415 [import-outside-top-level]
+
+    constants = constants_of(granule)
+    jitted = jax.jit(lambda constants, *args: call(with_constants(granule, constants), *args))
+    return lambda *args: jax.block_until_ready(jitted(constants, *args))
 
 
 def peak_bytes(torch: Any | None) -> dict[str, int]:

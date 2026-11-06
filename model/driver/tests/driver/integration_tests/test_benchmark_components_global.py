@@ -389,18 +389,32 @@ def _global_step(component: str, setup: _Setup, jnp: Any, execution: str = "jax"
     or with `execution` `"torch"` / `"torch_compile"` on torch tensors on the torch device, eager
     and under `torch.compile`; `jnp` is the array namespace of the inputs.
     """
-    if execution != "jax":
+    if execution.startswith("torch"):
         torch = jnp
         with torch_steps.device(torch):
             run = _component_run(component, setup, torch)
         return torch_steps.step(run, torch, compiled=execution == "torch_compile")
+    if execution == "jax_args":
+        from icon4py.model.driver import jax_driver
+
+        granule = _component_run(component, setup, jnp).granule
+        return torch_steps.jax_constants_as_arguments(
+            lambda bound, fields: _component_run(component, setup, jnp, bound)(fields),
+            granule,
+            jax_driver._constants_of,
+            jax_driver._with_constants,
+        )
     import jax
 
     jitted = jax.jit(_component_run(component, setup, jnp))
     return lambda fields: jax.block_until_ready(jitted(fields))
 
 
-def _component_run(component: str, setup: _Setup, jnp: Any) -> Any:
+def _component_run(component: str, setup: _Setup, jnp: Any, granule: Any = None) -> Any:
+    """
+    The step of `component` on `granule`, by default a new one on `jnp` arrays; the step's
+    `granule` attribute is the granule it runs.
+    """
     from icon4py.model.common.states import tracer_prep_adv_states as prep_adv_states
     from icon4py.model.common.states.surface_flux_state import SurfaceFluxState
 
@@ -413,8 +427,12 @@ def _component_run(component: str, setup: _Setup, jnp: Any) -> Any:
     if component == "tracer":
         from icon4py.model.atmosphere.tracer_advection import tracer_advection_global
 
-        step = tracer_advection_global.TracerAdvectionGlobal(
-            grid=mesh, **_tracer_states(setup, jnp, convert), allocator=jnp
+        step = (
+            granule
+            if granule is not None
+            else tracer_advection_global.TracerAdvectionGlobal(
+                grid=mesh, **_tracer_states(setup, jnp, convert), allocator=jnp
+            )
         )
 
         def run(f: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
@@ -433,8 +451,12 @@ def _component_run(component: str, setup: _Setup, jnp: Any) -> Any:
     elif component == "tmx":
         from icon4py.model.atmosphere.subgrid_scale_physics.tmx import tmx_global, tmx_states
 
-        step = tmx_global.TmxGlobal(
-            grid=mesh, config=setup.config.tmx, **_tmx_states(setup, convert), allocator=jnp
+        step = (
+            granule
+            if granule is not None
+            else tmx_global.TmxGlobal(
+                grid=mesh, config=setup.config.tmx, **_tmx_states(setup, convert), allocator=jnp
+            )
         )
         input_names = [f.name for f in dataclasses.fields(tmx_states.TmxInputState)]
         flux_names = [f.name for f in dataclasses.fields(SurfaceFluxState)]
@@ -460,7 +482,11 @@ def _component_run(component: str, setup: _Setup, jnp: Any) -> Any:
             surface_states,
         )
 
-        step = surface_global.SurfaceGlobal(grid=mesh, config=setup.config.surface, allocator=jnp)
+        step = (
+            granule
+            if granule is not None
+            else surface_global.SurfaceGlobal(grid=mesh, config=setup.config.surface, allocator=jnp)
+        )
         num_levels = setup.mesh.num_levels
 
         def run(f: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
@@ -485,7 +511,11 @@ def _component_run(component: str, setup: _Setup, jnp: Any) -> Any:
         from icon4py.model.atmosphere.subgrid_scale_physics.muphys import muphys_global
         from icon4py.model.atmosphere.subgrid_scale_physics.muphys.core.definitions import Q
 
-        step = muphys_global.MuphysGlobal(grid=mesh, qnc=setup.config.muphys.qnc)
+        step = (
+            granule
+            if granule is not None
+            else muphys_global.MuphysGlobal(grid=mesh, qnc=setup.config.muphys.qnc)
+        )
 
         def run(f: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
             te, q, pflx, pr, ps, pi, pg, pre = step.run(
@@ -509,6 +539,7 @@ def _component_run(component: str, setup: _Setup, jnp: Any) -> Any:
     else:
         raise ValueError(component)
 
+    run.granule = step
     return run
 
 
@@ -812,10 +843,17 @@ def test_granule_matches_dump(component: str, setup: _Setup, backend_like: Any) 
 
 @pytest.mark.benchmark
 @pytest.mark.benchmark_only
+@pytest.mark.parametrize("execution", ["jax", "jax_args"])
 @pytest.mark.parametrize("component", COMPONENTS)
-def test_global_jax_benchmark(component: str, setup: _Setup, benchmark: Any) -> None:
+def test_global_jax_benchmark(
+    component: str, execution: str, setup: _Setup, benchmark: Any
+) -> None:
+    """
+    The global step under `jax.jit`, closing over the static fields (`"jax"`) or with them as
+    arguments (`"jax_args"`).
+    """
     jnp = _jax_numpy()
-    step = _global_step(component, setup, jnp)
+    step = _global_step(component, setup, jnp, execution)
     fields = _as_fields(setup.inputs, jnp)
     start = time.perf_counter()
     step(fields)
@@ -874,27 +912,24 @@ def test_global_torch_benchmark(
 @pytest.mark.parametrize("component", TORCH_COMPONENTS)
 def test_global_torch_matches_jax(component: str, setup: _Setup) -> None:
     """
-    The global step under `torch.compile` and eager on torch against `jax.jit`, on the same
-    inputs; `ICON4PY_BENCH_PERTURB` perturbs the torch inputs as a negative control.
+    The global step in each of `torch_steps.checked_executions` on the same inputs, checked by
+    `torch_steps.compare_outputs`; `ICON4PY_BENCH_PERTURB` perturbs the torch inputs as a negative
+    control.
     """
-    torch = pytest.importorskip("torch")
-    jnp = _jax_numpy()
     num_levels = setup.mesh.num_levels
-
-    def outputs(step: Any, fields: dict[str, gtx.Field]) -> dict[str, np.ndarray]:
-        return {
+    outputs = {}
+    for execution in torch_steps.checked_executions(component):
+        if execution.startswith("jax"):
+            xp = _jax_numpy()
+            fields = _as_fields(setup.inputs, xp)
+        else:
+            xp = pytest.importorskip("torch")
+            fields = _torch_fields(_perturbed(setup.inputs), xp)
+        outputs[execution] = {
             k: _compared(component, k, v.asnumpy(), num_levels, setup.config)
-            for k, v in step(fields).items()
+            for k, v in _global_step(component, setup, xp, execution)(fields).items()
         }
-
-    jax_out = outputs(_global_step(component, setup, jnp), _as_fields(setup.inputs, jnp))
-    torch_inputs = _torch_fields(_perturbed(setup.inputs), torch)
-    eager = outputs(_global_step(component, setup, torch, "torch"), torch_inputs)
-    failures = torch_steps.compare(eager, jax_out, f"eager-vs-jax {component}")
-    if not torch_steps.compile_blocked(component):
-        compiled = outputs(_global_step(component, setup, torch, "torch_compile"), torch_inputs)
-        failures += torch_steps.compare(compiled, eager, f"compile-vs-eager {component}")
-        failures += torch_steps.compare(compiled, jax_out, f"compile-vs-jax {component}")
+    failures = torch_steps.compare_outputs(outputs)
     assert not failures, failures
 
 
@@ -909,9 +944,9 @@ def test_global_dump(component: str, execution: str, setup: _Setup) -> None:
         pytest.skip("needs ICON4PY_BENCH_DUMP_DIR")
     if execution == "torch_compile" and (reason := torch_steps.compile_blocked(component)):
         pytest.skip(reason)
-    if execution == "jax":
+    if execution.startswith("jax"):
         jnp = _jax_numpy()
-        out = _global_step(component, setup, jnp)(_as_fields(setup.inputs, jnp))
+        out = _global_step(component, setup, jnp, execution)(_as_fields(setup.inputs, jnp))
     else:
         torch = pytest.importorskip("torch")
         fields = _torch_fields(_perturbed(setup.inputs), torch)
