@@ -193,14 +193,14 @@ def test_muphys_global_torch(date, compiled, *, experiment, data_provider, icon_
     def run(fields):
         return _run(step, fields, dtime)
 
+    torch_inputs = {
+        name: gtx.as_field(f.domain, torch.asarray(f.asnumpy()), allocator=torch)
+        for name, f in inputs.items()
+    }
+    eager = run(torch_inputs)
     if compiled:
         run = torch.compile(run, fullgraph=True)
-    outputs = run(
-        {
-            name: gtx.as_field(f.domain, torch.asarray(f.asnumpy()), allocator=torch)
-            for name, f in inputs.items()
-        }
-    )
+    outputs = run(torch_inputs)
     jax_outputs = jax.jit(lambda fields: _run(step, fields, dtime))(
         {
             name: gtx.as_field(f.domain, jnp.asarray(f.asnumpy()), allocator=jnp)
@@ -210,9 +210,13 @@ def test_muphys_global_torch(date, compiled, *, experiment, data_provider, icon_
 
     assert isinstance(outputs[0].ndarray, torch.Tensor)
     _check_against_savepoints(outputs, inputs, dtime, init_savepoint, exit_savepoint)
-    flat, jax_flat = ([out[0], *out[1], *out[2:]] for out in (outputs, jax_outputs))
-    for torch_field, jax_field in zip(flat, jax_flat, strict=True):
-        actual, expected = torch_field.asnumpy(), jax_field.asnumpy()
-        scale = np.max(np.abs(expected))
-        print(f"max |torch - jax| {np.max(np.abs(actual - expected)):.3e}, max abs {scale:.3e}")
-        test_utils.assert_dallclose(actual, expected, rtol=0.0, atol=1e-10 * scale)
+    flat, eager_flat, jax_flat = (
+        [out[0], *out[1], *out[2:]] for out in (outputs, eager, jax_outputs)
+    )
+    for label, references in (("eager", eager_flat), ("jax", jax_flat)):
+        for torch_field, reference in zip(flat, references, strict=True):
+            actual, expected = torch_field.asnumpy(), reference.asnumpy()
+            scale = np.max(np.abs(expected))
+            diff = np.max(np.abs(actual - expected))
+            print(f"max |torch - {label}| {diff:.3e}, max abs {scale:.3e}")
+            test_utils.assert_dallclose(actual, expected, rtol=0.0, atol=1e-10 * scale)
