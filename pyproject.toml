@@ -462,7 +462,7 @@ url = "https://download.pytorch.org/whl/cu130"
 # dace = {index = "gridtools"}
 # gt4py = {git = "https://github.com/GridTools/gt4py", branch = "main"}
 # gt4py = {index = "test.pypi"}
-gt4py = { git = "https://github.com/havogt/gt4py", rev = "011f8a2fcda5986f58f0e4a5289c857525ecab6b" }
+gt4py = { git = "https://github.com/havogt/gt4py", rev = "6da32d2c5c99254ad447435a09c68a2ddbd96968" }
 icon4py-atmosphere-diffusion = { workspace = true }
 icon4py-atmosphere-dycore = { workspace = true }
 icon4py-atmosphere-microphysics = { workspace = true }
