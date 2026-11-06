@@ -27,6 +27,7 @@ import numpy as np
 from gt4py.next import common as gtx_common
 
 from icon4py.model.common import utils as common_utils
+from icon4py.model.common.utils import data_allocation as data_alloc
 
 
 #: the components `torch.compile` cannot build yet, with the reason
@@ -43,8 +44,16 @@ def eager_timed() -> bool:
     return os.environ.get("ICON4PY_BENCH_TORCH_EAGER", "0") == "1"
 
 
+def _is_host_or_cupy_array(obj: Any) -> bool:
+    module = type(obj).__module__.split(".")[0]
+    return module in ("numpy", "cupy") and not isinstance(obj, np.generic) and hasattr(obj, "shape")
+
+
 def to_array_ns(obj: Any, xp: Any) -> Any:  # noqa: PLR0911 [too-many-return-statements]
-    """`obj` with every field, connectivity and array in `xp`, member by member."""
+    """
+    `obj` with every field, connectivity and NumPy or CuPy array in `xp`, member by member; a
+    CuPy array goes through host memory.
+    """
     if isinstance(obj, gtx_common.Connectivity):
         return gtx.as_connectivity(
             obj.domain,
@@ -55,8 +64,8 @@ def to_array_ns(obj: Any, xp: Any) -> Any:  # noqa: PLR0911 [too-many-return-sta
         )
     if isinstance(obj, gtx.Field):
         return gtx.as_field(obj.domain, xp.asarray(obj.asnumpy()), allocator=xp)
-    if isinstance(obj, np.ndarray):
-        return xp.asarray(obj)
+    if _is_host_or_cupy_array(obj):
+        return xp.asarray(data_alloc.as_numpy(obj))
     if isinstance(obj, common_utils.PredictorCorrectorPair):
         return common_utils.PredictorCorrectorPair(*(to_array_ns(x, xp) for x in obj))
     if isinstance(obj, tuple):
@@ -75,6 +84,49 @@ def to_array_ns(obj: Any, xp: Any) -> Any:  # noqa: PLR0911 [too-many-return-sta
             },
         )
     return obj
+
+
+def _foreign_leaves(obj: Any, xp: Any, path: str) -> list[str]:  # noqa: PLR0911 [too-many-return-statements]
+    if isinstance(obj, gtx.Field):
+        return _foreign_leaves(obj.ndarray, xp, f"{path}.ndarray")
+    if isinstance(obj, (tuple, list)):
+        return [p for i, x in enumerate(obj) for p in _foreign_leaves(x, xp, f"{path}[{i}]")]
+    if isinstance(obj, dict):
+        return [p for k, v in obj.items() for p in _foreign_leaves(v, xp, f"{path}[{k!r}]")]
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return [
+            p
+            for f in dataclasses.fields(obj)
+            for p in _foreign_leaves(getattr(obj, f.name), xp, f"{path}.{f.name}")
+        ]
+    if isinstance(obj, np.generic):
+        return [f"{path}: numpy scalar {type(obj).__name__}"]
+    if not hasattr(obj, "shape"):
+        return []
+    if xp.__name__ == "torch":
+        if not isinstance(obj, xp.Tensor):
+            return [f"{path}: {type(obj).__module__}.{type(obj).__name__}, no torch tensor"]
+        if obj.device.type != device(xp).type:
+            return [f"{path}: torch tensor on {obj.device}, not {device(xp)}"]
+        return []
+    import jax  # type: ignore[import-not-found]  # noqa: PLC0415 [import-outside-top-level]
+
+    if not isinstance(obj, jax.Array):
+        return [f"{path}: {type(obj).__module__}.{type(obj).__name__}, no JAX array"]
+    return []
+
+
+def converted(obj: Any, xp: Any, path: str) -> Any:
+    """
+    `to_array_ns(obj, xp)`, checked: every array in it is an `xp` array, a torch tensor on the
+    torch device; no NumPy or CuPy array and no NumPy scalar is left. Raises naming the paths.
+    """
+    result = to_array_ns(obj, xp)
+    if foreign := _foreign_leaves(result, xp, path):
+        raise TypeError(
+            f"{len(foreign)} arrays not converted to {xp.__name__}:\n  " + "\n  ".join(foreign[:20])
+        )
+    return result
 
 
 def device(torch: Any) -> Any:

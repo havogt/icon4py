@@ -415,27 +415,31 @@ def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
                 grid=dataclasses.replace(
                     mesh,
                     connectivities={
-                        k: torch_steps.to_array_ns(v, xp) for k, v in mesh.connectivities.items()
+                        k: torch_steps.converted(v, xp, f"connectivities[{k}]")
+                        for k, v in mesh.connectivities.items()
                     },
                 ),
                 vertical_params=v_grid.VerticalGrid(
                     config=vertical_params.config,
-                    vct_a=torch_steps.to_array_ns(vertical_params.vct_a, xp),
-                    vct_b=torch_steps.to_array_ns(vertical_params.vct_b, xp),
+                    vct_a=torch_steps.converted(vertical_params.vct_a, xp, "vertical_params.vct_a"),
+                    vct_b=torch_steps.converted(vertical_params.vct_b, xp, "vertical_params.vct_b"),
                 ),
-                **torch_steps.to_array_ns(setup, xp),
+                **torch_steps.converted(setup, xp, "setup"),
                 allocator=xp,
             )
-            states = torch_steps.to_array_ns(
+            states = torch_steps.converted(
                 {
                     "prep_adv": prep_adv,
                     "diagnostic_state_nh": diagnostic_state_nh,
                     "intermediate_state": solver.initial_intermediate_state(),
                 },
                 xp,
+                "states",
             )
             prognostic_input = {
-                k: torch_steps.to_array_ns(getattr(prognostic_states.current, k), xp)
+                k: torch_steps.converted(
+                    getattr(prognostic_states.current, k), xp, f"prognostic.{k}"
+                )
                 for k in _PROGNOSTIC_FIELDS
             }
 
