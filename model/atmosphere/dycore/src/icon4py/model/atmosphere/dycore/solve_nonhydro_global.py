@@ -75,7 +75,9 @@ class SolveNonhydroGlobal:
         if config.iau_init:
             raise ValueError("'SolveNonhydroGlobal' does not support incremental analysis update.")
         assert cell_geometry.mean_cell_area is not None
-        self._mean_cell_area: float = cell_geometry.mean_cell_area
+        # The scalars passed to the step are Python ints, floats and bools: torch.compile traces
+        # numpy scalars into the compiled region as arrays, which gt4py's entry point rejects.
+        self._mean_cell_area = float(cell_geometry.mean_cell_area)
 
         def unstructured(op: gtx_typing.FieldOperator) -> gtx_typing.FieldOperator:
             return op.with_grid_type(gtx.GridType.UNSTRUCTURED).with_backend(backend)
@@ -99,6 +101,29 @@ class SolveNonhydroGlobal:
         self._allocator = allocator
         self._offset_provider = grid.connectivities
         self._determine_horizontal_domains()
+        self._scalars = {
+            "advection_explicit_weight_parameter": float(
+                params.advection_explicit_weight_parameter
+            ),
+            "advection_implicit_weight_parameter": float(
+                params.advection_implicit_weight_parameter
+            ),
+            "rhotheta_explicit_weight_parameter": float(params.rhotheta_explicit_weight_parameter),
+            "rhotheta_implicit_weight_parameter": float(params.rhotheta_implicit_weight_parameter),
+            "grav_o_cpd": float(constants.GRAV_O_CPD),
+            "wp_eps": float(constants.WP_EPS),
+            "igradp_method": int(config.igradp_method),
+            "rayleigh_type": int(config.rayleigh_type),
+            "divdamp_type": int(config.divdamp_type),
+            "divdamp_order": int(config.divdamp_order),
+            "nlev": int(grid.num_levels),
+            "nflatlev": int(vertical_params.nflatlev),
+            "nflat_gradp": int(metric_state_nonhydro.nflat_gradp),
+            "start_of_ddz_of_exner_extrapolation": int(max(1, vertical_params.nflatlev)),
+            "start_of_d2dz2_of_exner_extrapolation": int(max(1, metric_state_nonhydro.nflat_gradp)),
+            "end_index_of_damping_layer": int(vertical_params.end_index_of_damping_layer),
+            "kstart_moist": int(vertical_params.kstart_moist),
+        }
 
         self._interpolated_fourth_order_divdamp_factor = unstructured(
             smagorinsky._en_smag_fac_for_zero_nshift
@@ -122,10 +147,9 @@ class SolveNonhydroGlobal:
         )
 
     def _determine_horizontal_domains(self) -> None:
-        def interior(dim: gtx.Dimension) -> tuple[gtx.int32, gtx.int32]:
+        def interior(dim: gtx.Dimension) -> tuple[int, int]:
             domain = h_grid.domain(dim)(h_grid.Zone.INTERIOR)
-            start, end = self._grid.start_index(domain), self._grid.end_index(domain)
-            return gtx.int32(start), gtx.int32(end)
+            return int(self._grid.start_index(domain)), int(self._grid.end_index(domain))
 
         self._cells = interior(dims.CellDim)
         self._edges = interior(dims.EdgeDim)
@@ -173,8 +197,6 @@ class SolveNonhydroGlobal:
         interp = self._interpolation_state
         edge_geo = self._edge_geometry
         config = self._config
-        params = self._params
-        vertical = self._vertical_params
         nlev = self._grid.num_levels
         diag = diagnostic_state_nh
         predictor_w_advective_tendency, corrector_w_advective_tendency = (
@@ -182,13 +204,14 @@ class SolveNonhydroGlobal:
         )
         predictor_vn_advective_tendency, _ = diag.normal_wind_advective_tendency
 
+        second_order_divdamp_factor = float(second_order_divdamp_factor)
         second_order_divdamp_scaling_coeff = second_order_divdamp_factor * self._mean_cell_area
         combined_divdamp = config.divdamp_order == dycore_states.DivergenceDampingOrder.COMBINED
-        apply_2nd_order_divergence_damping = (
+        apply_2nd_order_divergence_damping = bool(
             config.divdamp_order == dycore_states.DivergenceDampingOrder.SECOND_ORDER
             or (combined_divdamp and second_order_divdamp_scaling_coeff > 1.0e-6)
         )
-        apply_4th_order_divergence_damping = (
+        apply_4th_order_divergence_damping = bool(
             config.divdamp_order == dycore_states.DivergenceDampingOrder.FOURTH_ORDER
             or (
                 combined_divdamp
@@ -312,18 +335,13 @@ class SolveNonhydroGlobal:
             cell_area=self._cell_geometry.area,
             owner_mask=self._owner_mask,
             interpolated_fourth_order_divdamp_factor=self._interpolated_fourth_order_divdamp_factor,
-            dtime=dtime,
+            dtime=float(dtime),
             second_order_divdamp_factor=second_order_divdamp_factor,
             second_order_divdamp_scaling_coeff=second_order_divdamp_scaling_coeff,
             r_nsubsteps=1.0 / ndyn_substeps_var,
             ndyn_substeps_var=float(ndyn_substeps_var),
             mean_cell_area=self._mean_cell_area,
-            advection_explicit_weight_parameter=params.advection_explicit_weight_parameter,
-            advection_implicit_weight_parameter=params.advection_implicit_weight_parameter,
-            rhotheta_explicit_weight_parameter=params.rhotheta_explicit_weight_parameter,
-            rhotheta_implicit_weight_parameter=params.rhotheta_implicit_weight_parameter,
-            grav_o_cpd=constants.GRAV_O_CPD,
-            wp_eps=constants.WP_EPS,
+            **self._scalars,
             at_first_substep=at_first_substep,
             at_last_substep=at_last_substep,
             skip_compute_predictor_vertical_advection=(
@@ -333,17 +351,6 @@ class SolveNonhydroGlobal:
             prepare_fluxes_for_advection=prepare_fluxes_for_advection,
             apply_2nd_order_divergence_damping=apply_2nd_order_divergence_damping,
             apply_4th_order_divergence_damping=apply_4th_order_divergence_damping,
-            igradp_method=gtx.int32(config.igradp_method),
-            rayleigh_type=gtx.int32(config.rayleigh_type),
-            divdamp_type=gtx.int32(config.divdamp_type),
-            divdamp_order=gtx.int32(config.divdamp_order),
-            nlev=gtx.int32(nlev),
-            nflatlev=gtx.int32(vertical.nflatlev),
-            nflat_gradp=gtx.int32(metric.nflat_gradp),
-            start_of_ddz_of_exner_extrapolation=gtx.int32(max(1, vertical.nflatlev)),
-            start_of_d2dz2_of_exner_extrapolation=gtx.int32(max(1, metric.nflat_gradp)),
-            end_index_of_damping_layer=gtx.int32(vertical.end_index_of_damping_layer),
-            kstart_moist=gtx.int32(vertical.kstart_moist),
             domain=out_domains,
             offset_provider=self._offset_provider,
         )
