@@ -378,6 +378,31 @@ def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-argumen
 _PROGNOSTIC_FIELDS = ("rho", "w", "vn", "exner", "theta_v")
 
 
+def _atmosphere_at_rest_in_solid_body_rotation(
+    mesh: Any, setup: dict[str, Any], allocator: Any
+) -> prognostics.PrognosticState:
+    """
+    The reference atmosphere of the metrics, hydrostatic and at rest vertically, with a zonal wind
+    of 20 m/s at the equator in solid body rotation: physical magnitudes, unlike random fields.
+    """
+    metric = setup["metric_state_nonhydro"]
+    edges = setup["edge_geometry"]
+    xp = data_alloc.import_array_ns(allocator)
+    zonal_wind = 20.0 * xp.cos(edges.edge_center[0].ndarray) * edges.primal_normal[0].ndarray
+    vn = xp.broadcast_to(zonal_wind[:, None], (mesh.num_edges, mesh.num_levels)).copy()
+
+    def copied(field: gtx.Field) -> gtx.Field:
+        return gtx.as_field(field.domain, xp.asarray(field.ndarray).copy(), allocator=allocator)
+
+    return prognostics.PrognosticState(
+        rho=copied(metric.reference_rho_at_cells_on_model_levels),
+        theta_v=copied(metric.reference_theta_at_cells_on_model_levels),
+        exner=copied(metric.reference_exner_at_cells_on_model_levels),
+        w=data_alloc.zero_field(mesh, dims.CellDim, dims.KHalfDim, allocator=allocator),
+        vn=gtx.as_field((dims.EdgeDim, dims.KDim), vn, allocator=allocator),
+    )
+
+
 def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
     geometry_field_source: grid_geometry.GridGeometry,
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
@@ -389,7 +414,7 @@ def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
 ) -> dict[str, tuple[Any, dict[str, gtx.Field]]]:
     """
     The `SolveNonhydroGlobal` substep and its prognostic input for each execution, on the same
-    constants and states.
+    constants and states; the prognostic input is `_atmosphere_at_rest_in_solid_body_rotation`.
 
     `"jax"` jits it on JAX arrays on the default JAX device, `"torch"` and `"torch_compile"`
     run it on torch tensors on the torch device, eager and under `torch.compile`; the constant
@@ -403,9 +428,9 @@ def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
         pytest.skip("'SolveNonhydroGlobal' does not support limited area grids.")
     vertical_params = setup.pop("vertical_params")
     setup.pop("owner_mask")
-    prep_adv, diagnostic_state_nh, prognostic_states = _states(
-        mesh, model_backends.get_allocator(backend_like)
-    )
+    allocator = model_backends.get_allocator(backend_like)
+    prep_adv, diagnostic_state_nh, _ = _states(mesh, allocator)
+    prognostic_state = _atmosphere_at_rest_in_solid_body_rotation(mesh, setup, allocator)
     steps = {}
     for execution in executions:
         torch = pytest.importorskip("torch") if execution.startswith("torch") else None
@@ -441,9 +466,7 @@ def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
                 "states",
             )
             prognostic_input = {
-                k: torch_steps.converted(
-                    getattr(prognostic_states.current, k), xp, f"prognostic.{k}"
-                )
+                k: torch_steps.converted(getattr(prognostic_state, k), xp, f"prognostic.{k}")
                 for k in _PROGNOSTIC_FIELDS
             }
 
