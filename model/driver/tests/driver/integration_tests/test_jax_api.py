@@ -32,15 +32,11 @@ def _grouped_time_step(static, state):  # type: ignore[no-untyped-def]
     col = jax_api.dyn2phy(static, state)
     applied = []
     tend, _ = jax_api.muphys(static, col)
-    col = jax_api.apply_column_tendencies(
-        col, tend, static.dtime, recompute_virtual_temperature=False
-    )
+    col = jax_api.apply_column_tendencies(col, tend, static.dtime)
     applied.append(tend)
     fluxes = jax_api.surface(static, jax_api.surface_input(static, col))
     tend, _ = jax_api.tmx(static, col, fluxes)
-    col = jax_api.apply_column_tendencies(
-        col, tend, static.dtime, recompute_virtual_temperature=False
-    )
+    col = jax_api.apply_column_tendencies(col, tend, static.dtime)
     applied.append(tend)
     return jax_api.phy2dyn(static, state, col, jax_api.sum_column_tendencies(*applied))
 

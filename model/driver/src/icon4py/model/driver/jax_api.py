@@ -22,8 +22,7 @@ process group, on `ColumnState` and `ColumnTendencies`:
     col = apply_column_tendencies(col, tend_tmx, static.dtime)
     state = phy2dyn(static, state, col, sum_column_tendencies(tend_muphys, tend_tmx))
 
-which is `physics_step` up to the virtual temperature: `apply_column_tendencies` recomputes it,
-`physics_step` keeps it at its dyn2phy value, as the JAX driver does.
+which is `physics_step`.
 """
 
 from __future__ import annotations

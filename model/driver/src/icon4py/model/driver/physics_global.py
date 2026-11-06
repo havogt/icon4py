@@ -109,14 +109,15 @@ def apply_column_tendencies(
     tend: ColumnTendencies,
     dtime: float,
     *,
-    recompute_virtual_temperature: bool = True,
+    recompute_virtual_temperature: bool = False,
 ) -> ColumnState:
     """
     `col` advanced by `dtime` times `tend`, as one step of the sequential splitting.
 
-    The pressure stays. With `recompute_virtual_temperature` the virtual temperature follows the
-    new temperature and moisture; without, it stays at its value from dyn2phy, as in
+    The pressure and the virtual temperature stay at their values from dyn2phy, as in
     `physics_driver.PhysicsState.update`.
+
+    recompute_virtual_temperature: changes results, up to ~1e-2 relative in qv/qc after one step.
     """
 
     def advanced(field: gtx.Field, tendency: gtx.Field | None) -> gtx.Field:
