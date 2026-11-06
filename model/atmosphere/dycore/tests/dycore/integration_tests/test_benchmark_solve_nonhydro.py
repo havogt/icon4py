@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
+import time
 from typing import TYPE_CHECKING, Any
 
 import gt4py.next as gtx
@@ -39,6 +41,7 @@ from icon4py.model.common.interpolation import interpolation_attributes, interpo
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import factory, nonhydro_states, prognostic_state as prognostics
 from icon4py.model.common.utils import data_allocation as data_alloc, device_utils
+from icon4py.model.testing import torch_steps
 from icon4py.model.testing.fixtures.benchmark import (
     geometry_field_source,
     interpolation_field_source,
@@ -372,56 +375,26 @@ def test_benchmark_solve_nonhydro(  # noqa: PLR0917 [too-many-positional-argumen
     )
 
 
-def _to_jax(obj: Any, jnp: Any) -> Any:
-    if isinstance(obj, gtx_common.Connectivity):
-        return gtx.as_connectivity(
-            obj.domain,
-            obj.codomain,
-            jnp.asarray(obj.asnumpy()),
-            skip_value=obj.skip_value,
-            allocator=jnp,
-        )
-    if isinstance(obj, gtx.Field):
-        return gtx.as_field(obj.domain, jnp.asarray(obj.asnumpy()), allocator=jnp)
-    if isinstance(obj, tuple):
-        return tuple(_to_jax(x, jnp) for x in obj)
-    if isinstance(obj, common_utils.PredictorCorrectorPair):
-        return common_utils.PredictorCorrectorPair(*(_to_jax(x, jnp) for x in obj))
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return dataclasses.replace(
-            obj,
-            **{
-                f.name: _to_jax(getattr(obj, f.name), jnp)
-                for f in dataclasses.fields(obj)
-                if f.init
-            },
-        )
-    return obj
+_PROGNOSTIC_FIELDS = ("rho", "w", "vn", "exner", "theta_v")
 
 
-@pytest.mark.parametrize(
-    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
-)
-@pytest.mark.benchmark
-@pytest.mark.benchmark_only
-def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positional-arguments]
+def _global_step(  # noqa: PLR0917 [too-many-positional-arguments]
     geometry_field_source: grid_geometry.GridGeometry,
-    grid_manager: gm.GridManager,
     interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
     metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    backend_like: model_backends.BackendLike,
     at_first_substep: bool,
     at_last_substep: bool,
-    backend_like: model_backends.BackendLike,
-    benchmark: Any,
-) -> None:
+    executions: tuple[str, ...],
+) -> dict[str, tuple[Any, dict[str, gtx.Field]]]:
     """
-    Benchmark `SolveNonhydroGlobal`, the fused single-field-operator substep, under `jax.jit`.
+    The `SolveNonhydroGlobal` substep and its prognostic input for each execution, on the same
+    constants and states.
 
-    It runs on the embedded backend with JAX arrays on the default JAX device; the constant
-    fields are computed with `--backend` and then converted.
+    `"jax"` jits it on JAX arrays on the default JAX device, `"torch"` and `"torch_compile"`
+    run it on torch tensors on the torch device, eager and under `torch.compile`; the constant
+    fields are computed with `--backend` and then converted. Every call ends synchronised.
     """
-    jax = pytest.importorskip("jax")
-    jnp = jax.numpy
     setup = _setup(
         geometry_field_source, interpolation_field_source, metrics_field_source, backend_like
     )
@@ -430,46 +403,145 @@ def test_benchmark_solve_nonhydro_global_jax(  # noqa: PLR0917 [too-many-positio
         pytest.skip("'SolveNonhydroGlobal' does not support limited area grids.")
     vertical_params = setup.pop("vertical_params")
     setup.pop("owner_mask")
-    jax_mesh = dataclasses.replace(
-        mesh, connectivities={k: _to_jax(v, jnp) for k, v in mesh.connectivities.items()}
-    )
-    solver = solve_nonhydro_global.SolveNonhydroGlobal(
-        grid=jax_mesh,
-        vertical_params=v_grid.VerticalGrid(
-            config=vertical_params.config,
-            vct_a=_to_jax(vertical_params.vct_a, jnp),
-            vct_b=_to_jax(vertical_params.vct_b, jnp),
-        ),
-        **{k: _to_jax(v, jnp) for k, v in setup.items()},
-        allocator=jnp,
-    )
-
     prep_adv, diagnostic_state_nh, prognostic_states = _states(
         mesh, model_backends.get_allocator(backend_like)
     )
-    prep_adv, diagnostic_state_nh = _to_jax(prep_adv, jnp), _to_jax(diagnostic_state_nh, jnp)
-    intermediate_state = solver.initial_intermediate_state()
-    prognostic_fields = ("rho", "w", "vn", "exner", "theta_v")
-    prognostic_input = {
-        k: _to_jax(getattr(prognostic_states.current, k), jnp) for k in prognostic_fields
+    steps = {}
+    for execution in executions:
+        torch = pytest.importorskip("torch") if execution.startswith("torch") else None
+        xp = torch if torch is not None else pytest.importorskip("jax").numpy
+        with torch_steps.device(torch) if torch is not None else contextlib.nullcontext():
+            solver = solve_nonhydro_global.SolveNonhydroGlobal(
+                grid=dataclasses.replace(
+                    mesh,
+                    connectivities={
+                        k: torch_steps.to_array_ns(v, xp) for k, v in mesh.connectivities.items()
+                    },
+                ),
+                vertical_params=v_grid.VerticalGrid(
+                    config=vertical_params.config,
+                    vct_a=torch_steps.to_array_ns(vertical_params.vct_a, xp),
+                    vct_b=torch_steps.to_array_ns(vertical_params.vct_b, xp),
+                ),
+                **torch_steps.to_array_ns(setup, xp),
+                allocator=xp,
+            )
+            states = torch_steps.to_array_ns(
+                {
+                    "prep_adv": prep_adv,
+                    "diagnostic_state_nh": diagnostic_state_nh,
+                    "intermediate_state": solver.initial_intermediate_state(),
+                },
+                xp,
+            )
+            prognostic_input = {
+                k: torch_steps.to_array_ns(getattr(prognostic_states.current, k), xp)
+                for k in _PROGNOSTIC_FIELDS
+            }
+
+        def step(
+            fields: dict[str, gtx.Field],
+            solver: solve_nonhydro_global.SolveNonhydroGlobal = solver,
+            states: dict[str, Any] = states,
+        ) -> dict[str, gtx.Field]:
+            new, *_ = solver.time_step(
+                **states,
+                prognostic_state=prognostics.PrognosticState(**fields),
+                second_order_divdamp_factor=0.02,
+                dtime=90.0,
+                ndyn_substeps_var=5,
+                at_initial_timestep=False,
+                prepare_fluxes_for_advection=True,
+                at_first_substep=at_first_substep,
+                at_last_substep=at_last_substep,
+            )
+            return {k: getattr(new, k) for k in _PROGNOSTIC_FIELDS}
+
+        if torch is not None:
+            steps[execution] = (
+                torch_steps.step(step, torch, compiled=execution == "torch_compile"),
+                prognostic_input,
+            )
+        else:
+            jax = pytest.importorskip("jax")
+            jitted = jax.jit(step)
+            steps[execution] = (
+                lambda fields, jitted=jitted, jax=jax: jax.block_until_ready(jitted(fields)),
+                prognostic_input,
+            )
+    return steps
+
+
+@pytest.mark.parametrize(
+    "at_first_substep, at_last_substep", [(True, False), (False, True), (False, False)]
+)
+@pytest.mark.parametrize("execution", ["jax", "torch", "torch_compile"])
+@pytest.mark.benchmark
+@pytest.mark.benchmark_only
+def test_benchmark_solve_nonhydro_global(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    execution: str,
+    backend_like: model_backends.BackendLike,
+    benchmark: Any,
+) -> None:
+    """
+    Benchmark `SolveNonhydroGlobal`, the fused single-field-operator substep, under `jax.jit`
+    or on torch; the first call, which compiles, is timed in `extra_info["first_call_s"]`.
+    """
+    if execution == "torch_compile" and (reason := torch_steps.compile_blocked("solve_nonhydro")):
+        pytest.skip(reason)
+    if execution == "torch" and not torch_steps.eager_timed():
+        pytest.skip("eager torch is timed only with ICON4PY_BENCH_TORCH_EAGER=1")
+    ((step, prognostic_input),) = _global_step(
+        geometry_field_source,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        at_first_substep,
+        at_last_substep,
+        (execution,),
+    ).values()
+    start = time.perf_counter()
+    step(prognostic_input)
+    benchmark.extra_info["first_call_s"] = time.perf_counter() - start
+    benchmark(step, prognostic_input)
+
+
+@pytest.mark.parametrize("at_first_substep, at_last_substep", [(False, False)])
+def test_solve_nonhydro_global_torch_matches_jax(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    backend_like: model_backends.BackendLike,
+) -> None:
+    """The substep under `torch.compile` and eager on torch against `jax.jit`, same inputs."""
+    steps = _global_step(
+        geometry_field_source,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        at_first_substep,
+        at_last_substep,
+        ("jax", "torch")
+        if torch_steps.compile_blocked("solve_nonhydro")
+        else ("jax", "torch", "torch_compile"),
+    )
+    outputs = {
+        execution: {k: v.asnumpy() for k, v in step(step_input).items()}
+        for execution, (step, step_input) in steps.items()
     }
-
-    def step(fields: dict[str, gtx.Field]) -> dict[str, gtx.Field]:
-        new, *_ = solver.time_step(
-            diagnostic_state_nh=diagnostic_state_nh,
-            prognostic_state=prognostics.PrognosticState(**fields),
-            intermediate_state=intermediate_state,
-            prep_adv=prep_adv,
-            second_order_divdamp_factor=0.02,
-            dtime=90.0,
-            ndyn_substeps_var=5,
-            at_initial_timestep=False,
-            prepare_fluxes_for_advection=True,
-            at_first_substep=at_first_substep,
-            at_last_substep=at_last_substep,
+    failures = torch_steps.compare(outputs["torch"], outputs["jax"], "eager-vs-jax")
+    if "torch_compile" in outputs:
+        failures += torch_steps.compare(
+            outputs["torch_compile"], outputs["torch"], "compile-vs-eager"
         )
-        return {k: getattr(new, k) for k in prognostic_fields}
-
-    jitted = jax.jit(step)
-    jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray)
-    benchmark(lambda: jax.block_until_ready(jitted(prognostic_input)["vn"].ndarray))
+        failures += torch_steps.compare(outputs["torch_compile"], outputs["jax"], "compile-vs-jax")
+    assert not failures, failures
