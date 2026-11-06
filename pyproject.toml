@@ -435,7 +435,7 @@ conflicts = [
   [{ extra = "torch" }, { extra = "torch-cuda13" }],
   [{ extra = "torch-cuda13" }, { extra = "cuda12" }],
   [{ extra = "torch-cuda13" }, { extra = "rocm7" }],
-  [{ extra = "torch-cuda13" }, { extra = "jax-cuda12" }],
+  [{ extra = "torch-cuda13" }, { extra = "jax-cuda12" }]
 ]
 
 [[tool.uv.index]]
@@ -462,7 +462,7 @@ url = "https://download.pytorch.org/whl/cu130"
 # dace = {index = "gridtools"}
 # gt4py = {git = "https://github.com/GridTools/gt4py", branch = "main"}
 # gt4py = {index = "test.pypi"}
-gt4py = { git = "https://github.com/havogt/gt4py", rev = "a352ee337fe6a0670bacdd6fa4c638bc4e4a692b" }
+gt4py = { git = "https://github.com/havogt/gt4py", rev = "cee86a4fb74cce3a56f0d67836d05c11ea3ef931" }
 icon4py-atmosphere-diffusion = { workspace = true }
 icon4py-atmosphere-dycore = { workspace = true }
 icon4py-atmosphere-microphysics = { workspace = true }
@@ -478,7 +478,7 @@ icon4py-testing = { workspace = true }
 icon4py-tools = { workspace = true }
 torch = [
   { index = "pytorch-cpu", extra = "torch" },
-  { index = "pytorch-cu130", extra = "torch-cuda13" },
+  { index = "pytorch-cu130", extra = "torch-cuda13" }
 ]
 
 [tool.uv.workspace]
