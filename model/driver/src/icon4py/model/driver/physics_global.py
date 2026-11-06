@@ -93,7 +93,9 @@ def sum_column_tendencies(*tendencies: ColumnTendencies) -> ColumnTendencies:
         total = ColumnTendencies(
             temperature=_add(total.temperature, t.temperature),
             q={
-                name: _add(total.q.get(name), t.q.get(name)) for name in total.q.keys() | t.q.keys()
+                name: summed
+                for name in total.q.keys() | t.q.keys()
+                if (summed := _add(total.q.get(name), t.q.get(name))) is not None
             },
             u=_add(total.u, t.u),
             v=_add(total.v, t.v),
@@ -317,8 +319,8 @@ class PhysicsGlobal:
 
     def surface_input(self, col: ColumnState) -> surface_states.SurfaceInputState:
         return surface_states.SurfaceInputState(
-            surface_pressure=col.pressure_ifc[dims.KHalfDim(self._num_levels)],
-            temperature=col.temperature[dims.KDim(self._num_levels - 1)],
+            surface_pressure=col.pressure_ifc[dims.KHalfDim(self._num_levels)],  # type: ignore[arg-type]  # indexing a level drops the vertical dimension
+            temperature=col.temperature[dims.KDim(self._num_levels - 1)],  # type: ignore[arg-type]  # indexing a level drops the vertical dimension
         )
 
     def run_surface(self, input_state: surface_states.SurfaceInputState) -> SurfaceFluxState:
