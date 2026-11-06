@@ -19,7 +19,7 @@ not supported.
 from __future__ import annotations
 
 import dataclasses
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import gt4py.next as gtx
 import gt4py.next.typing as gtx_typing
@@ -101,7 +101,7 @@ class SolveNonhydroGlobal:
         self._allocator = allocator
         self._offset_provider = grid.connectivities
         self._determine_horizontal_domains()
-        self._scalars = {
+        self._scalars: dict[str, Any] = {
             "advection_explicit_weight_parameter": float(
                 params.advection_explicit_weight_parameter
             ),
