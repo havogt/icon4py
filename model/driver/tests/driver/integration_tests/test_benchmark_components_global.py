@@ -896,3 +896,38 @@ def test_global_torch_matches_jax(component: str, setup: _Setup) -> None:
         failures += torch_steps.compare(compiled, eager, f"compile-vs-eager {component}")
         failures += torch_steps.compare(compiled, jax_out, f"compile-vs-jax {component}")
     assert not failures, failures
+
+
+@pytest.mark.parametrize("execution", torch_steps.EXECUTIONS)
+@pytest.mark.parametrize("component", TORCH_COMPONENTS)
+def test_global_dump(component: str, execution: str, setup: _Setup) -> None:
+    """
+    One execution of the global step, its outputs (the part both implementations define) written
+    to `ICON4PY_BENCH_DUMP_DIR` for `test_global_dumps_match`: one process per execution.
+    """
+    if "ICON4PY_BENCH_DUMP_DIR" not in os.environ:
+        pytest.skip("needs ICON4PY_BENCH_DUMP_DIR")
+    if execution == "torch_compile" and (reason := torch_steps.compile_blocked(component)):
+        pytest.skip(reason)
+    if execution == "jax":
+        jnp = _jax_numpy()
+        out = _global_step(component, setup, jnp)(_as_fields(setup.inputs, jnp))
+    else:
+        torch = pytest.importorskip("torch")
+        fields = _torch_fields(_perturbed(setup.inputs), torch)
+        out = _global_step(component, setup, torch, execution)(fields)
+    num_levels = setup.mesh.num_levels
+    torch_steps.dump(
+        {k: _compared(component, k, v.asnumpy(), num_levels, setup.config) for k, v in out.items()},
+        component,
+        execution,
+    )
+
+
+@pytest.mark.parametrize("component", TORCH_COMPONENTS)
+def test_global_dumps_match(component: str) -> None:
+    """The dumps of `test_global_dump`, every pair within 1e-10 of the field's max."""
+    if "ICON4PY_BENCH_DUMP_DIR" not in os.environ:
+        pytest.skip("needs ICON4PY_BENCH_DUMP_DIR")
+    failures = torch_steps.compare_dumps(component)
+    assert not failures, failures

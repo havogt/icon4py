@@ -13,12 +13,16 @@ The torch device is `ICON4PY_BENCH_TORCH_DEVICE` (default `cuda` when available)
 `ICON4PY_BENCH_TORCH_EXPLAIN=1` prints `torch._dynamo.explain` of the first call. Eager torch is
 timed only with `ICON4PY_BENCH_TORCH_EAGER=1`. A component in `COMPILE_BLOCKED` is not compiled
 unless named in `ICON4PY_BENCH_TORCH_COMPILE_FORCE` (comma separated).
+
+The split check writes each execution's outputs, one process each, to `ICON4PY_BENCH_DUMP_DIR`
+(`dump`), and `compare_dumps` compares them there.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import os
+import pathlib
 from collections.abc import Callable
 from typing import Any
 
@@ -204,3 +208,65 @@ def compare(
         if nan != (0, 0) or diff > relative * scale:
             failures.append(name)
     return failures
+
+
+EXECUTIONS = ("jax", "torch", "torch_compile")
+
+
+def _dump_path(component: str, execution: str) -> pathlib.Path | None:
+    directory = os.environ.get("ICON4PY_BENCH_DUMP_DIR")
+    if directory is None:
+        return None
+    return pathlib.Path(directory) / f"{component}_{execution}.npz"
+
+
+def dump(outputs: dict[str, np.ndarray], component: str, execution: str) -> pathlib.Path:
+    path = _dump_path(component, execution)
+    assert path is not None, "needs ICON4PY_BENCH_DUMP_DIR"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **outputs)  # type: ignore[arg-type]  # the arrays are passed by name
+    print(f"DUMPED {component} {execution} to {path}")
+    return path
+
+
+def compare_dumps(component: str, relative: float = 1e-10) -> list[str]:
+    """
+    Every pair of the executions' dumps of `component`: compile against eager and JAX, eager
+    against JAX. The compiled dump may be missing only when `component` is `compile_blocked`.
+    """
+    loaded = {}
+    for execution in EXECUTIONS:
+        path = _dump_path(component, execution)
+        assert path is not None, "needs ICON4PY_BENCH_DUMP_DIR"
+        if not path.exists():
+            assert execution == "torch_compile" and compile_blocked(component), f"no dump {path}"
+            continue
+        with np.load(path) as data:
+            loaded[execution] = dict(data)
+    pairs = [("torch_compile", "torch"), ("torch_compile", "jax"), ("torch", "jax")]
+    failures = []
+    for computed, reference in pairs:
+        if computed in loaded and reference in loaded:
+            failures += [
+                f"{computed}-vs-{reference} {name}"
+                for name in compare(
+                    loaded[computed], loaded[reference], f"{computed}-vs-{reference}", relative
+                )
+            ]
+    return failures
+
+
+def peak_bytes(torch: Any | None) -> dict[str, int]:
+    """
+    The device memory peak of the process: by torch's allocator when given `torch`, by JAX's
+    otherwise; empty on a CPU.
+    """
+    if torch is not None:
+        if not torch.cuda.is_available():
+            return {}
+        return {"torch_peak_bytes": int(torch.cuda.max_memory_allocated())}
+    import jax  # noqa: PLC0415 [import-outside-top-level]
+
+    stats = jax.devices()[0].memory_stats() or {}
+    peak = stats.get("peak_bytes_in_use")
+    return {} if peak is None else {"jax_peak_bytes": int(peak)}

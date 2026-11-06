@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import functools
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -541,6 +542,11 @@ def test_benchmark_solve_nonhydro_global(  # noqa: PLR0917 [too-many-positional-
     step(prognostic_input)
     benchmark.extra_info["first_call_s"] = time.perf_counter() - start
     benchmark(step, prognostic_input)
+    benchmark.extra_info.update(
+        torch_steps.peak_bytes(
+            pytest.importorskip("torch") if execution.startswith("torch") else None
+        )
+    )
 
 
 @pytest.mark.parametrize("at_first_substep, at_last_substep", [(False, False)])
@@ -575,4 +581,46 @@ def test_solve_nonhydro_global_torch_matches_jax(  # noqa: PLR0917 [too-many-pos
             outputs["torch_compile"], outputs["torch"], "compile-vs-eager"
         )
         failures += torch_steps.compare(outputs["torch_compile"], outputs["jax"], "compile-vs-jax")
+    assert not failures, failures
+
+
+@pytest.mark.parametrize("at_first_substep, at_last_substep", [(False, False)])
+@pytest.mark.parametrize("execution", torch_steps.EXECUTIONS)
+def test_solve_nonhydro_global_dump(  # noqa: PLR0917 [too-many-positional-arguments]
+    geometry_field_source: grid_geometry.GridGeometry,
+    grid_manager: gm.GridManager,
+    interpolation_field_source: interpolation_factory.InterpolationFieldsFactory,
+    metrics_field_source: metrics_factory.MetricsFieldsFactory,
+    at_first_substep: bool,
+    at_last_substep: bool,
+    execution: str,
+    backend_like: model_backends.BackendLike,
+) -> None:
+    """
+    One execution of the substep, its outputs written to `ICON4PY_BENCH_DUMP_DIR` for
+    `test_solve_nonhydro_global_dumps_match`: one process per execution, for the grids on which
+    the three do not fit in one.
+    """
+    if "ICON4PY_BENCH_DUMP_DIR" not in os.environ:
+        pytest.skip("needs ICON4PY_BENCH_DUMP_DIR")
+    if execution == "torch_compile" and (reason := torch_steps.compile_blocked("solve_nonhydro")):
+        pytest.skip(reason)
+    ((step, step_input),) = _global_step(
+        geometry_field_source,
+        interpolation_field_source,
+        metrics_field_source,
+        backend_like,
+        at_first_substep,
+        at_last_substep,
+        (execution,),
+    ).values()
+    outputs = {k: v.asnumpy() for k, v in step(step_input).items()}
+    torch_steps.dump(outputs, "solve_nonhydro", execution)
+
+
+def test_solve_nonhydro_global_dumps_match() -> None:
+    """The dumps of `test_solve_nonhydro_global_dump`, every pair within 1e-10 of the field's max."""
+    if "ICON4PY_BENCH_DUMP_DIR" not in os.environ:
+        pytest.skip("needs ICON4PY_BENCH_DUMP_DIR")
+    failures = torch_steps.compare_dumps("solve_nonhydro")
     assert not failures, failures
