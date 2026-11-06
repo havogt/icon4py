@@ -60,7 +60,9 @@ def to_array_ns(obj: Any, xp: Any) -> Any:  # noqa: PLR0911 [too-many-return-sta
     if isinstance(obj, common_utils.PredictorCorrectorPair):
         return common_utils.PredictorCorrectorPair(*(to_array_ns(x, xp) for x in obj))
     if isinstance(obj, tuple):
-        return tuple(to_array_ns(x, xp) for x in obj)
+        converted = [to_array_ns(x, xp) for x in obj]
+        # a NamedTuple takes its fields positionally
+        return type(obj)(*converted) if hasattr(obj, "_fields") else tuple(converted)
     if isinstance(obj, dict):
         return {k: to_array_ns(v, xp) for k, v in obj.items()}
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
