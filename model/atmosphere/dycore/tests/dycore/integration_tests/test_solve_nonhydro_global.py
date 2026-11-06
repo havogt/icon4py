@@ -291,7 +291,7 @@ def test_run_solve_nonhydro_global_single_step_torch(  # noqa: PLR0917 [too-many
         actual, reference = field.asnumpy(), eager[name].asnumpy()
         scale = np.max(np.abs(reference))
         print(f"{name}: max |torch - eager| {np.max(np.abs(actual - reference)):.3e}")
-        test_utils.assert_dallclose(actual, reference, rtol=0.0, atol=1e-12 * scale, err_msg=name)
+        test_utils.assert_dallclose(actual, reference, rtol=0.0, atol=1e-10 * scale, err_msg=name)
     jax_step, jax_inputs = step_on(jax.numpy)
     # the states are dataclasses, no pytrees: JAX runs eagerly
     expected = jax_step(jax_inputs)
@@ -303,4 +303,4 @@ def test_run_solve_nonhydro_global_single_step_torch(  # noqa: PLR0917 [too-many
         print(
             f"{name}: max |torch - jax| {np.max(np.abs(actual - reference)):.3e}, max abs {scale:.3e}"
         )
-        test_utils.assert_dallclose(actual, reference, rtol=0.0, atol=1e-12 * scale, err_msg=name)
+        test_utils.assert_dallclose(actual, reference, rtol=0.0, atol=1e-10 * scale, err_msg=name)

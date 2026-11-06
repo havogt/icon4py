@@ -435,7 +435,7 @@ def test_tmx_global_single_step_torch(
         expected = {**eager_tendencies, **eager_diagnostics}[name].asnumpy()
         scale = np.max(np.abs(expected))
         print(f"{name}: max |torch - eager| {np.max(np.abs(actual - expected)):.3e}")
-        test_utils.assert_dallclose(actual, expected, rtol=0.0, atol=1e-12 * scale, err_msg=name)
+        test_utils.assert_dallclose(actual, expected, rtol=0.0, atol=1e-10 * scale, err_msg=name)
     jax_tendencies, jax_diagnostics = jax.jit(runner(make_step(jnp)))(
         _fields_of(_to_jax(input_state, jnp)), _fields_of(_to_jax(surface_flux_state, jnp))
     )

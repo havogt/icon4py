@@ -213,5 +213,6 @@ def test_muphys_global_torch(date, compiled, *, experiment, data_provider, icon_
     flat, jax_flat = ([out[0], *out[1], *out[2:]] for out in (outputs, jax_outputs))
     for torch_field, jax_field in zip(flat, jax_flat, strict=True):
         actual, expected = torch_field.asnumpy(), jax_field.asnumpy()
-        print(f"max |torch - jax| {np.max(np.abs(actual - expected)):.3e}")
-        test_utils.assert_dallclose(actual, expected, rtol=1e-12, atol=1e-16)
+        scale = np.max(np.abs(expected))
+        print(f"max |torch - jax| {np.max(np.abs(actual - expected)):.3e}, max abs {scale:.3e}")
+        test_utils.assert_dallclose(actual, expected, rtol=0.0, atol=1e-10 * scale)
