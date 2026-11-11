@@ -117,7 +117,6 @@ def customize_backend(
     | None,
     backend_config: backend_cfg.BackendConfig | None = None,
 ) -> gtx_typing.Backend | None:
-    backend_config = backend_config or backend_cfg.backend_config_from_env()
     program_name = program.__name__ if program is not None else ""
     if backend is None or isinstance(backend, gtx_backend.Backend):
         backend_name = backend.name if backend is not None else "embedded"
@@ -125,7 +124,12 @@ def customize_backend(
         return backend  # type: ignore[return-value]
 
     backend_descriptor = (
-        {"device": backend} if isinstance(backend, model_backends.DeviceType) else backend
+        {"device": backend} if isinstance(backend, model_backends.DeviceType) else {**backend}
+    )
+    backend_config = (
+        backend_config
+        or backend_descriptor.pop("backend_config", None)
+        or backend_cfg.backend_config_from_env()
     )
     backend_descriptor = get_options(
         program_name, backend_config=backend_config, **backend_descriptor

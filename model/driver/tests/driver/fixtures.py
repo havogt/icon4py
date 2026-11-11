@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 from __future__ import annotations
 
+import os
 import pathlib
 from typing import Final
 
@@ -107,11 +108,22 @@ def _make_config(
     dt_utils.download_experiment(experiment, process_props)
     experiment_path = dt_utils.get_path_for_experiment(experiment, process_props)
     config = driver_config.read_experiment_config_from_yaml(experiment_path / "config.yml")
+    halo_exchange_mode = decomp_defs.HaloExchangeMode(
+        os.environ.get("ICON4PY_BENCH_HALO_EXCHANGE_MODE", "inner")
+    )
     return config.with_overrides(
         driver={
             "dtime": time.RelativeTime(seconds=50),
             "end_of_simulation": time.NumTimeSteps(BENCHMARK_STEPS),
-        }
+            "extra_halo_rings": int(os.environ.get("ICON4PY_BENCH_EXTRA_HALO_RINGS", "0")),
+            "replace_skip_values": os.environ.get("ICON4PY_BENCH_REPLACE_SKIP_VALUES") == "1",
+            "synchronize_timers": os.environ.get("ICON4PY_BENCH_SYNCHRONIZE_TIMERS") == "1",
+        },
+        **{
+            component: {"halo_exchange_mode": halo_exchange_mode}
+            for component in ("diffusion", "nonhydrostatic")
+            if getattr(config, component) is not None
+        },
     )
 
 
@@ -128,6 +140,7 @@ def _make_grid_manager(
         vertical_grid_config=config.vertical_grid,
         allocator=allocator,
         process_props=process_props,
+        extra_halo_rings=config.driver.extra_halo_rings,
     )
 
 

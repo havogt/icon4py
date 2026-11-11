@@ -165,6 +165,25 @@ class DriverConfig:
             ),
         ),
     ] = 0
+    replace_skip_values: typing.Annotated[
+        bool,
+        common_conf_opt.ConfigOption(
+            description=(
+                "Give the granules a grid whose connectivities have every skip value "
+                "replaced by a valid neighbor, also without extra halo rings. With extra "
+                "halo rings the skip values are always replaced."
+            ),
+        ),
+    ] = False
+    synchronize_timers: typing.Annotated[
+        bool,
+        common_conf_opt.ConfigOption(
+            description=(
+                "Synchronize the device before starting and after stopping the timers "
+                "of solve_nh and diffusion."
+            ),
+        ),
+    ] = False
 
     def __post_init__(self) -> None:
         if self.extra_halo_rings < 0:

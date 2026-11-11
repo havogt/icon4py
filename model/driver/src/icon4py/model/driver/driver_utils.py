@@ -236,6 +236,7 @@ def initialize_granules(
     exchange: decomposition_defs.ExchangeRuntime,
     owner_mask: fa.CellField[bool],
     backend: gtx_typing.Backend | None,
+    per_program_backend: model_backends.BackendLike,
     process_props: decomposition_defs.ProcessProperties,
     decomposition_info: decomposition_defs.DecompositionInfo,
 ) -> Granules:
@@ -402,7 +403,7 @@ def initialize_granules(
         nonhydro_params = solve_nh.NonHydrostaticParams(config.nonhydrostatic)
         solve_nonhydro_granule = solve_nh.SolveNonhydro(
             grid=grid,
-            backend=backend,
+            backend=per_program_backend,
             config=config.nonhydrostatic,
             params=nonhydro_params,
             metric_state_nonhydro=solve_nonhydro_metric_state,
@@ -427,7 +428,7 @@ def initialize_granules(
             interpolation_state=diffusion_interpolation_state,
             edge_params=edge_geometry,
             cell_params=cell_geometry,
-            backend=backend,
+            backend=per_program_backend,
             exchange=exchange,
             ndyn_substeps=config.driver.ndyn_substeps,
             max_nudging_coefficient=config.interpolation.max_nudging_coefficient,

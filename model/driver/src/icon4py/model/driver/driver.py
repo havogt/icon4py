@@ -6,14 +6,16 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 
+import contextlib
 import dataclasses
 import datetime
 import functools
 import logging
 import pathlib
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
+import devtools
 import gt4py.next as gtx
 from gt4py.next import config as gtx_config
 from gt4py.next.instrumentation import metrics as gtx_metrics
@@ -111,6 +113,16 @@ class Icon4pyDriver:
             tracer_config=self.config.tracer_config,
             io_config=io_monitor.config if io_monitor is not None else None,
         )
+
+    @contextlib.contextmanager
+    def _timed(self, timer: devtools.Timer) -> Iterator[None]:
+        synchronize = self.config.driver.synchronize_timers
+        if synchronize:
+            device_utils.sync(self.backend)
+        with timer:
+            yield
+            if synchronize:
+                device_utils.sync(self.backend)
 
     @functools.cached_property
     def _allocator(self) -> gtx.typing.Backend:
@@ -342,7 +354,7 @@ class Icon4pyDriver:
                     if self.model_time_variables.is_first_step_in_simulation
                     else self.timer_collection.timers[driver_states.DriverTimers.DIFFUSION.value]
                 )
-                with timer_diffusion:
+                with self._timed(timer_diffusion):
                     self.granules.diffusion.run(
                         diffusion_diagnostic_state,
                         prognostic_states.next,
@@ -473,7 +485,7 @@ class Icon4pyDriver:
                 at_initial_timestep=self.model_time_variables.is_first_step_in_simulation,
             )
 
-            with timer_solve_nh:
+            with self._timed(timer_solve_nh):
                 assert self.granules.solve_nonhydro is not None
                 self.granules.solve_nonhydro.time_step(
                     diagnostic_state_nh=solve_nonhydro_diagnostic_state,
@@ -733,8 +745,18 @@ def initialize_driver(
     config: driver_config.ExperimentConfig,
     grid_manager: gm.GridManager,
     process_props: decomposition_defs.ProcessProperties,
-    backend: gtx.typing.Backend | None,
+    backend: model_backends.BackendLike,
 ) -> Icon4pyDriver:
+    per_program_backend = backend
+    if model_backends.is_backend_descriptor(per_program_backend):
+        per_program_backend = {
+            **per_program_backend,
+            "backend_config": config.driver.backend_config,
+        }
+    backend = model_options.customize_backend(
+        None, backend, backend_config=config.driver.backend_config
+    )
+
     if config.io is not None:
         # an existing output directory is never reused: a timestamped one is created
         output_path = driver_config.prepare_output_directory(
@@ -779,9 +801,12 @@ def initialize_driver(
     model_time_variables = driver_states.ModelTimeVariables(config=config.driver)
 
     granule_grid = grid_manager.grid
-    if decomposition_info.halo_level_mask(
-        dims.CellDim, decomposition_defs.DecompositionFlag.EXTRA_HALO_LEVEL
-    ).any():
+    if (
+        config.driver.replace_skip_values
+        or decomposition_info.halo_level_mask(
+            dims.CellDim, decomposition_defs.DecompositionFlag.EXTRA_HALO_LEVEL
+        ).any()
+    ):
         # The static fields need the skip values at the rank rim; a stencil that runs into the
         # extra halo rings must not read through them.
         granule_grid = with_skip_values_replaced(grid_manager.grid)
@@ -800,6 +825,7 @@ def initialize_driver(
             allocator=allocator,
         ),
         backend=backend,
+        per_program_backend=per_program_backend,
         process_props=process_props,
         decomposition_info=decomposition_info,
     )
@@ -929,7 +955,7 @@ def run_driver(
     config: driver_config.ExperimentConfig,
     grid_manager: gm.GridManager,
     process_props: decomposition_defs.ProcessProperties,
-    backend: gtx.typing.Backend | None,
+    backend: model_backends.BackendLike,
 ) -> tuple[driver_states.DriverStates, Icon4pyDriver]:
     icon4py_driver = initialize_driver(
         config=config,
@@ -937,7 +963,7 @@ def run_driver(
         process_props=process_props,
         backend=backend,
     )
-    allocator = model_backends.get_allocator(backend)
+    allocator = model_backends.get_allocator(icon4py_driver.backend)
     ds = initialize_driver_states(icon4py_driver=icon4py_driver, allocator=allocator)
     icon4py_driver.time_integration(ds)
     return ds, icon4py_driver

@@ -87,6 +87,7 @@ def test_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional
     tmp_path: pathlib.Path,
     process_props: decomp_defs.ProcessProperties,
     backend: gtx_typing.Backend,
+    backend_like: model_backends.BackendLike,
 ) -> None:
     _run_driver_compare_single_multi_rank(
         experiment_description=experiment_description,
@@ -94,6 +95,7 @@ def test_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional
         tmp_path=tmp_path,
         process_props=process_props,
         backend=backend,
+        backend_like=backend_like,
     )
 
 
@@ -122,6 +124,7 @@ def test_driver_compare_single_multi_rank_halo_exchange_mode(  # noqa: PLR0917 [
     tmp_path: pathlib.Path,
     process_props: decomp_defs.ProcessProperties,
     backend: gtx_typing.Backend,
+    backend_like: model_backends.BackendLike,
 ) -> None:
     _run_driver_compare_single_multi_rank(
         experiment_description=experiment_description,
@@ -129,6 +132,7 @@ def test_driver_compare_single_multi_rank_halo_exchange_mode(  # noqa: PLR0917 [
         tmp_path=tmp_path,
         process_props=process_props,
         backend=backend,
+        backend_like=backend_like,
         extra_halo_rings=extra_halo_rings,
         halo_exchange_mode=halo_exchange_mode,
         expect_mismatch=expect_mismatch,
@@ -182,6 +186,7 @@ def test_driver_compare_single_multi_rank_without_entry_exchange_of_field(  # no
     tmp_path: pathlib.Path,
     process_props: decomp_defs.ProcessProperties,
     backend: gtx_typing.Backend,
+    backend_like: model_backends.BackendLike,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     exchange_at_entry = solve_nh.SolveNonhydro._exchange_at_entry
@@ -221,6 +226,7 @@ def test_driver_compare_single_multi_rank_without_entry_exchange_of_field(  # no
         tmp_path=tmp_path,
         process_props=process_props,
         backend=backend,
+        backend_like=backend_like,
         extra_halo_rings=2,
         halo_exchange_mode=decomp_defs.HaloExchangeMode.ENTRY,
         expect_mismatch=True,
@@ -246,6 +252,7 @@ def _run_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional
     tmp_path: pathlib.Path,
     process_props: decomp_defs.ProcessProperties,
     backend: gtx_typing.Backend,
+    backend_like: model_backends.BackendLike,
     extra_halo_rings: int = 0,
     halo_exchange_mode: decomp_defs.HaloExchangeMode = decomp_defs.HaloExchangeMode.INNER,
     expect_mismatch: bool = False,
@@ -292,7 +299,7 @@ def _run_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional
         config=single_rank_config,
         grid_manager=single_rank_grid_manager,
         process_props=single_rank_process_props,
-        backend=backend,
+        backend=backend_like,
     )
 
     multi_rank_config = _with_halo_exchange_mode(config, halo_exchange_mode).with_overrides(
@@ -309,7 +316,7 @@ def _run_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional
         config=multi_rank_config,
         grid_manager=multi_rank_grid_manager,
         process_props=process_props,
-        backend=backend,
+        backend=backend_like,
     )
 
     fields = ["vn", "w", "exner", "theta_v", "rho"]
