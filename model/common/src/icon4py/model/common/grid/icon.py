@@ -206,7 +206,7 @@ def icon_grid(
     )
 
 
-def with_skip_values_replaced(grid: IconGrid) -> IconGrid:
+def with_skip_values_replaced(grid: IconGrid, allocator: gtx_typing.Allocator | None) -> IconGrid:
     """
     The grid with every skip value in its connectivities replaced by a valid neighbor.
 
@@ -223,7 +223,7 @@ def with_skip_values_replaced(grid: IconGrid) -> IconGrid:
                 c.codomain,
                 base._replace_skip_values(c.domain.dims, c.ndarray.copy()),
                 skip_value=None,
-                allocator=data_alloc.array_namespace(c.ndarray),
+                allocator=allocator,
             )
         )
         for name, c in grid.connectivities.items()

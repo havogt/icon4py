@@ -809,7 +809,7 @@ def initialize_driver(
     ):
         # The static fields need the skip values at the rank rim; a stencil that runs into the
         # extra halo rings must not read through them.
-        granule_grid = with_skip_values_replaced(grid_manager.grid)
+        granule_grid = with_skip_values_replaced(grid_manager.grid, allocator)
 
     log.info("initializing granules")
     granules = driver_utils.initialize_granules(
