@@ -339,6 +339,13 @@ class DiffusionConfig:
         ),
     ] = False
 
+    halo_exchange_mode: typing.Annotated[
+        decomposition.HaloExchangeMode,
+        common_conf_opt.ConfigOption(
+            description="Where halos are exchanged and how far into the halo diffusion computes.",
+        ),
+    ] = decomposition.HaloExchangeMode.INNER
+
     def __post_init__(self) -> None:
         ta.dataclass_float_to_wp(self)
 
@@ -463,8 +470,22 @@ class Diffusion:
         ndyn_substeps: int,
         max_nudging_coefficient: state_utils.FloatType,
     ) -> None:
+        if (
+            config.halo_exchange_mode != decomposition.HaloExchangeMode.INNER
+            and grid.limited_area
+            and grid.config.distributed
+        ):
+            raise NotImplementedError(
+                f"Halo exchange mode '{config.halo_exchange_mode.value}' is not implemented "
+                "for distributed limited area grids."
+            )
         self._allocator = model_backends.get_allocator(backend)
         self._exchange = exchange
+        self._inner_exchange = (
+            decomposition.SingleNodeExchange()
+            if config.halo_exchange_mode == decomposition.HaloExchangeMode.ENTRY
+            else exchange
+        )
         self.config = config
         self._params = params
         self._grid = grid
@@ -713,6 +734,11 @@ class Diffusion:
         edge_domain = h_grid.domain(dims.EdgeDim)
         vertex_domain = h_grid.domain(dims.VertexDim)
 
+        widen = self.config.halo_exchange_mode != decomposition.HaloExchangeMode.INNER
+
+        def _end_zone(zone: h_grid.Zone) -> h_grid.Zone:
+            return h_grid.Zone.END if widen else zone
+
         def _get_start_index_for_w_diffusion() -> gtx.int32:
             return (
                 self._grid.start_index(cell_domain(h_grid.Zone.NUDGING))
@@ -722,8 +748,8 @@ class Diffusion:
 
         self._cell_start_interior = self._grid.start_index(cell_domain(h_grid.Zone.INTERIOR))
         self._cell_start_nudging = self._grid.start_index(cell_domain(h_grid.Zone.NUDGING))
-        self._cell_end_local = self._grid.end_index(cell_domain(h_grid.Zone.LOCAL))
-        self._cell_end_halo = self._grid.end_index(cell_domain(h_grid.Zone.HALO))
+        self._cell_end_local = self._grid.end_index(cell_domain(_end_zone(h_grid.Zone.LOCAL)))
+        self._cell_end_halo = self._grid.end_index(cell_domain(_end_zone(h_grid.Zone.HALO)))
 
         self._edge_start_lateral_boundary_level_5 = self._grid.start_index(
             edge_domain(h_grid.Zone.LATERAL_BOUNDARY_LEVEL_5)
@@ -731,13 +757,15 @@ class Diffusion:
         self._edge_start_nudging_level_2 = self._grid.start_index(
             edge_domain(h_grid.Zone.NUDGING_LEVEL_2)
         )
-        self._edge_end_local = self._grid.end_index(edge_domain(h_grid.Zone.LOCAL))
-        self._edge_end_halo_level_2 = self._grid.end_index(edge_domain(h_grid.Zone.HALO_LEVEL_2))
+        self._edge_end_local = self._grid.end_index(edge_domain(_end_zone(h_grid.Zone.LOCAL)))
+        self._edge_end_halo_level_2 = self._grid.end_index(
+            edge_domain(_end_zone(h_grid.Zone.HALO_LEVEL_2))
+        )
 
         self._vertex_start_lateral_boundary_level_2 = self._grid.start_index(
             vertex_domain(h_grid.Zone.LATERAL_BOUNDARY_LEVEL_2)
         )
-        self._vertex_end_local = self._grid.end_index(vertex_domain(h_grid.Zone.LOCAL))
+        self._vertex_end_local = self._grid.end_index(vertex_domain(_end_zone(h_grid.Zone.LOCAL)))
 
         self._horizontal_start_index_w_diffusion = _get_start_index_for_w_diffusion()
 
@@ -789,6 +817,22 @@ class Diffusion:
 
         The initial run uses special values for diff_multfac_vn, smag_limit and smag_offset.
         """
+        if self.config.halo_exchange_mode == decomposition.HaloExchangeMode.ENTRY:
+            log.debug("communication of the prognostic fields at entry - start")
+            self._exchange.exchange(
+                dims.EdgeDim,
+                prognostic_state.vn,
+                stream=decomposition.DEFAULT_STREAM,
+            )
+            self._exchange.exchange(
+                dims.CellDim,
+                prognostic_state.w,
+                prognostic_state.theta_v,
+                prognostic_state.exner,
+                stream=decomposition.DEFAULT_STREAM,
+            )
+            log.debug("communication of the prognostic fields at entry - end")
+
         diff_multfac_vn, smag_limit, smag_offset = self._smag_values_for_run(initial_run)
 
         self.scale_k(self.enh_smag_fac, dtime, self.diff_multfac_smag)
@@ -804,7 +848,7 @@ class Diffusion:
         # 2.  HALO EXCHANGE -- CALL sync_patch_array_mult u_vert and v_vert
         # TODO(phimuell, muellch): Is asynchronous mode okay here.
         log.debug("communication rbf extrapolation of vn - start")
-        self._exchange(
+        self._inner_exchange(
             self.u_vert,
             self.v_vert,
             dim=dims.VertexDim,
@@ -827,7 +871,7 @@ class Diffusion:
         # 5.  HALO EXCHANGE -- CALL sync_patch_array(SYNC_E, z_nabla2_e)
         # ICON: mo_nh_diffusion.f90:853. Fill halo edges before second RBF.
         log.debug("communication of z_nabla2_e - start")
-        self._exchange.exchange(
+        self._inner_exchange.exchange(
             dims.EdgeDim,
             self.z_nabla2_e,
             stream=decomposition.DEFAULT_STREAM,
@@ -843,7 +887,7 @@ class Diffusion:
         # 6.  HALO EXCHANGE -- CALL sync_patch_array_mult (Vertex Fields)
         # TODO(phimuell, muellch): Is asynchronous mode okay here.
         log.debug("communication rbf extrapolation of z_nable2_e - start")
-        self._exchange(
+        self._inner_exchange(
             self.u_vert,
             self.v_vert,
             dim=dims.VertexDim,
@@ -887,7 +931,7 @@ class Diffusion:
         log.debug("running diffusion program (diffuse_prognostic_fields): end")
 
         log.debug("communication of prognostic.vn : start")
-        self._exchange.exchange(
+        self._inner_exchange.exchange(
             dims.EdgeDim,
             prognostic_state.vn,
             stream=decomposition.DEFAULT_STREAM,
@@ -900,7 +944,7 @@ class Diffusion:
         if initial_run or self.config.iforcing not in (ForcingType.NWP, ForcingType.AES):
             if self.config.apply_to_temperature:
                 log.debug("communication of prognostic cell fields: theta and exner - start")
-                self._exchange.exchange(
+                self._inner_exchange.exchange(
                     dims.CellDim,
                     prognostic_state.theta_v,
                     prognostic_state.exner,
@@ -909,7 +953,7 @@ class Diffusion:
                 log.debug("communication of prognostic cell fields: theta and exner - done")
 
             log.debug("communication of prognostic cell field: w - start")
-            self._exchange.exchange(
+            self._inner_exchange.exchange(
                 dims.CellDim,
                 prognostic_state.w,
                 stream=decomposition.DEFAULT_STREAM,

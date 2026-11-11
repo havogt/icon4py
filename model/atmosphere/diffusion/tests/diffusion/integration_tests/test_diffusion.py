@@ -8,7 +8,10 @@
 from __future__ import annotations
 
 import collections
+import dataclasses
+import types
 
+import gt4py.next as gtx
 import gt4py.next.typing as gtx_typing
 import numpy as np
 import pytest
@@ -17,7 +20,11 @@ import icon4py.model.common.grid.states as grid_states
 from icon4py.model.atmosphere.diffusion import diffusion, diffusion_states, diffusion_utils
 from icon4py.model.common import dimension as dims
 from icon4py.model.common.decomposition import definitions as decomp_defs
-from icon4py.model.common.grid import geometry_attributes as geometry_meta, vertical as v_grid
+from icon4py.model.common.grid import (
+    geometry_attributes as geometry_meta,
+    horizontal as h_grid,
+    vertical as v_grid,
+)
 from icon4py.model.common.utils import data_allocation as data_alloc
 from icon4py.model.testing import (
     definitions as test_defs,
@@ -32,6 +39,33 @@ from ..utils import diff_multfac_vn_numpy, smag_limit_numpy, verify_diffusion_fi
 
 
 grid_functionality = collections.defaultdict(dict)
+
+
+class _RecordingExchange(decomp_defs.SingleNodeExchange):
+    def __init__(self) -> None:
+        self.calls: list[tuple[gtx.Dimension, int]] = []
+
+    def start(self, dim, *fields, stream=decomp_defs.DEFAULT_STREAM):
+        self.calls.append((dim, len(fields)))
+        return super().start(dim, *fields, stream=stream)
+
+
+class _GridWithDistinctZoneEnds:
+    limited_area = False
+    end_indices = types.MappingProxyType(
+        {
+            h_grid.Zone.LOCAL: 10,
+            h_grid.Zone.HALO: 20,
+            h_grid.Zone.HALO_LEVEL_2: 30,
+            h_grid.Zone.END: 40,
+        }
+    )
+
+    def start_index(self, domain: h_grid.Domain) -> gtx.int32:
+        return gtx.int32(0)
+
+    def end_index(self, domain: h_grid.Domain) -> gtx.int32:
+        return gtx.int32(self.end_indices[domain.zone])
 
 
 def get_grid_for_experiment(experiment: test_defs.Experiment, backend: gtx_typing.Backend):
@@ -142,6 +176,79 @@ def test_smagorinski_factor_diffusion_type_5():
     assert len(params.smagorinski_factor) == len(params.smagorinski_height)
     assert len(params.smagorinski_factor) == 4
     assert all(p >= 0 for p in params.smagorinski_factor)
+
+
+@pytest.mark.parametrize(
+    "halo_exchange_mode, expected",
+    [
+        (
+            decomp_defs.HaloExchangeMode.INNER,
+            {
+                "_cell_end_local": 10,
+                "_cell_end_halo": 20,
+                "_edge_end_local": 10,
+                "_edge_end_halo_level_2": 30,
+                "_vertex_end_local": 10,
+            },
+        ),
+        (
+            decomp_defs.HaloExchangeMode.INNER_WIDE,
+            {
+                "_cell_end_local": 40,
+                "_cell_end_halo": 40,
+                "_edge_end_local": 40,
+                "_edge_end_halo_level_2": 40,
+                "_vertex_end_local": 40,
+            },
+        ),
+        (
+            decomp_defs.HaloExchangeMode.ENTRY,
+            {
+                "_cell_end_local": 40,
+                "_cell_end_halo": 40,
+                "_edge_end_local": 40,
+                "_edge_end_halo_level_2": 40,
+                "_vertex_end_local": 40,
+            },
+        ),
+    ],
+)
+def test_horizontal_end_indices_for_halo_exchange_mode(halo_exchange_mode, expected):
+    diffusion_granule = object.__new__(diffusion.Diffusion)
+    diffusion_granule._grid = _GridWithDistinctZoneEnds()
+    diffusion_granule.config = diffusion.DiffusionConfig(halo_exchange_mode=halo_exchange_mode)
+
+    diffusion_granule._determine_horizontal_domains()
+
+    end_indices = {
+        name: value for name, value in vars(diffusion_granule).items() if "_end_" in name
+    }
+    assert end_indices == expected
+
+
+@pytest.mark.parametrize(
+    "halo_exchange_mode",
+    [decomp_defs.HaloExchangeMode.INNER_WIDE, decomp_defs.HaloExchangeMode.ENTRY],
+)
+def test_distributed_limited_area_grid_requires_inner_halo_exchange_mode(halo_exchange_mode):
+    grid = types.SimpleNamespace(limited_area=True, config=types.SimpleNamespace(distributed=True))
+    config = diffusion.DiffusionConfig(halo_exchange_mode=halo_exchange_mode)
+
+    with pytest.raises(NotImplementedError, match="distributed limited area"):
+        diffusion.Diffusion(
+            grid=grid,
+            config=config,
+            params=diffusion.DiffusionParams(config),
+            vertical_grid=None,
+            metric_state=None,
+            interpolation_state=None,
+            edge_params=None,
+            cell_params=None,
+            backend=None,
+            exchange=decomp_defs.SingleNodeExchange(),
+            ndyn_substeps=5,
+            max_nudging_coefficient=0.1,
+        )
 
 
 @pytest.mark.uses_concat_where
@@ -363,6 +470,7 @@ def test_verify_diffusion_init_against_savepoint(  # noqa: PLR0917 [too-many-pos
         ),
     ],
 )
+@pytest.mark.parametrize("halo_exchange_mode", list(decomp_defs.HaloExchangeMode))
 def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-arguments]
     experiment,
     step_date_init,
@@ -371,6 +479,7 @@ def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-argume
     savepoint_diffusion_exit,
     interpolation_state: diffusion_states.DiffusionInterpolationState,
     metric_state: diffusion_states.DiffusionMetricState,
+    halo_exchange_mode: decomp_defs.HaloExchangeMode,
     backend,
 ):
     grid = get_grid_for_experiment(experiment, backend)
@@ -395,7 +504,8 @@ def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-argume
         vct_b=vct_b,
     )
 
-    config = experiment.config.diffusion
+    config = dataclasses.replace(experiment.config.diffusion, halo_exchange_mode=halo_exchange_mode)
+    exchange = _RecordingExchange()
     additional_parameters = diffusion.DiffusionParams(config)
 
     assert experiment.config.interpolation.max_nudging_coefficient is not None
@@ -409,7 +519,7 @@ def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-argume
         edge_params=edge_geometry,
         cell_params=cell_geometry,
         backend=backend,
-        exchange=decomp_defs.SingleNodeExchange(),
+        exchange=exchange,
         ndyn_substeps=experiment.config.driver.ndyn_substeps,
         max_nudging_coefficient=experiment.config.interpolation.max_nudging_coefficient,
     )
@@ -420,6 +530,15 @@ def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-argume
         diagnostic_state=diagnostic_state, prognostic_state=prognostic_state, dtime=dtime
     )
     verify_diffusion_fields(config, diagnostic_state, prognostic_state, savepoint_diffusion_exit)
+    if halo_exchange_mode == decomp_defs.HaloExchangeMode.ENTRY:
+        assert exchange.calls == [(dims.EdgeDim, 1), (dims.CellDim, 3)]
+    else:
+        assert exchange.calls[:4] == [
+            (dims.VertexDim, 2),
+            (dims.EdgeDim, 1),
+            (dims.VertexDim, 2),
+            (dims.EdgeDim, 1),
+        ]
 
 
 @pytest.mark.datatest
