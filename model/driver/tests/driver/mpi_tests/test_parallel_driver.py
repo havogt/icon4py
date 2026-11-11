@@ -8,13 +8,18 @@
 
 import logging
 import pathlib
+from collections.abc import Callable
+from typing import Any
 
+import gt4py.next as gtx
 import gt4py.next.typing as gtx_typing
 import numpy as np
 import pytest
 
+from icon4py.model.atmosphere.dycore import solve_nonhydro as solve_nh
 from icon4py.model.common import model_backends, time
 from icon4py.model.common.decomposition import definitions as decomp_defs
+from icon4py.model.common.states import nonhydro_states
 from icon4py.model.common.utils import data_allocation as data_alloc
 from icon4py.model.driver import config as driver_config, driver, driver_utils
 from icon4py.model.testing import (
@@ -101,12 +106,10 @@ def test_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional
 @pytest.mark.parametrize(
     "extra_halo_rings, halo_exchange_mode, expect_mismatch",
     [
-        pytest.param(0, decomp_defs.HaloExchangeMode.INNER_WIDE, False, id="rings0-inner_wide"),
         pytest.param(2, decomp_defs.HaloExchangeMode.INNER, False, id="rings2-inner"),
         pytest.param(2, decomp_defs.HaloExchangeMode.INNER_WIDE, False, id="rings2-inner_wide"),
         pytest.param(2, decomp_defs.HaloExchangeMode.ENTRY, False, id="rings2-entry"),
         # the halo is too shallow for a component without inner exchanges
-        pytest.param(0, decomp_defs.HaloExchangeMode.ENTRY, True, id="rings0-entry"),
         pytest.param(1, decomp_defs.HaloExchangeMode.ENTRY, True, id="rings1-entry"),
     ],
 )
@@ -132,17 +135,109 @@ def test_driver_compare_single_multi_rank_halo_exchange_mode(  # noqa: PLR0917 [
     )
 
 
+_SOLVE_NONHYDRO_ENTRY_EXCHANGE_FIELDS: dict[
+    str, Callable[[nonhydro_states.DiagnosticStateNonHydro], gtx.Field]
+] = {
+    "tangential_wind": lambda diagnostic_state: diagnostic_state.tangential_wind,
+    "normal_wind_advective_tendency": (
+        lambda diagnostic_state: diagnostic_state.normal_wind_advective_tendency.predictor
+    ),
+    "vertical_wind_advective_tendency": (
+        lambda diagnostic_state: diagnostic_state.vertical_wind_advective_tendency.predictor
+    ),
+}
+
+
+class _FieldDroppingExchange:
+    """Forwards `exchange` calls without one field and counts how often it dropped it."""
+
+    def __init__(self, exchange: decomp_defs.ExchangeRuntime, dropped_field: gtx.Field) -> None:
+        self._exchange = exchange
+        self._dropped_field = dropped_field
+        self.num_drops = 0
+
+    def exchange(self, dim: gtx.Dimension, *fields: gtx.Field, stream: Any) -> None:
+        kept_fields = [field for field in fields if field is not self._dropped_field]
+        self.num_drops += len(fields) - len(kept_fields)
+        self._exchange.exchange(dim, *kept_fields, stream=stream)
+
+
+@pytest.mark.datatest
+@pytest.mark.embedded_remap_error
+@pytest.mark.mpi
+@pytest.mark.level("integration")
+@pytest.mark.parametrize("process_props", [True], indirect=True)
+@pytest.mark.parametrize("experiment_description", [test_defs.Experiments.JW], ids=["jw"])
+@pytest.mark.parametrize(
+    "dropped_field_name",
+    [
+        pytest.param(field_name, id=f"drop-{field_name}")
+        for field_name in _SOLVE_NONHYDRO_ENTRY_EXCHANGE_FIELDS
+    ],
+)
+def test_driver_compare_single_multi_rank_without_entry_exchange_of_field(  # noqa: PLR0917 [too-many-positional-arguments]
+    download_ser_data: None,
+    experiment_description: test_defs.ExperimentDescription,
+    dropped_field_name: str,
+    tmp_path: pathlib.Path,
+    process_props: decomp_defs.ProcessProperties,
+    backend: gtx_typing.Backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exchange_at_entry = solve_nh.SolveNonhydro._exchange_at_entry
+    num_drops = 0
+
+    def exchange_at_entry_without_field(
+        self: solve_nh.SolveNonhydro,
+        *,
+        diagnostic_state_nh: nonhydro_states.DiagnosticStateNonHydro,
+        **kwargs: Any,
+    ) -> None:
+        nonlocal num_drops
+        exchange = self._exchange
+        dropping_exchange = _FieldDroppingExchange(
+            exchange, _SOLVE_NONHYDRO_ENTRY_EXCHANGE_FIELDS[dropped_field_name](diagnostic_state_nh)
+        )
+        self._exchange = dropping_exchange
+        try:
+            exchange_at_entry(self, diagnostic_state_nh=diagnostic_state_nh, **kwargs)
+        finally:
+            self._exchange = exchange
+        num_drops += dropping_exchange.num_drops
+
+    monkeypatch.setattr(
+        solve_nh.SolveNonhydro, "_exchange_at_entry", exchange_at_entry_without_field
+    )
+
+    # the dropped fields are carried from one substep to the next
+    config = driver_config.read_experiment_config_from_yaml(
+        dt_utils.get_path_for_experiment(experiment_description, process_props) / "config.yml"
+    )
+    assert config.driver.ndyn_substeps >= 2
+
+    _run_driver_compare_single_multi_rank(
+        experiment_description=experiment_description,
+        end_of_simulation=time.NumTimeSteps(1),
+        tmp_path=tmp_path,
+        process_props=process_props,
+        backend=backend,
+        extra_halo_rings=2,
+        halo_exchange_mode=decomp_defs.HaloExchangeMode.ENTRY,
+        expect_mismatch=True,
+    )
+    assert num_drops > 0, f"'{dropped_field_name}' was never dropped from the entry exchange."
+
+
 def _with_halo_exchange_mode(
     config: driver_config.ExperimentConfig, halo_exchange_mode: decomp_defs.HaloExchangeMode
 ) -> driver_config.ExperimentConfig:
-    overrides = {
-        component: {"halo_exchange_mode": halo_exchange_mode}
-        for component in ("diffusion", "nonhydrostatic")
-        if hasattr(getattr(config, component), "halo_exchange_mode")
-    }
-    if halo_exchange_mode is not decomp_defs.HaloExchangeMode.INNER and not overrides:
-        pytest.skip("No component has a configurable halo exchange mode.")
-    return config.with_overrides(**overrides)
+    return config.with_overrides(
+        **{
+            component: {"halo_exchange_mode": halo_exchange_mode}
+            for component in ("diffusion", "nonhydrostatic")
+            if getattr(config, component) is not None
+        }
+    )
 
 
 def _run_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional-arguments]
