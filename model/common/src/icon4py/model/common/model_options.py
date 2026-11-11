@@ -126,10 +126,9 @@ def customize_backend(
     backend_descriptor = (
         {"device": backend} if isinstance(backend, model_backends.DeviceType) else {**backend}
     )
+    descriptor_backend_config = backend_descriptor.pop("backend_config", None)
     backend_config = (
-        backend_config
-        or backend_descriptor.pop("backend_config", None)
-        or backend_cfg.backend_config_from_env()
+        backend_config or descriptor_backend_config or backend_cfg.backend_config_from_env()
     )
     backend_descriptor = get_options(
         program_name, backend_config=backend_config, **backend_descriptor
