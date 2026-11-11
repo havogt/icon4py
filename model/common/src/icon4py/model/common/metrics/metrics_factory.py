@@ -772,7 +772,7 @@ class MetricsFieldsFactory(factory.FieldSource, factory.GridProvider):
                 ),
             },
             fields={"pg_exdist_dsl": attrs.PG_EXDIST_DSL},
-            do_exchange=False,
+            do_exchange=True,
         )
         self.register_provider(pressure_gradient_fields)
 
