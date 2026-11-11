@@ -10,10 +10,12 @@ import logging
 import pathlib
 
 import gt4py.next.typing as gtx_typing
+import numpy as np
 import pytest
 
 from icon4py.model.common import model_backends, time
 from icon4py.model.common.decomposition import definitions as decomp_defs
+from icon4py.model.common.utils import data_allocation as data_alloc
 from icon4py.model.driver import config as driver_config, driver, driver_utils
 from icon4py.model.testing import (
     datatest_utils as dt_utils,
@@ -90,12 +92,68 @@ def test_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional
     )
 
 
-def _run_driver_compare_single_multi_rank(
+@pytest.mark.datatest
+@pytest.mark.embedded_remap_error
+@pytest.mark.mpi
+@pytest.mark.level("integration")
+@pytest.mark.parametrize("process_props", [True], indirect=True)
+@pytest.mark.parametrize("experiment_description", [test_defs.Experiments.JW], ids=["jw"])
+@pytest.mark.parametrize(
+    "extra_halo_rings, halo_exchange_mode, expect_mismatch",
+    [
+        pytest.param(0, decomp_defs.HaloExchangeMode.INNER_WIDE, False, id="rings0-inner_wide"),
+        pytest.param(2, decomp_defs.HaloExchangeMode.INNER, False, id="rings2-inner"),
+        pytest.param(2, decomp_defs.HaloExchangeMode.INNER_WIDE, False, id="rings2-inner_wide"),
+        pytest.param(2, decomp_defs.HaloExchangeMode.ENTRY, False, id="rings2-entry"),
+        # the halo is too shallow for a component without inner exchanges
+        pytest.param(0, decomp_defs.HaloExchangeMode.ENTRY, True, id="rings0-entry"),
+        pytest.param(1, decomp_defs.HaloExchangeMode.ENTRY, True, id="rings1-entry"),
+    ],
+)
+def test_driver_compare_single_multi_rank_halo_exchange_mode(  # noqa: PLR0917 [too-many-positional-arguments]
+    download_ser_data: None,
+    experiment_description: test_defs.ExperimentDescription,
+    extra_halo_rings: int,
+    halo_exchange_mode: decomp_defs.HaloExchangeMode,
+    expect_mismatch: bool,
+    tmp_path: pathlib.Path,
+    process_props: decomp_defs.ProcessProperties,
+    backend: gtx_typing.Backend,
+) -> None:
+    _run_driver_compare_single_multi_rank(
+        experiment_description=experiment_description,
+        end_of_simulation=time.NumTimeSteps(1),
+        tmp_path=tmp_path,
+        process_props=process_props,
+        backend=backend,
+        extra_halo_rings=extra_halo_rings,
+        halo_exchange_mode=halo_exchange_mode,
+        expect_mismatch=expect_mismatch,
+    )
+
+
+def _with_halo_exchange_mode(
+    config: driver_config.ExperimentConfig, halo_exchange_mode: decomp_defs.HaloExchangeMode
+) -> driver_config.ExperimentConfig:
+    overrides = {
+        component: {"halo_exchange_mode": halo_exchange_mode}
+        for component in ("diffusion", "nonhydrostatic")
+        if hasattr(getattr(config, component), "halo_exchange_mode")
+    }
+    if halo_exchange_mode is not decomp_defs.HaloExchangeMode.INNER and not overrides:
+        pytest.skip("No component has a configurable halo exchange mode.")
+    return config.with_overrides(**overrides)
+
+
+def _run_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional-arguments]
     experiment_description: test_defs.ExperimentDescription,
     end_of_simulation: time.EndOfSimulation,
     tmp_path: pathlib.Path,
     process_props: decomp_defs.ProcessProperties,
     backend: gtx_typing.Backend,
+    extra_halo_rings: int = 0,
+    halo_exchange_mode: decomp_defs.HaloExchangeMode = decomp_defs.HaloExchangeMode.INNER,
+    expect_mismatch: bool = False,
 ) -> None:
     if experiment_description.grid.limited_area:
         pytest.xfail("Limited-area grids not yet supported")
@@ -142,12 +200,15 @@ def _run_driver_compare_single_multi_rank(
         backend=backend,
     )
 
-    multi_rank_config = config.with_overrides(driver={"end_of_simulation": end_of_simulation})
+    multi_rank_config = _with_halo_exchange_mode(config, halo_exchange_mode).with_overrides(
+        driver={"end_of_simulation": end_of_simulation, "extra_halo_rings": extra_halo_rings}
+    )
     multi_rank_grid_manager = driver_utils.create_grid_manager(
         grid_file_path=grid_file_path,
         vertical_grid_config=multi_rank_config.vertical_grid,
         allocator=allocator,
         process_props=process_props,
+        extra_halo_rings=multi_rank_config.driver.extra_halo_rings,
     )
     multi_rank_ds, multi_rank_driver = driver.run_driver(
         config=multi_rank_config,
@@ -173,6 +234,11 @@ def _run_driver_compare_single_multi_rank(
         field_name: field.asnumpy() for field_name, field in compared.items()
     }
 
+    decomposition_info = multi_rank_driver.decomposition_info
+    # The extra halo rings are valid only where a component exchanged the field, and a
+    # component without inner exchanges leaves the whole halo stale.
+    check_halos = extra_halo_rings == 0 and halo_exchange_mode is decomp_defs.HaloExchangeMode.INNER
+    mismatched_fields = []
     for field_name in compared:
         print(f"\nverifying field {field_name}")
         global_reference_field = process_props.comm.bcast(
@@ -181,13 +247,30 @@ def _run_driver_compare_single_multi_rank(
         )
         local_field = multi_rank_compared[field_name]
         dim = local_field.domain.dims[0]
-        parallel_helpers.check_local_global_field(
-            decomposition_info=multi_rank_driver.decomposition_info,
-            process_props=process_props,
-            dim=dim,
-            global_reference_field=global_reference_field,
-            local_field=local_field.asnumpy(),
-            check_halos=True,
-            atol=atol,
-            rtol=rtol,
-        )
+        try:
+            parallel_helpers.check_local_global_field(
+                decomposition_info=decomposition_info,
+                process_props=process_props,
+                dim=dim,
+                global_reference_field=global_reference_field,
+                local_field=local_field.asnumpy(),
+                check_halos=check_halos,
+                atol=atol,
+                rtol=rtol,
+            )
+        except AssertionError as error:
+            if not expect_mismatch:
+                raise
+            print(error)
+            mismatched_fields.append(field_name)
+        if expect_mismatch:
+            owned = data_alloc.as_numpy(
+                decomposition_info.local_index(dim, decomp_defs.DecompositionInfo.EntryType.OWNED)
+            )
+            assert np.isfinite(local_field.asnumpy()[owned]).all(), (
+                f"'{field_name}' is not finite on the owned points."
+            )
+
+    # the owned points are compared on the first rank only
+    if expect_mismatch and process_props.rank == 0:
+        assert mismatched_fields, "Expected the multi-rank run to differ from the single-rank run."
