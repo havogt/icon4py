@@ -7,8 +7,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
+from unittest import mock
+
 import gt4py.next as gtx
 import gt4py.next.typing as gtx_typing
+import numpy as np
 import pytest
 
 from icon4py.model.common import dimension as dims, model_backends
@@ -210,3 +213,20 @@ def test_compute_domain_bounds_for_global_grid(
             assert v == grid.size[k.dim], (
                 f"Expected end index '{grid.size[k.dim]}' for {dim} in {k.zone}, but got '{v}'"
             )
+
+
+def test_lateral_boundary_mask_takes_halo_points_from_owner() -> None:
+    first_interior_domain = h_grid.domain(dims.EdgeDim)(h_grid.Zone.NUDGING_LEVEL_2)
+    grid = mock.Mock(size={dims.EdgeDim: 6})
+    grid.start_index.return_value = 2
+
+    def fill_halo(dim: gtx.Dimension, field: gtx.Field, stream: object) -> None:
+        np.asarray(field.ndarray)[4:] = (1.0, 0.0)
+
+    exchange = mock.Mock()
+    exchange.exchange.side_effect = fill_halo
+
+    mask = refinement.lateral_boundary_mask(grid, first_interior_domain, exchange, None)
+
+    grid.start_index.assert_called_once_with(first_interior_domain)
+    assert mask.asnumpy().tolist() == [True, True, False, False, True, False]

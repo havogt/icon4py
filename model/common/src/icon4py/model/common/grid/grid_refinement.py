@@ -8,11 +8,12 @@
 import logging
 from typing import Final
 
+import gt4py.next.typing as gtx_typing
 from gt4py import next as gtx
 
-from icon4py.model.common import dimension as dims
+from icon4py.model.common import dimension as dims, type_alias as ta
 from icon4py.model.common.decomposition import definitions as decomposition
-from icon4py.model.common.grid import gridfile, horizontal as h_grid
+from icon4py.model.common.grid import gridfile, horizontal as h_grid, icon
 from icon4py.model.common.utils import data_allocation as data_alloc
 
 
@@ -341,3 +342,24 @@ def is_limited_area_grid(
     >>> assert is_limited_area_grid(non_nested_edge_refinement)
     """
     return (refinement_field > 0).any().item()
+
+
+def lateral_boundary_mask(
+    grid: icon.IconGrid,
+    first_interior_domain: h_grid.Domain,
+    exchange: decomposition.ExchangeRuntime,
+    allocator: gtx_typing.Allocator | None,
+) -> gtx.Field:
+    """
+    Mark the local points, halo points included, that lie in the lateral boundary.
+
+    A rank orders the lateral boundary points it owns before `first_interior_domain`,
+    whereas halo points of the same refinement level can be ordered with the halo.
+    The owner's classification is therefore exchanged.
+    """
+    dim = first_interior_domain.dim
+    in_lateral_boundary = data_alloc.zero_field(grid, dim, dtype=ta.wpfloat, allocator=allocator)
+    values = data_alloc.import_array_ns(allocator).asarray(in_lateral_boundary.ndarray)
+    values[: grid.start_index(first_interior_domain)] = 1.0
+    exchange.exchange(dim, in_lateral_boundary, stream=decomposition.BLOCK)
+    return gtx.as_field((dim,), values > 0.5, allocator=allocator)
