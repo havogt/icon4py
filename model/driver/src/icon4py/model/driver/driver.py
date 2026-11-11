@@ -354,6 +354,25 @@ class Icon4pyDriver:
         if self.granules.tracer_advection is not None:
             assert tracer_advection_diagnostic_state is not None
             assert tracer_prep_adv is not None
+            if (
+                self.config.nonhydrostatic is not None
+                and self.config.nonhydrostatic.halo_exchange_mode
+                == decomposition_defs.HaloExchangeMode.ENTRY
+                and any(tracers.current.active_fields())
+            ):
+                # the dynamics left 'rho' and the fluxes valid on the owned points only
+                self.exchange.exchange(
+                    dims.EdgeDim,
+                    tracer_prep_adv.vn_traj,
+                    tracer_prep_adv.mass_flx_me,
+                    stream=decomposition_defs.DEFAULT_STREAM,
+                )
+                self.exchange.exchange(
+                    dims.CellDim,
+                    tracer_advection_diagnostic_state.airmass_now,
+                    tracer_advection_diagnostic_state.airmass_new,
+                    stream=decomposition_defs.DEFAULT_STREAM,
+                )
             for tracer_current in tracers.current.active_fields():
                 tracer_next_field = getattr(tracers.next, tracer_current.name)
                 assert tracer_next_field is not None, (
