@@ -35,6 +35,7 @@ from icon4py.bindings import (
 )
 from icon4py.model.atmosphere.dycore import dycore_states, solve_nonhydro
 from icon4py.model.common import dimension as dims, model_backends, utils as common_utils
+from icon4py.model.common.decomposition import definitions as decomposition
 from icon4py.model.common.states import nonhydro_states
 from icon4py.model.common.states.prognostic_state import PrognosticState
 from icon4py.model.common.utils import data_allocation as data_alloc, field_utils
@@ -177,6 +178,7 @@ def solve_nh_init(  # noqa: PLR0917 [too-many-positional-arguments]
         fourth_order_divdamp_z2=divdamp_z2,
         fourth_order_divdamp_z3=divdamp_z3,
         fourth_order_divdamp_z4=divdamp_z4,
+        halo_exchange_mode=wrapper_config.HALO_EXCHANGE_MODE,
     )
     nonhydro_params = solve_nonhydro.NonHydrostaticParams(config)
 
@@ -233,6 +235,17 @@ def solve_nh_init(  # noqa: PLR0917 [too-many-positional-arguments]
     vertoffset_gradp = field_utils.index2offset(
         data_alloc.adjust_fortran_indices(vertidx_gradp), dims.KDim, allocator
     )
+
+    if wrapper_config.HALO_EXCHANGE_MODE != decomposition.HaloExchangeMode.INNER:
+        # ICON determines `pg_exdist` and the final `vertidx_gradp` only on the edges a rank owns.
+        exchange = grid_wrapper.grid_state.exchange_runtime
+        exchange.exchange(dims.EdgeDim, pg_exdist_dsl, stream=decomposition.BLOCK)
+        num_edges = grid_wrapper.grid_state.grid.num_edges
+        vertoffsets = xp.asarray(vertoffset_gradp.ndarray)
+        for neighbor in range(vertoffsets.shape[1]):
+            buffer = xp.ascontiguousarray(vertoffsets[:num_edges, neighbor, :])
+            exchange.exchange(dims.EdgeDim, buffer, stream=decomposition.BLOCK)
+            vertoffsets[:num_edges, neighbor, :] = buffer
 
     metric_state_nonhydro = dycore_states.MetricStateNonHydro(
         mask_prog_halo_c=mask_prog_halo_c,
@@ -438,6 +451,24 @@ def solve_nh_run(  # noqa: PLR0917 [too-many-positional-arguments]
         is_iau_active=is_iau_active,
         iau_wgt_dyn=iau_wgt_dyn,
     )
+
+    if (
+        wrapper_config.HALO_EXCHANGE_MODE == decomposition.HaloExchangeMode.ENTRY
+        and idyn_timestep == ndyn_substeps_var - 1
+    ):
+        # The granule leaves the halo of its results stale in this mode, the caller reads it.
+        exchange = grid_wrapper.grid_state.exchange_runtime
+        exchange.exchange(
+            dims.EdgeDim, vn_new, vn_traj, mass_flx_me, stream=decomposition.DEFAULT_STREAM
+        )
+        exchange.exchange(
+            dims.CellDim,
+            w_new,
+            rho_new,
+            exner_new,
+            theta_v_new,
+            stream=decomposition.DEFAULT_STREAM,
+        )
 
     # TODO(havogt): create separate bindings for writing the timers
     if gtx_config.COLLECT_METRICS_LEVEL > 0:

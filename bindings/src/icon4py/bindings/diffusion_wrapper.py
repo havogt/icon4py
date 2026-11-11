@@ -46,6 +46,7 @@ from icon4py.model.atmosphere.diffusion.diffusion_states import (
     DiffusionMetricState,
 )
 from icon4py.model.common import dimension as dims, field_type_aliases as fa, model_backends
+from icon4py.model.common.decomposition import definitions as decomposition
 from icon4py.model.common.states.prognostic_state import PrognosticState
 from icon4py.model.common.type_alias import wpfloat
 
@@ -143,6 +144,7 @@ def diffusion_init(  # noqa: PLR0917 [too-many-positional-arguments]
         iforcing=ForcingType(iforcing),
         a_hshr=a_hshr,
         loutshs=loutshs,
+        halo_exchange_mode=wrapper_config.HALO_EXCHANGE_MODE,
     )
 
     diffusion_params = DiffusionParams(config)
@@ -309,3 +311,10 @@ def diffusion_run(  # noqa: PLR0917 [too-many-positional-arguments]
         dtime=dtime,
         initial_run=linit,
     )
+
+    if wrapper_config.HALO_EXCHANGE_MODE == decomposition.HaloExchangeMode.ENTRY:
+        # The granule leaves the halo of its results stale in this mode, the caller reads it.
+        exchange = grid_wrapper.grid_state.exchange_runtime
+        exchange.exchange(dims.EdgeDim, vn, stream=decomposition.DEFAULT_STREAM)
+        if linit or granule.diffusion.config.iforcing not in (ForcingType.NWP, ForcingType.AES):
+            exchange.exchange(dims.CellDim, w, theta_v, exner, stream=decomposition.DEFAULT_STREAM)
