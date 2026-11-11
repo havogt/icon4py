@@ -470,15 +470,6 @@ class Diffusion:
         ndyn_substeps: int,
         max_nudging_coefficient: state_utils.FloatType,
     ) -> None:
-        if (
-            config.halo_exchange_mode != decomposition.HaloExchangeMode.INNER
-            and grid.limited_area
-            and grid.config.distributed
-        ):
-            raise NotImplementedError(
-                f"Halo exchange mode '{config.halo_exchange_mode.value}' is not implemented "
-                "for distributed limited area grids."
-            )
         self._allocator = model_backends.get_allocator(backend)
         self._exchange = exchange
         self._inner_exchange = (
@@ -748,7 +739,12 @@ class Diffusion:
 
         self._cell_start_interior = self._grid.start_index(cell_domain(h_grid.Zone.INTERIOR))
         self._cell_start_nudging = self._grid.start_index(cell_domain(h_grid.Zone.NUDGING))
-        self._cell_end_local = self._grid.end_index(cell_domain(_end_zone(h_grid.Zone.LOCAL)))
+        # The halo of a limited area grid holds lateral boundary cells, which are not diffused.
+        self._cell_end_local = self._grid.end_index(
+            cell_domain(
+                h_grid.Zone.LOCAL if self._grid.limited_area else _end_zone(h_grid.Zone.LOCAL)
+            )
+        )
         self._cell_end_halo = self._grid.end_index(cell_domain(_end_zone(h_grid.Zone.HALO)))
 
         self._edge_start_lateral_boundary_level_5 = self._grid.start_index(

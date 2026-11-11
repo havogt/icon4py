@@ -230,25 +230,18 @@ def test_horizontal_end_indices_for_halo_exchange_mode(halo_exchange_mode, expec
     "halo_exchange_mode",
     [decomp_defs.HaloExchangeMode.INNER_WIDE, decomp_defs.HaloExchangeMode.ENTRY],
 )
-def test_distributed_limited_area_grid_requires_inner_halo_exchange_mode(halo_exchange_mode):
-    grid = types.SimpleNamespace(limited_area=True, config=types.SimpleNamespace(distributed=True))
-    config = diffusion.DiffusionConfig(halo_exchange_mode=halo_exchange_mode)
+def test_limited_area_grid_keeps_cell_end_of_prognostic_fields(halo_exchange_mode):
+    grid = _GridWithDistinctZoneEnds()
+    grid.limited_area = True
+    diffusion_granule = object.__new__(diffusion.Diffusion)
+    diffusion_granule._grid = grid
+    diffusion_granule.config = diffusion.DiffusionConfig(halo_exchange_mode=halo_exchange_mode)
 
-    with pytest.raises(NotImplementedError, match="distributed limited area"):
-        diffusion.Diffusion(
-            grid=grid,
-            config=config,
-            params=diffusion.DiffusionParams(config),
-            vertical_grid=None,
-            metric_state=None,
-            interpolation_state=None,
-            edge_params=None,
-            cell_params=None,
-            backend=None,
-            exchange=decomp_defs.SingleNodeExchange(),
-            ndyn_substeps=5,
-            max_nudging_coefficient=0.1,
-        )
+    diffusion_granule._determine_horizontal_domains()
+
+    assert diffusion_granule._cell_end_local == 10
+    assert diffusion_granule._cell_end_halo == 40
+    assert diffusion_granule._edge_end_local == 40
 
 
 @pytest.mark.uses_concat_where
