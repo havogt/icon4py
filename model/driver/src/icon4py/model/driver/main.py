@@ -93,6 +93,7 @@ def main(
         vertical_grid_config=config.vertical_grid,
         allocator=allocator,
         process_props=process_props,
+        extra_halo_rings=config.driver.extra_halo_rings,
     )
 
     driver.run_driver(

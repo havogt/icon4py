@@ -38,7 +38,7 @@ from icon4py.model.common.grid import (
     grid_manager as gm,
     vertical as v_grid,
 )
-from icon4py.model.common.grid.icon import IconGrid
+from icon4py.model.common.grid.icon import IconGrid, with_skip_values_replaced
 from icon4py.model.common.initial_condition import apply as ic_apply
 from icon4py.model.common.io import io as common_io
 from icon4py.model.common.metrics import metrics_attributes as metrics_attr
@@ -759,10 +759,18 @@ def initialize_driver(
 
     model_time_variables = driver_states.ModelTimeVariables(config=config.driver)
 
+    granule_grid = grid_manager.grid
+    if decomposition_info.halo_level_mask(
+        dims.CellDim, decomposition_defs.DecompositionFlag.EXTRA_HALO_LEVEL
+    ).any():
+        # The static fields need the skip values at the rank rim; a stencil that runs into the
+        # extra halo rings must not read through them.
+        granule_grid = with_skip_values_replaced(grid_manager.grid)
+
     log.info("initializing granules")
     granules = driver_utils.initialize_granules(
         config=config,
-        grid=grid_manager.grid,
+        grid=granule_grid,
         vertical_grid=vertical_grid,
         static_field_factories=static_field_factories,
         model_time_variables=model_time_variables,

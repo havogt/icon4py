@@ -136,6 +136,7 @@ def create_grid_manager(
     vertical_grid_config: v_grid.VerticalGridConfig,
     allocator: gtx_typing.Allocator,
     process_props: decomposition_defs.ProcessProperties,
+    extra_halo_rings: int = 0,
 ) -> gm.GridManager:
     decomposer = (
         decomp.SingleNodeDecomposer()
@@ -152,6 +153,7 @@ def create_grid_manager(
         keep_skip_values=True,
         process_props=process_props,
         decomposer=decomposer,
+        extra_halo_rings=extra_halo_rings,
     )
 
     return grid_manager

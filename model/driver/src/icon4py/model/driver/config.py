@@ -155,8 +155,22 @@ class DriverConfig:
             ),
         ),
     ] = dataclasses.field(default_factory=backend_cfg.backend_config_from_env)
+    extra_halo_rings: typing.Annotated[
+        int,
+        common_conf_opt.ConfigOption(
+            description=(
+                "Number of halo rings added beyond the ICON-like halo in a distributed run. "
+                "A ring is the cells sharing a vertex with the local cells, with their "
+                "edges and vertices."
+            ),
+        ),
+    ] = 0
 
     def __post_init__(self) -> None:
+        if self.extra_halo_rings < 0:
+            raise ValueError(
+                f"Invalid 'extra_halo_rings': expected a non-negative number, got {self.extra_halo_rings}."
+            )
         if self.start_of_timestepping < self.start_of_simulation:
             raise ValueError(
                 f"the time loop cannot start at {self.start_of_timestepping}, before the "
