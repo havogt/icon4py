@@ -7,10 +7,13 @@
 # SPDX-License-Identifier: BSD-3-Clause
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import TYPE_CHECKING
+from unittest import mock
 
 import gt4py.next as gtx
+import numpy as np
 import pytest
 
 import icon4py.model.common.grid.states as grid_states
@@ -789,25 +792,57 @@ def test_run_solve_nonhydro_single_step(  # noqa: PLR0917 [too-many-positional-a
     )
 
 
-@pytest.mark.embedded_remap_error
-@pytest.mark.datatest
-@pytest.mark.single_precision_ready
-@pytest.mark.parametrize("experiment_description", [test_defs.Experiments.MCH_CH_R04B09])
-@pytest.mark.parametrize(
-    "istep_init, substep_init, step_date_init, istep_exit, substep_exit, step_date_exit, at_initial_timestep",
-    [
-        (1, 1, "2021-06-20T12:00:10.000", 2, 2, "2021-06-20T12:00:10.000", True),
-        (1, 1, "2021-06-20T12:00:20.000", 2, 2, "2021-06-20T12:00:20.000", False),
-    ],
-)
-def test_run_solve_nonhydro_multi_step(  # noqa: PLR0917 [too-many-positional-arguments]
+_WIDENED_END_ZONES = (h_grid.Zone.LOCAL, h_grid.Zone.HALO, h_grid.Zone.HALO_LEVEL_2)
+
+
+def _assert_horizontal_ends(
+    solve_nonhydro: solve_nh.SolveNonhydro,
+    grid,
+    halo_exchange_mode: decomp_defs.HaloExchangeMode,
+) -> None:
+    for dim, name in ((dims.CellDim, "cell"), (dims.EdgeDim, "edge")):
+        domain = h_grid.domain(dim)
+        for zone in _WIDENED_END_ZONES:
+            expected_zone = (
+                zone
+                if halo_exchange_mode == decomp_defs.HaloExchangeMode.INNER
+                else h_grid.Zone.END
+            )
+            assert getattr(solve_nonhydro, f"_end_{name}_{zone.name.lower()}") == grid.end_index(
+                domain(expected_zone)
+            )
+    assert solve_nonhydro._end_cell_max_vertical_cfl == grid.end_index(
+        h_grid.domain(dims.CellDim)(
+            h_grid.Zone.HALO
+            if halo_exchange_mode == decomp_defs.HaloExchangeMode.INNER
+            else h_grid.Zone.LOCAL
+        )
+    )
+
+
+@pytest.mark.parametrize("halo_exchange_mode", list(decomp_defs.HaloExchangeMode))
+def test_horizontal_ends_for_halo_exchange_mode(halo_exchange_mode):
+    zones = list(h_grid.Zone)
+    grid = mock.Mock()
+    grid.start_index.side_effect = lambda domain: -1
+    grid.end_index.side_effect = lambda domain: zones.index(domain.zone)
+    solve_nonhydro = mock.Mock(
+        _grid=grid,
+        _wide_halo_computation=halo_exchange_mode != decomp_defs.HaloExchangeMode.INNER,
+    )
+
+    solve_nh.SolveNonhydro._determine_local_domains(solve_nonhydro)
+
+    _assert_horizontal_ends(solve_nonhydro, grid, halo_exchange_mode)
+    assert solve_nonhydro._end_cell_lateral_boundary_level_4 == zones.index(
+        h_grid.Zone.LATERAL_BOUNDARY_LEVEL_4
+    )
+    assert solve_nonhydro._end_edge_nudging == zones.index(h_grid.Zone.NUDGING)
+
+
+def _run_substeps(  # noqa: PLR0917 [too-many-positional-arguments]
+    halo_exchange_mode,
     experiment,
-    istep_init,
-    substep_init,
-    step_date_init,
-    istep_exit,
-    substep_exit,
-    step_date_exit,
     at_initial_timestep,
     icon_grid,
     savepoint_nonhydro_init,
@@ -816,13 +851,12 @@ def test_run_solve_nonhydro_multi_step(  # noqa: PLR0917 [too-many-positional-ar
     grid_savepoint,
     metrics_savepoint,
     interpolation_savepoint,
-    savepoint_nonhydro_exit,
-    savepoint_nonhydro_step_final,
     backend,
 ):
-    config = experiment.config.nonhydrostatic
+    config = dataclasses.replace(
+        experiment.config.nonhydrostatic, halo_exchange_mode=halo_exchange_mode
+    )
     sp = savepoint_nonhydro_init
-    sp_step_exit = savepoint_nonhydro_step_final
     nonhydro_params = solve_nh.NonHydrostaticParams(config)
     vertical_config = experiment.config.vertical_grid
     vertical_params = utils.create_vertical_params(vertical_config, grid_savepoint)
@@ -864,6 +898,7 @@ def test_run_solve_nonhydro_multi_step(  # noqa: PLR0917 [too-many-positional-ar
         backend=backend,
         max_nudging_coefficient=experiment.config.interpolation.max_nudging_coefficient,
     )
+    _assert_horizontal_ends(solve_nonhydro, icon_grid, halo_exchange_mode)
 
     for i_substep in range(experiment.config.driver.ndyn_substeps):
         at_first_substep = i_substep == 0
@@ -891,6 +926,57 @@ def test_run_solve_nonhydro_multi_step(  # noqa: PLR0917 [too-many-positional-ar
 
         if not at_last_substep:
             prognostic_states.swap()
+
+    return prognostic_states, diagnostic_state_nh, prep_adv
+
+
+@pytest.mark.embedded_remap_error
+@pytest.mark.datatest
+@pytest.mark.single_precision_ready
+@pytest.mark.parametrize("halo_exchange_mode", list(decomp_defs.HaloExchangeMode))
+@pytest.mark.parametrize("experiment_description", [test_defs.Experiments.MCH_CH_R04B09])
+@pytest.mark.parametrize(
+    "istep_init, substep_init, step_date_init, istep_exit, substep_exit, step_date_exit, at_initial_timestep",
+    [
+        (1, 1, "2021-06-20T12:00:10.000", 2, 2, "2021-06-20T12:00:10.000", True),
+        (1, 1, "2021-06-20T12:00:20.000", 2, 2, "2021-06-20T12:00:20.000", False),
+    ],
+)
+def test_run_solve_nonhydro_multi_step(  # noqa: PLR0917 [too-many-positional-arguments]
+    halo_exchange_mode,
+    experiment,
+    istep_init,
+    substep_init,
+    step_date_init,
+    istep_exit,
+    substep_exit,
+    step_date_exit,
+    at_initial_timestep,
+    icon_grid,
+    savepoint_nonhydro_init,
+    is_iau_active,
+    iau_wgt_dyn,
+    grid_savepoint,
+    metrics_savepoint,
+    interpolation_savepoint,
+    savepoint_nonhydro_exit,
+    savepoint_nonhydro_step_final,
+    backend,
+):
+    sp_step_exit = savepoint_nonhydro_step_final
+    prognostic_states, diagnostic_state_nh, prep_adv = _run_substeps(
+        halo_exchange_mode,
+        experiment,
+        at_initial_timestep,
+        icon_grid,
+        savepoint_nonhydro_init,
+        is_iau_active,
+        iau_wgt_dyn,
+        grid_savepoint,
+        metrics_savepoint,
+        interpolation_savepoint,
+        backend,
+    )
 
     cell_start_lb_plus2 = icon_grid.start_index(
         h_grid.domain(dims.CellDim)(h_grid.Zone.LATERAL_BOUNDARY_LEVEL_3)
@@ -958,6 +1044,84 @@ def test_run_solve_nonhydro_multi_step(  # noqa: PLR0917 [too-many-positional-ar
         savepoint_nonhydro_exit.exner_dyn_incr().asnumpy(),
         atol=1e-14 if test_utils.wp_is_dp else 4e-7,
     )
+
+
+@pytest.mark.embedded_remap_error
+@pytest.mark.datatest
+@pytest.mark.single_precision_ready
+@pytest.mark.parametrize("istep_init, substep_init, at_initial_timestep", [(1, 1, True)])
+@pytest.mark.parametrize(
+    "experiment_description, step_date_init",
+    [
+        (test_defs.Experiments.MCH_CH_R04B09, "2021-06-20T12:00:10.000"),
+        (test_defs.Experiments.EXCLAIM_APE, "2000-01-01T00:00:02.000"),
+    ],
+)
+def test_halo_exchange_modes_are_bitwise_identical_on_single_rank(  # noqa: PLR0917 [too-many-positional-arguments]
+    experiment,
+    istep_init,
+    substep_init,
+    step_date_init,
+    at_initial_timestep,
+    icon_grid,
+    savepoint_nonhydro_init,
+    is_iau_active,
+    iau_wgt_dyn,
+    grid_savepoint,
+    metrics_savepoint,
+    interpolation_savepoint,
+    backend,
+):
+    for dim in (dims.CellDim, dims.EdgeDim):
+        domain = h_grid.domain(dim)
+        for zone in _WIDENED_END_ZONES:
+            assert icon_grid.end_index(domain(zone)) == icon_grid.end_index(domain(h_grid.Zone.END))
+
+    def run(halo_exchange_mode):
+        prognostic_states, diagnostic_state_nh, prep_adv = _run_substeps(
+            halo_exchange_mode,
+            experiment,
+            at_initial_timestep,
+            icon_grid,
+            savepoint_nonhydro_init,
+            is_iau_active,
+            iau_wgt_dyn,
+            grid_savepoint,
+            metrics_savepoint,
+            interpolation_savepoint,
+            backend,
+        )
+        fields = {
+            **vars(prognostic_states.next),
+            **vars(prep_adv),
+            "tangential_wind": diagnostic_state_nh.tangential_wind,
+            "vn_on_half_levels": diagnostic_state_nh.vn_on_half_levels,
+            "contravariant_correction_at_cells_on_half_levels": diagnostic_state_nh.contravariant_correction_at_cells_on_half_levels,
+            "rho_at_cells_on_half_levels": diagnostic_state_nh.rho_at_cells_on_half_levels,
+            "theta_v_at_cells_on_half_levels": diagnostic_state_nh.theta_v_at_cells_on_half_levels,
+            "perturbed_exner_at_cells_on_model_levels": diagnostic_state_nh.perturbed_exner_at_cells_on_model_levels,
+            "mass_flux_at_edges_on_model_levels": diagnostic_state_nh.mass_flux_at_edges_on_model_levels,
+            "exner_dynamical_increment": diagnostic_state_nh.exner_dynamical_increment,
+            "normal_wind_advective_tendency_predictor": diagnostic_state_nh.normal_wind_advective_tendency.predictor,
+            "normal_wind_advective_tendency_corrector": diagnostic_state_nh.normal_wind_advective_tendency.corrector,
+            "vertical_wind_advective_tendency_predictor": diagnostic_state_nh.vertical_wind_advective_tendency.predictor,
+            "vertical_wind_advective_tendency_corrector": diagnostic_state_nh.vertical_wind_advective_tendency.corrector,
+        }
+        return {name: field.asnumpy() for name, field in fields.items()} | {
+            "max_vertical_cfl": data_alloc.as_numpy(diagnostic_state_nh.max_vertical_cfl)
+        }
+
+    reference = run(decomp_defs.HaloExchangeMode.INNER)
+    assert np.any(reference["vn"] != savepoint_nonhydro_init.vn_now().asnumpy())
+    for halo_exchange_mode in (
+        decomp_defs.HaloExchangeMode.INNER_WIDE,
+        decomp_defs.HaloExchangeMode.ENTRY,
+    ):
+        result = run(halo_exchange_mode)
+        for name, field in reference.items():
+            assert np.array_equal(result[name], field, equal_nan=True), (
+                f"'{name}' differs between 'inner' and '{halo_exchange_mode.value}'."
+            )
 
 
 @pytest.mark.datatest

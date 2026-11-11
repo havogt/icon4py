@@ -315,6 +315,13 @@ class NonHydrostaticConfig:
         ),
     ] = 80000.0
 
+    halo_exchange_mode: typing.Annotated[
+        decomposition.HaloExchangeMode,
+        common_conf_opt.ConfigOption(
+            description="Where the halos are exchanged, and how far into the halo is computed.",
+        ),
+    ] = decomposition.HaloExchangeMode.INNER
+
     def __post_init__(self) -> None:
         ta.dataclass_float_to_wp(self)
         self._validate()
@@ -438,6 +445,34 @@ class SolveNonhydro:
         self._vertical_params = vertical_params
         self._edge_geometry = edge_geometry
         self._cell_params = cell_geometry
+
+        self._wide_halo_computation = (
+            self._config.halo_exchange_mode != decomposition.HaloExchangeMode.INNER
+        )
+        if (
+            self._wide_halo_computation
+            and self._grid.limited_area
+            and self._grid.config.distributed
+        ):
+            raise NotImplementedError(
+                f"Halo exchange mode '{self._config.halo_exchange_mode.value}' is not implemented "
+                "for distributed limited area grids."
+            )
+        if self._wide_halo_computation:
+            # Halo cells are computed like owned cells, so they need the extra diffusion of w too.
+            owner_mask = data_alloc.constant_field(
+                self._grid,
+                True,
+                dims.CellDim,
+                dtype=bool,
+                allocator=model_backends.get_allocator(backend),
+            )
+        self._exchange_at_entry_only = (
+            self._config.halo_exchange_mode == decomposition.HaloExchangeMode.ENTRY
+        )
+        self._inner_exchange = (
+            decomposition.SingleNodeExchange() if self._exchange_at_entry_only else exchange
+        )
         self._determine_local_domains()
 
         self._compute_exner_from_rhotheta_in_lateral_boundary = setup_program(
@@ -1033,6 +1068,11 @@ class SolveNonhydro:
         edge_domain = h_grid.domain(dims.EdgeDim)
         edge_halo_level_2 = edge_domain(h_grid.Zone.HALO_LEVEL_2)
 
+        def end_index(domain: h_grid.Domain) -> gtx.int32:
+            if self._wide_halo_computation:
+                domain = h_grid.domain(domain.dim)(h_grid.Zone.END)
+            return self._grid.end_index(domain)
+
         self._start_cell_lateral_boundary = self._grid.start_index(
             cell_domain(h_grid.Zone.LATERAL_BOUNDARY)
         )
@@ -1049,10 +1089,15 @@ class SolveNonhydro:
         self._end_cell_lateral_boundary_level_4 = self._grid.end_index(
             cell_domain(h_grid.Zone.LATERAL_BOUNDARY_LEVEL_4)
         )
-        self._end_cell_local = self._grid.end_index(cell_domain(h_grid.Zone.LOCAL))
-        self._end_cell_halo = self._grid.end_index(cell_domain(h_grid.Zone.HALO))
-        self._end_cell_halo_level_2 = self._grid.end_index(cell_domain(h_grid.Zone.HALO_LEVEL_2))
+        self._end_cell_local = end_index(cell_domain(h_grid.Zone.LOCAL))
+        self._end_cell_halo = end_index(cell_domain(h_grid.Zone.HALO))
+        self._end_cell_halo_level_2 = end_index(cell_domain(h_grid.Zone.HALO_LEVEL_2))
         self._end_cell_end = self._grid.end_index(cell_domain(h_grid.Zone.END))
+        # The outer halo cells of a wide computation are not valid, and every halo cell is an
+        # owned cell of another rank.
+        self._end_cell_max_vertical_cfl = self._grid.end_index(
+            cell_domain(h_grid.Zone.LOCAL if self._wide_halo_computation else h_grid.Zone.HALO)
+        )
 
         self._start_edge_lateral_boundary = self._grid.start_index(
             edge_domain(h_grid.Zone.LATERAL_BOUNDARY)
@@ -1070,15 +1115,15 @@ class SolveNonhydro:
         self._start_edge_halo_level_2 = self._grid.start_index(edge_halo_level_2)
 
         self._end_edge_nudging = self._grid.end_index(edge_domain(h_grid.Zone.NUDGING))
-        self._end_edge_local = self._grid.end_index(edge_domain(h_grid.Zone.LOCAL))
-        self._end_edge_halo = self._grid.end_index(edge_domain(h_grid.Zone.HALO))
-        self._end_edge_halo_level_2 = self._grid.end_index(edge_halo_level_2)
+        self._end_edge_local = end_index(edge_domain(h_grid.Zone.LOCAL))
+        self._end_edge_halo = end_index(edge_domain(h_grid.Zone.HALO))
+        self._end_edge_halo_level_2 = end_index(edge_halo_level_2)
         self._end_edge_end = self._grid.end_index(edge_domain(h_grid.Zone.END))
 
         self._start_vertex_lateral_boundary_level_2 = self._grid.start_index(
             vertex_domain(h_grid.Zone.LATERAL_BOUNDARY_LEVEL_2)
         )
-        self._end_vertex_halo = self._grid.end_index(vertex_domain(h_grid.Zone.HALO))
+        self._end_vertex_halo = end_index(vertex_domain(h_grid.Zone.HALO))
 
     def _get_rayleigh_damping_factor(self, dtime: float) -> fa.KField[float]:
         if dtime != self._dtime_previous_substep:
@@ -1089,6 +1134,44 @@ class SolveNonhydro:
             )
             self._dtime_previous_substep = dtime
         return self.rayleigh_damping_factor
+
+    def _exchange_at_entry(
+        self,
+        diagnostic_state_nh: nonhydro_states.DiagnosticStateNonHydro,
+        prognostic_state: prognostics.PrognosticState,
+        at_initial_timestep: bool,
+        at_first_substep: bool,
+        is_iau_active: bool,
+    ) -> None:
+        edge_fields: list[gtx.Field] = [prognostic_state.vn]
+        cell_fields: list[gtx.Field] = [
+            prognostic_state.w,
+            prognostic_state.rho,
+            prognostic_state.exner,
+            prognostic_state.theta_v,
+        ]
+        if at_first_substep:
+            edge_fields.append(diagnostic_state_nh.normal_wind_tendency_due_to_slow_physics_process)
+            cell_fields.append(diagnostic_state_nh.exner_tendency_due_to_slow_physics)
+            if is_iau_active:
+                edge_fields.append(diagnostic_state_nh.normal_wind_iau_increment)
+                cell_fields.extend(
+                    (diagnostic_state_nh.rho_iau_increment, diagnostic_state_nh.exner_iau_increment)
+                )
+        else:
+            # The first substep recomputes both from the exchanged `vn`.
+            edge_fields.extend(
+                (
+                    diagnostic_state_nh.tangential_wind,
+                    diagnostic_state_nh.normal_wind_advective_tendency.predictor,
+                )
+            )
+        if not (at_initial_timestep and at_first_substep):
+            cell_fields.append(diagnostic_state_nh.vertical_wind_advective_tendency.predictor)
+
+        log.debug("exchanging the fields read on the halo during the substep")
+        self._exchange.exchange(dims.EdgeDim, *edge_fields, stream=decomposition.DEFAULT_STREAM)
+        self._exchange.exchange(dims.CellDim, *cell_fields, stream=decomposition.DEFAULT_STREAM)
 
     def time_step(
         self,
@@ -1136,6 +1219,15 @@ class SolveNonhydro:
 
         iau_wgt_dyn = ta.wpfloat(iau_wgt_dyn)
 
+        if self._exchange_at_entry_only:
+            self._exchange_at_entry(
+                diagnostic_state_nh=diagnostic_state_nh,
+                prognostic_state=prognostic_states.current,
+                at_initial_timestep=at_initial_timestep,
+                at_first_substep=at_first_substep,
+                is_iau_active=is_iau_active,
+            )
+
         self.run_predictor_step(
             diagnostic_state_nh=diagnostic_state_nh,
             prognostic_states=prognostic_states,
@@ -1167,14 +1259,15 @@ class SolveNonhydro:
                 theta_v=prognostic_states.next.theta_v,
                 exner=prognostic_states.next.exner,
             )
-        self._update_theta_and_exner_in_halo(
-            rho_now=prognostic_states.current.rho,
-            rho_new=prognostic_states.next.rho,
-            theta_v_now=prognostic_states.current.theta_v,
-            theta_v_new=prognostic_states.next.theta_v,
-            exner_now=prognostic_states.current.exner,
-            exner_new=prognostic_states.next.exner,
-        )
+        if not self._exchange_at_entry_only:
+            self._update_theta_and_exner_in_halo(
+                rho_now=prognostic_states.current.rho,
+                rho_new=prognostic_states.next.rho,
+                theta_v_now=prognostic_states.current.theta_v,
+                theta_v_new=prognostic_states.next.theta_v,
+                exner_now=prognostic_states.current.exner,
+                exner_new=prognostic_states.next.exner,
+            )
 
     def run_predictor_step(
         self,
@@ -1230,7 +1323,7 @@ class SolveNonhydro:
                 diagnostic_state_nh,
                 self._vertical_cfl,
                 self._start_cell_lateral_boundary_level_4,
-                self._end_cell_halo,
+                self._end_cell_max_vertical_cfl,
             )
 
         self._compute_perturbed_quantities_and_interpolation(
@@ -1278,7 +1371,7 @@ class SolveNonhydro:
         )
 
         log.debug("exchanging prognostic field 'vn' and local field 'rho_at_edges_on_model_levels'")
-        self._exchange.exchange(
+        self._inner_exchange.exchange(
             dims.EdgeDim,
             prognostic_states.next.vn,
             z_fields.rho_at_edges_on_model_levels,
@@ -1355,7 +1448,7 @@ class SolveNonhydro:
             log.debug(
                 "exchanging prognostic field 'w' and local field 'dwdz_at_cells_on_model_levels'"
             )
-            self._exchange.exchange(
+            self._inner_exchange.exchange(
                 dims.CellDim,
                 prognostic_states.next.w,
                 z_fields.dwdz_at_cells_on_model_levels,
@@ -1363,7 +1456,7 @@ class SolveNonhydro:
             )
         else:
             log.debug("exchanging prognostic field 'w'")
-            self._exchange.exchange(
+            self._inner_exchange.exchange(
                 dims.CellDim,
                 prognostic_states.next.w,
                 stream=decomposition.DEFAULT_STREAM,
@@ -1429,7 +1522,7 @@ class SolveNonhydro:
             diagnostic_state_nh,
             self._vertical_cfl,
             self._start_cell_lateral_boundary_level_4,
-            self._end_cell_halo,
+            self._end_cell_max_vertical_cfl,
         )
 
         self._compute_interpolation_and_nonhydro_buoy(
@@ -1485,7 +1578,7 @@ class SolveNonhydro:
         )
 
         log.debug("exchanging prognostic field 'vn'")
-        self._exchange.exchange(
+        self._inner_exchange.exchange(
             dims.EdgeDim,
             prognostic_states.next.vn,
             stream=decomposition.DEFAULT_STREAM,
@@ -1562,7 +1655,7 @@ class SolveNonhydro:
                 )
 
         log.debug("exchange prognostic fields 'rho' , 'exner', 'w'")
-        self._exchange.exchange(
+        self._inner_exchange.exchange(
             dims.CellDim,
             prognostic_states.next.rho,
             prognostic_states.next.exner,
