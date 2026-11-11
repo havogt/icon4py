@@ -24,6 +24,7 @@ from icon4py.model.atmosphere.dycore import dycore_states, dycore_utils
 from icon4py.model.atmosphere.dycore.stencils import (
     compute_cell_diagnostics_for_dycore,
     compute_edge_diagnostics_for_dycore_and_update_vn,
+    compute_prognostics_on_masked_lateral_boundary as masked_lateral_boundary,
     vertically_implicit_dycore_solver,
 )
 from icon4py.model.atmosphere.dycore.stencils.compute_dwdz_for_divergence_damping import (
@@ -62,6 +63,7 @@ from icon4py.model.common.config import options as common_conf_opt
 from icon4py.model.common.decomposition import definitions as decomposition
 from icon4py.model.common.grid import (
     base as grid_def,
+    grid_refinement,
     horizontal as h_grid,
     icon as icon_grid,
     vertical as v_grid,
@@ -449,15 +451,13 @@ class SolveNonhydro:
         self._wide_halo_computation = (
             self._config.halo_exchange_mode != decomposition.HaloExchangeMode.INNER
         )
-        if (
+        # A wide computation applies the interior update to the halo points of the lateral
+        # boundary that are ordered with the halo, where the owner applies the boundary tendencies.
+        self._lateral_boundary_in_wide_halo = (
             self._wide_halo_computation
             and self._grid.limited_area
             and self._grid.config.distributed
-        ):
-            raise NotImplementedError(
-                f"Halo exchange mode '{self._config.halo_exchange_mode.value}' is not implemented "
-                "for distributed limited area grids."
-            )
+        )
         if self._wide_halo_computation:
             # Halo cells are computed like owned cells, so they need the extra diffusion of w too.
             owner_mask = data_alloc.constant_field(
@@ -945,6 +945,9 @@ class SolveNonhydro:
             offset_provider=self._grid.connectivities,
         )
 
+        if self._lateral_boundary_in_wide_halo:
+            self._setup_lateral_boundary_in_wide_halo(backend)
+
         self._allocate_local_fields(model_backends.get_allocator(backend))
 
         self._en_smag_fac_for_zero_nshift(
@@ -958,6 +961,64 @@ class SolveNonhydro:
         Dynamic substep length of previous substep in order to track if rayleigh damping coefficients need to be
         recomputed or not. The substep length should only change in case of high CFL condition.
         """
+
+    def _setup_lateral_boundary_in_wide_halo(
+        self,
+        backend: gtx_typing.Backend
+        | model_backends.DeviceType
+        | model_backends.BackendDescriptor
+        | None,
+    ) -> None:
+        allocator = model_backends.get_allocator(backend)
+        cell_domain = h_grid.domain(dims.CellDim)
+        edge_domain = h_grid.domain(dims.EdgeDim)
+        cell_mask = grid_refinement.lateral_boundary_mask(
+            self._grid, cell_domain(h_grid.Zone.NUDGING), self._exchange, allocator
+        )
+        edge_mask = grid_refinement.lateral_boundary_mask(
+            self._grid, edge_domain(h_grid.Zone.NUDGING_LEVEL_2), self._exchange, allocator
+        )
+        halo_cells = {
+            "horizontal_start": self._grid.end_index(cell_domain(h_grid.Zone.LOCAL)),
+            "horizontal_end": self._end_cell_end,
+        }
+        self._compute_vn_on_lateral_boundary_in_halo = setup_program(
+            backend=backend,
+            program=masked_lateral_boundary.compute_vn_on_masked_lateral_boundary,
+            constant_args={"mask": edge_mask},
+            horizontal_sizes={
+                "horizontal_start": self._grid.end_index(edge_domain(h_grid.Zone.LOCAL)),
+                "horizontal_end": self._end_edge_end,
+            },
+            vertical_sizes={
+                "vertical_start": gtx.int32(0),
+                "vertical_end": gtx.int32(self._grid.num_levels),
+            },
+        )
+        self._update_density_exner_wind_on_lateral_boundary_in_halo = setup_program(
+            backend=backend,
+            program=masked_lateral_boundary.update_density_exner_wind_on_masked_lateral_boundary,
+            constant_args={"mask": cell_mask},
+            horizontal_sizes=halo_cells,
+            vertical_sizes={
+                "vertical_start": gtx.int32(0),
+                "vertical_end": gtx.int32(self._grid.num_levels + 1),
+            },
+        )
+        self._compute_dwdz_for_divergence_damping_on_lateral_boundary_in_halo = setup_program(
+            backend=backend,
+            program=masked_lateral_boundary.compute_dwdz_for_divergence_damping_on_masked_cells,
+            constant_args={
+                "mask": cell_mask,
+                "inv_ddqz_z_full": self._metric_state_nonhydro.inv_ddqz_z_full,
+            },
+            horizontal_sizes=halo_cells,
+            vertical_sizes={
+                "vertical_start": gtx.int32(0),
+                "vertical_end": gtx.int32(self._grid.num_levels),
+            },
+            offset_provider=self._grid.connectivities,
+        )
 
     def _allocate_local_fields(self, allocator: gtx_typing.Allocator | None) -> None:
         self.temporal_extrapolation_of_perturbed_exner = data_alloc.zero_field(
@@ -1152,7 +1213,21 @@ class SolveNonhydro:
         ]
         if at_first_substep:
             edge_fields.append(diagnostic_state_nh.normal_wind_tendency_due_to_slow_physics_process)
-            cell_fields.append(diagnostic_state_nh.exner_tendency_due_to_slow_physics)
+            cell_fields.extend(
+                (
+                    diagnostic_state_nh.exner_tendency_due_to_slow_physics,
+                    diagnostic_state_nh.perturbed_exner_at_cells_on_model_levels,
+                )
+            )
+            if self._grid.limited_area:
+                edge_fields.append(diagnostic_state_nh.grf_tend_vn)
+                cell_fields.extend(
+                    (
+                        diagnostic_state_nh.grf_tend_rho,
+                        diagnostic_state_nh.grf_tend_thv,
+                        diagnostic_state_nh.grf_tend_w,
+                    )
+                )
             if is_iau_active:
                 edge_fields.append(diagnostic_state_nh.normal_wind_iau_increment)
                 cell_fields.extend(
@@ -1226,6 +1301,18 @@ class SolveNonhydro:
                 at_initial_timestep=at_initial_timestep,
                 at_first_substep=at_first_substep,
                 is_iau_active=is_iau_active,
+            )
+        elif self._lateral_boundary_in_wide_halo and at_first_substep:
+            log.debug("exchanging the lateral boundary tendencies")
+            self._exchange.exchange(
+                dims.EdgeDim, diagnostic_state_nh.grf_tend_vn, stream=decomposition.DEFAULT_STREAM
+            )
+            self._exchange.exchange(
+                dims.CellDim,
+                diagnostic_state_nh.grf_tend_rho,
+                diagnostic_state_nh.grf_tend_thv,
+                diagnostic_state_nh.grf_tend_w,
+                stream=decomposition.DEFAULT_STREAM,
             )
 
         self.run_predictor_step(
@@ -1369,6 +1456,13 @@ class SolveNonhydro:
             iau_wgt_dyn=iau_wgt_dyn,
             dtime=dtime,
         )
+        if self._lateral_boundary_in_wide_halo:
+            self._compute_vn_on_lateral_boundary_in_halo(
+                grf_tend_vn=diagnostic_state_nh.grf_tend_vn,
+                vn_now=prognostic_states.current.vn,
+                vn_new=prognostic_states.next.vn,
+                dtime=dtime,
+            )
 
         log.debug("exchanging prognostic field 'vn' and local field 'rho_at_edges_on_model_levels'")
         self._inner_exchange.exchange(
@@ -1443,6 +1537,26 @@ class SolveNonhydro:
                 w_concorr_c=diagnostic_state_nh.contravariant_correction_at_cells_on_half_levels,
                 z_dwdz_dd=z_fields.dwdz_at_cells_on_model_levels,
             )
+
+        if self._lateral_boundary_in_wide_halo:
+            self._update_density_exner_wind_on_lateral_boundary_in_halo(
+                rho_now=prognostic_states.current.rho,
+                grf_tend_rho=diagnostic_state_nh.grf_tend_rho,
+                theta_v_now=prognostic_states.current.theta_v,
+                grf_tend_thv=diagnostic_state_nh.grf_tend_thv,
+                w_now=prognostic_states.current.w,
+                grf_tend_w=diagnostic_state_nh.grf_tend_w,
+                rho_new=prognostic_states.next.rho,
+                exner_new=prognostic_states.next.exner,
+                w_new=prognostic_states.next.w,
+                dtime=dtime,
+            )
+            if self._config.divdamp_type >= 3:
+                self._compute_dwdz_for_divergence_damping_on_lateral_boundary_in_halo(
+                    w=prognostic_states.next.w,
+                    w_concorr_c=diagnostic_state_nh.contravariant_correction_at_cells_on_half_levels,
+                    z_dwdz_dd=z_fields.dwdz_at_cells_on_model_levels,
+                )
 
         if self._config.divdamp_type >= 3:
             log.debug(
@@ -1576,6 +1690,13 @@ class SolveNonhydro:
             is_iau_active=is_iau_active,
             iau_wgt_dyn=iau_wgt_dyn,
         )
+        if self._lateral_boundary_in_wide_halo:
+            self._compute_vn_on_lateral_boundary_in_halo(
+                grf_tend_vn=diagnostic_state_nh.grf_tend_vn,
+                vn_now=prognostic_states.current.vn,
+                vn_new=prognostic_states.next.vn,
+                dtime=dtime,
+            )
 
         log.debug("exchanging prognostic field 'vn'")
         self._inner_exchange.exchange(
