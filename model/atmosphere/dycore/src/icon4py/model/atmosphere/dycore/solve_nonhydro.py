@@ -1204,8 +1204,8 @@ class SolveNonhydro:
         at_first_substep: bool,
         is_iau_active: bool,
     ) -> None:
-        edge_fields: list[gtx.Field] = [prognostic_state.vn]
-        cell_fields: list[gtx.Field] = [
+        edge_fields: list[typing.Any] = [prognostic_state.vn]
+        cell_fields: list[typing.Any] = [
             prognostic_state.w,
             prognostic_state.rho,
             prognostic_state.exner,

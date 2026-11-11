@@ -797,7 +797,7 @@ _WIDENED_END_ZONES = (h_grid.Zone.LOCAL, h_grid.Zone.HALO, h_grid.Zone.HALO_LEVE
 
 def _assert_horizontal_ends(
     solve_nonhydro: solve_nh.SolveNonhydro,
-    grid,
+    grid: base_grid.Grid,
     halo_exchange_mode: decomp_defs.HaloExchangeMode,
 ) -> None:
     for dim, name in ((dims.CellDim, "cell"), (dims.EdgeDim, "edge")):

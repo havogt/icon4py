@@ -140,7 +140,7 @@ def test_driver_compare_single_multi_rank_halo_exchange_mode(  # noqa: PLR0917 [
 
 
 _SOLVE_NONHYDRO_ENTRY_EXCHANGE_FIELDS: dict[
-    str, Callable[[nonhydro_states.DiagnosticStateNonHydro], gtx.Field]
+    str, Callable[[nonhydro_states.DiagnosticStateNonHydro], Any]
 ] = {
     "tangential_wind": lambda diagnostic_state: diagnostic_state.tangential_wind,
     "normal_wind_advective_tendency": (
@@ -155,7 +155,7 @@ _SOLVE_NONHYDRO_ENTRY_EXCHANGE_FIELDS: dict[
 class _FieldDroppingExchange:
     """Forwards `exchange` calls without one field and counts how often it dropped it."""
 
-    def __init__(self, exchange: decomp_defs.ExchangeRuntime, dropped_field: gtx.Field) -> None:
+    def __init__(self, exchange: decomp_defs.ExchangeRuntime, dropped_field: Any) -> None:
         self._exchange = exchange
         self._dropped_field = dropped_field
         self.num_drops = 0
@@ -203,7 +203,7 @@ def test_driver_compare_single_multi_rank_without_entry_exchange_of_field(  # no
         dropping_exchange = _FieldDroppingExchange(
             exchange, _SOLVE_NONHYDRO_ENTRY_EXCHANGE_FIELDS[dropped_field_name](diagnostic_state_nh)
         )
-        self._exchange = dropping_exchange
+        self._exchange = dropping_exchange  # type: ignore[assignment]
         try:
             exchange_at_entry(self, diagnostic_state_nh=diagnostic_state_nh, **kwargs)
         finally:
