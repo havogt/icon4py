@@ -8,6 +8,7 @@
 
 
 import dataclasses
+import enum
 import typing
 
 import numpy as np
@@ -47,6 +48,12 @@ def compare_values_shallow(value1, value2, obj_name="value"):  # noqa: PLR0911, 
             result, error_message = compare_values_shallow(item1, item2, f"{obj_name}[{index}]")
             if not result:
                 return False, error_message
+        return True, None
+
+    # Enum members are singletons; a member without a scalar mixin has a `__dict__`
+    if isinstance(value1, enum.Enum) and isinstance(value2, enum.Enum):
+        if value1 is not value2:
+            return False, f"Value mismatch for {obj_name}: {value1} != {value2}"
         return True, None
 
     # Handle comparison of objects with attributes (__dict__)
