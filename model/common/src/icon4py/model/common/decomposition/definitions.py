@@ -649,6 +649,18 @@ def create_single_reduction_exchange(
     return SingleNodeReductions()
 
 
+class HaloExchangeMode(str, Enum):
+    """Where a component exchanges halos, and how far into the halo it computes."""
+
+    #: Exchanges inside the component; stencils end at the standard local/halo zones.
+    INNER = "inner"
+    #: Exchanges inside the component; every stencil ends at the end of the local grid.
+    INNER_WIDE = "inner_wide"
+    #: One exchange at the entry of the component and none inside; every stencil ends at
+    #: the end of the local grid. Needs a halo deep enough for one call of the component.
+    ENTRY = "entry"
+
+
 class DecompositionFlag(int, Enum):
     UNDEFINED = -1
     OWNED = 0
