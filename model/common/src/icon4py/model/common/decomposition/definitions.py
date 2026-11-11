@@ -20,6 +20,7 @@ import gt4py.next as gtx
 import numpy as np
 
 from icon4py.model.common import dimension as dims, utils
+from icon4py.model.common.config import config_io
 from icon4py.model.common.grid import base
 from icon4py.model.common.states import utils as state_utils
 from icon4py.model.common.utils import data_allocation as data_alloc
@@ -649,7 +650,8 @@ def create_single_reduction_exchange(
     return SingleNodeReductions()
 
 
-class HaloExchangeMode(str, Enum):
+@config_io.register_enum
+class HaloExchangeMode(Enum):
     """Where a component exchanges halos, and how far into the halo it computes."""
 
     #: Exchanges inside the component; stencils end at the standard local/halo zones.
