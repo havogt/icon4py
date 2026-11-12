@@ -294,7 +294,6 @@ _HALO_DEPTHS: dict[str, dict[str, int]] = {
             ("later_substeps", "vertical_wind_advective_tendency"),
             ("first_substep", "vertical_wind_advective_tendency"),
             ("diffusion", "w"),
-            ("diffusion", "theta_v"),
         )
     ],
 )
