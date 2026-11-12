@@ -54,6 +54,9 @@ Supports only diffusion_type (=hdiff_order) 5 from the diffusion namelist.
 
 log = logging.getLogger(__name__)
 
+#: Halo rings on which one call of the component reads a cell field of its entry exchange.
+HALO_DEPTH_AT_ENTRY: dict[str, int] = {"w": 1, "theta_v": 1, "exner": 0}
+
 
 @config_io.register_enum
 class DiffusionType(int, enum.Enum):
@@ -828,6 +831,11 @@ class Diffusion:
                 [prognostic_state.w, prognostic_state.theta_v, prognostic_state.exner],
                 merge=decomposition.MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE,
                 site="diff/entry",
+                cell_depths=(
+                    [HALO_DEPTH_AT_ENTRY[name] for name in ("w", "theta_v", "exner")]
+                    if decomposition.LIMIT_EXCHANGE_DEPTH
+                    else None
+                ),
             )
             log.debug("communication of the prognostic fields at entry - end")
 

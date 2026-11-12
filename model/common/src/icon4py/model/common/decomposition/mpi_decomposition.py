@@ -226,6 +226,11 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         log.info(f"domain descriptors for dimensions {self._domain_descriptors.keys()} initialized")
         self._patterns = {dim: self._create_pattern(dim) for dim in dims.horizontal_dims()}
         log.info(f"patterns for dimensions {self._patterns.keys()} initialized ")
+        self._depth_limited_patterns = (
+            self._create_depth_limited_patterns(process_props)
+            if decomp_defs.LIMIT_EXCHANGE_DEPTH
+            else {}
+        )
         self._comm = make_communication_object(self._context)
         # A communication object allows one exchange in flight, and reusing one for a fixed field
         # set keeps its buffers at one size: concurrent exchanges get one object per site.
@@ -262,12 +267,38 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         )
         return domain_desc
 
-    def _create_pattern(self, horizontal_dim: gtx.Dimension) -> DomainDescriptor:
+    def _create_depth_limited_patterns(
+        self, process_props: decomp_defs.ProcessProperties
+    ) -> dict[tuple[gtx.Dimension, int], Any]:
+        halo_rings: dict[gtx.Dimension, data_alloc.NDArray] = {}
+        for dim in dims.horizontal_dims():
+            rings = self._decomposition_info.halo_rings(dim)
+            if rings is None:
+                return {}
+            halo_rings[dim] = data_alloc.as_numpy(rings)
+        # Creating a pattern is collective: all ranks create the same depths.
+        num_rings = process_props.comm.allreduce(
+            max(int(rings.max(initial=0)) for rings in halo_rings.values()), op=mpi4py.MPI.MAX
+        )
+        return {
+            (dim, depth): self._create_pattern(dim, (rings > 0) & (rings <= depth))
+            for dim, rings in halo_rings.items()
+            for depth in range(1, num_rings)
+        }
+
+    def _create_pattern(
+        self, horizontal_dim: gtx.Dimension, halo_mask: data_alloc.NDArray | None = None
+    ) -> DomainDescriptor:
         assert horizontal_dim.kind == gtx.DimensionKind.HORIZONTAL
 
-        global_halo_idx = self._decomposition_info.global_index(
-            horizontal_dim, decomp_defs.DecompositionInfo.EntryType.HALO
-        )
+        if halo_mask is None:
+            global_halo_idx = self._decomposition_info.global_index(
+                horizontal_dim, decomp_defs.DecompositionInfo.EntryType.HALO
+            )
+        else:
+            global_halo_idx = data_alloc.as_numpy(
+                self._decomposition_info.global_index(horizontal_dim)
+            )[halo_mask]
         halo_generator = HaloGenerator.from_gids(data_alloc.as_numpy(global_halo_idx))
         log.debug(f"halo generator for dim='{horizontal_dim.value}' created")
         pattern = make_pattern(
@@ -299,24 +330,35 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
             arch=Architecture.CPU if isinstance(array, np.ndarray) else Architecture.GPU,
         )
 
-    def _get_applied_pattern(self, dim: gtx.Dimension, f: gtx.Field | data_alloc.NDArray) -> str:
+    def _get_applied_pattern(
+        self, dim: gtx.Dimension, f: gtx.Field | data_alloc.NDArray, depth: int | None = None
+    ) -> str:
+        # A depth without a pattern of its own covers all halo rings.
+        if (dim, depth) not in self._depth_limited_patterns:
+            depth = None
+        pattern = self._depth_limited_patterns.get((dim, depth), self._patterns[dim])
         if isinstance(f, gtx.Field):
             assert hasattr(f, "__gt_buffer_info__")
-            # dimension and buffer_info uniquely identifies the exchange pattern
+            # pattern and buffer_info uniquely identifies the exchange pattern
             # TODO(havogt): the cache is never cleared, consider using functools.lru_cache in a bigger refactoring.
-            key = (dim, f.__gt_buffer_info__.hash_key)
+            key = (dim, depth, f.__gt_buffer_info__.hash_key)
             try:
                 return self._applied_patterns_cache[key]
             except KeyError:
                 assert dim in f.domain.dims
                 array = self._slice_field_based_on_dim(f, dim)
-                self._applied_patterns_cache[key] = self._patterns[dim](
-                    self._make_field_descriptor(dim, array)
-                )
+                self._applied_patterns_cache[key] = pattern(self._make_field_descriptor(dim, array))
                 return self._applied_patterns_cache[key]
         else:
             assert f.ndim in (1, 2), "Buffers must be 1d or 2d"
-            return self._patterns[dim](self._make_field_descriptor(dim, f))
+            return pattern(self._make_field_descriptor(dim, f))
+
+    def _communication_object(self, site: str, concurrent: bool) -> Any:
+        if not concurrent:
+            return self._comm
+        if (comm := self._concurrent_comms.get(site)) is None:
+            comm = self._concurrent_comms[site] = make_communication_object(self._context)
+        return comm
 
     def start(
         self,
@@ -325,42 +367,53 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         stream: decomp_defs.StreamLike = decomp_defs.DEFAULT_STREAM,
         site: str = "",
         concurrent: bool = False,
+        depth: int | None = None,
     ) -> MultiNodeResult:
         """Synchronize with `stream` and start the halo exchange of `*fields`."""
-        if concurrent:
-            if (comm := self._concurrent_comms.get(site)) is None:
-                comm = self._concurrent_comms[site] = make_communication_object(self._context)
-        else:
-            comm = self._comm
-        result = self._start(comm, {dim: fields}, stream=stream, site=site)
+        result = self._start(
+            self._communication_object(site, concurrent),
+            {(dim, depth): fields},
+            stream=stream,
+            site=site,
+        )
         log.debug(f"exchange for {len(fields)} fields of dimension ='{dim.value}' initiated.")
         return result
 
     def start_merged(
         self,
-        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        fields: Mapping[decomp_defs.ExchangeGroup, Sequence[gtx.Field | data_alloc.NDArray]],
         *,
         stream: decomp_defs.StreamLike = decomp_defs.DEFAULT_STREAM,
         site: str = "",
+        concurrent: bool = False,
+        depth: int | None = None,
     ) -> MultiNodeResult:
         """Synchronize with `stream` and start one halo exchange of the fields of all dimensions."""
-        return self._start(self._comm, fields, stream=stream, site=site)
+        return self._start(
+            self._communication_object(site, concurrent),
+            {
+                (key if isinstance(key, tuple) else (key, depth)): key_fields
+                for key, key_fields in fields.items()
+            },
+            stream=stream,
+            site=site,
+        )
 
     def _start(
         self,
         comm: Any,
-        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        fields: Mapping[tuple[gtx.Dimension, int | None], Sequence[gtx.Field | data_alloc.NDArray]],
         *,
         stream: decomp_defs.StreamLike,
         site: str,
     ) -> MultiNodeResult:
-        assert all(dim in dims.horizontal_dims() for dim in fields), (
+        assert all(dim in dims.horizontal_dims() for dim, _ in fields), (
             f"dimensions must be among ({list(dims.horizontal_dims())})"
         )
 
         applied_patterns = [
-            self._get_applied_pattern(dim, f)
-            for dim, dim_fields in fields.items()
+            self._get_applied_pattern(dim, f, depth)
+            for (dim, depth), dim_fields in fields.items()
             for f in dim_fields
         ]
         if not ghex.__config__["gpu"]:
@@ -380,9 +433,10 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         *fields: gtx.Field | data_alloc.NDArray,
         stream: decomp_defs.StreamLike | decomp_defs.BlockType = decomp_defs.DEFAULT_STREAM,
         site: str = "",
+        depth: int | None = None,
     ) -> None:
         # Fall back to the default implementation provided by the protocol.
-        super().exchange(dim, *fields, stream=stream, site=site)
+        super().exchange(dim, *fields, stream=stream, site=site, depth=depth)
         log.debug(f"exchange for {len(fields)} fields of dimension ='{dim.value}' done.")
 
 

@@ -536,6 +536,58 @@ def get_halo_constructor(
     )
 
 
+def compute_halo_rings(
+    decomposition_info: defs.DecompositionInfo,
+    *,
+    c2v: data_alloc.NDArray,
+    c2e: data_alloc.NDArray,
+) -> dict[gtx.Dimension, np.ndarray]:
+    """Halo ring of every local cell, edge and vertex of a rank.
+
+    Owned points are in ring 0. A halo cell is in ring `n` if `n` is the least number of steps
+    between cells sharing a vertex that leads to it from an owned cell. A halo edge or vertex is
+    in the innermost ring of the cells it belongs to, and in ring 1 if it belongs to an owned cell.
+
+    Args:
+        decomposition_info: global indices and owner masks of the local grid
+        c2v: vertices of the local cells as local indices, negative where missing
+        c2e: edges of the local cells as local indices, negative where missing
+    """
+    c2v = data_alloc.as_numpy(c2v)
+    c2e = data_alloc.as_numpy(c2e)
+    cell_owner_mask = data_alloc.as_numpy(decomposition_info.owner_mask(dims.CellDim))
+    num_cells = cell_owner_mask.shape[0]
+    c2v, c2e = c2v[:num_cells], c2e[:num_cells]
+    unreached = np.iinfo(np.int32).max
+
+    def innermost_cell_ring(cell_rings: np.ndarray, table: np.ndarray, size: int) -> np.ndarray:
+        rings = np.full(size, unreached, dtype=np.int32)
+        valid = table >= 0
+        np.minimum.at(rings, table[valid], np.broadcast_to(cell_rings[:, None], table.shape)[valid])
+        return rings
+
+    num_vertices = decomposition_info.owner_mask(dims.VertexDim).shape[0]
+    cell_rings = np.where(cell_owner_mask, 0, unreached).astype(np.int32)
+    ring = 0
+    while True:
+        vertex_rings = innermost_cell_ring(cell_rings, c2v, num_vertices)
+        on_reached_vertex = (np.where(c2v >= 0, vertex_rings[c2v], unreached) == ring).any(axis=1)
+        next_ring = on_reached_vertex & (cell_rings == unreached)
+        ring += 1
+        if not next_ring.any():
+            break
+        cell_rings[next_ring] = ring
+    cell_rings[cell_rings == unreached] = ring
+
+    halo_rings = {dims.CellDim: cell_rings}
+    for dim, table in ((dims.EdgeDim, c2e), (dims.VertexDim, c2v)):
+        owner_mask = data_alloc.as_numpy(decomposition_info.owner_mask(dim))
+        rings = np.maximum(innermost_cell_ring(cell_rings, table, owner_mask.shape[0]), 1)
+        rings[rings == unreached] = ring
+        halo_rings[dim] = np.where(owner_mask, 0, rings).astype(np.int32)
+    return halo_rings
+
+
 def global_to_local(
     global_indices: data_alloc.NDArray,
     indices_to_translate: data_alloc.NDArray,

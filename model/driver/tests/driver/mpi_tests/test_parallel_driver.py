@@ -189,11 +189,16 @@ class _FieldDroppingExchange:
     def exchange(self, dim: gtx.Dimension, *fields: gtx.Field, **kwargs: Any) -> None:
         self._exchange.exchange(dim, *self._kept(fields), **kwargs)
 
-    def exchange_merged(
-        self, fields: Mapping[gtx.Dimension, Sequence[gtx.Field]], **kwargs: Any
-    ) -> None:
+    def start_merged(
+        self, fields: Mapping[Any, Sequence[gtx.Field]], **kwargs: Any
+    ) -> decomp_defs.ExchangeResult:
+        return self._exchange.start_merged(
+            {key: self._kept(key_fields) for key, key_fields in fields.items()}, **kwargs
+        )
+
+    def exchange_merged(self, fields: Mapping[Any, Sequence[gtx.Field]], **kwargs: Any) -> None:
         self._exchange.exchange_merged(
-            {dim: self._kept(dim_fields) for dim, dim_fields in fields.items()}, **kwargs
+            {key: self._kept(key_fields) for key, key_fields in fields.items()}, **kwargs
         )
 
 

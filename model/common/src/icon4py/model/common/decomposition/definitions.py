@@ -63,6 +63,9 @@ class CudaStreamProtocol(Protocol):
 
 type StreamLike = CupyLikeStream | CudaStreamProtocol
 
+#: The fields of a dimension, exchanged on all halo rings or on a number of them.
+type ExchangeGroup = gtx.Dimension | tuple[gtx.Dimension, int | None]
+
 
 @dataclasses.dataclass(frozen=True)
 class Stream:
@@ -155,6 +158,7 @@ class DecompositionInfo:
         self._global_index: dict[gtx.Dimension, data_alloc.NDArray] = {}
         self._halo_levels: dict[gtx.Dimension, data_alloc.NDArray] = {}
         self._owner_mask: dict[gtx.Dimension, data_alloc.NDArray] = {}
+        self._halo_rings: dict[gtx.Dimension, data_alloc.NDArray] = {}
 
     class EntryType(int, Enum):
         ALL = 0
@@ -175,6 +179,13 @@ class DecompositionInfo:
         self._owner_mask[dim] = owner_mask
         assert halo_levels is None or (halo_levels != DecompositionFlag.UNDEFINED.value).all()
         self._halo_levels[dim] = halo_levels
+
+    def set_halo_rings(self, halo_rings: Mapping[gtx.Dimension, data_alloc.NDArray]) -> None:
+        self._halo_rings = dict(halo_rings)
+
+    def halo_rings(self, dim: gtx.Dimension) -> data_alloc.NDArray | None:
+        """Halo ring of every local point of `dim` (0 for owned points), if it has been set."""
+        return self._halo_rings.get(dim)
 
     def is_distributed(self) -> bool:
         return max(self._halo_levels[dims.CellDim]).item() > DecompositionFlag.OWNED
@@ -203,6 +214,7 @@ class DecompositionInfo:
                 data_alloc.as_numpy(self._owner_mask[dim]),
                 None if halo_levels is None else data_alloc.as_numpy(halo_levels),
             )
+        host.set_halo_rings(self._halo_rings)
         return host
 
     def local_index(
@@ -316,6 +328,7 @@ class ExchangeRuntime(Protocol):
         stream: StreamLike = DEFAULT_STREAM,
         site: str = "",
         concurrent: bool = False,
+        depth: int | None = None,
     ) -> ExchangeResult: ...
 
     @overload
@@ -326,6 +339,7 @@ class ExchangeRuntime(Protocol):
         stream: StreamLike = DEFAULT_STREAM,
         site: str = "",
         concurrent: bool = False,
+        depth: int | None = None,
     ) -> ExchangeResult: ...
 
     @abc.abstractmethod
@@ -336,6 +350,7 @@ class ExchangeRuntime(Protocol):
         stream: StreamLike = DEFAULT_STREAM,
         site: str = "",
         concurrent: bool = False,
+        depth: int | None = None,
     ) -> ExchangeResult:
         """Initiate a halo exchanges.
 
@@ -350,6 +365,8 @@ class ExchangeRuntime(Protocol):
         may be in flight together with one other exchange and with the concurrent
         exchanges of other sites. All ranks must start exchanges in the same order.
 
+        With `depth` only the first `depth` halo rings are filled, `None` fills all rings.
+
         Note:
             - For fields on the host the exchange will begin immediately, regardless
                 which stream has been passed.
@@ -361,26 +378,34 @@ class ExchangeRuntime(Protocol):
     @abc.abstractmethod
     def start_merged(
         self,
-        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        fields: Mapping[ExchangeGroup, Sequence[gtx.Field | data_alloc.NDArray]],
         *,
         stream: StreamLike = DEFAULT_STREAM,
         site: str = "",
+        concurrent: bool = False,
+        depth: int | None = None,
     ) -> ExchangeResult:
-        """Initiate one halo exchange of fields of several dimensions, see `start()`."""
+        """Initiate one halo exchange of fields of several dimensions, see `start()`.
+
+        A key is a dimension, whose fields are exchanged to `depth`, or a pair of a dimension
+        and the depth of its fields.
+        """
         ...
 
     def exchange_merged(
         self,
-        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        fields: Mapping[ExchangeGroup, Sequence[gtx.Field | data_alloc.NDArray]],
         *,
         stream: StreamLike | BlockType = DEFAULT_STREAM,
         site: str = "",
+        depth: int | None = None,
     ) -> None:
         """Perform one full halo exchange of fields of several dimensions, see `exchange()`."""
         ex_req = self.start_merged(
             fields,
             stream=(DEFAULT_STREAM if stream is BLOCK else stream),  # type: ignore[arg-type]
             site=site,
+            depth=depth,
         )
         ex_req.finish(stream)
 
@@ -391,6 +416,7 @@ class ExchangeRuntime(Protocol):
         *buffers: data_alloc.NDArray,
         stream: StreamLike | BlockType = DEFAULT_STREAM,
         site: str = "",
+        depth: int | None = None,
     ) -> None: ...
 
     @overload
@@ -400,6 +426,7 @@ class ExchangeRuntime(Protocol):
         *fields: gtx.Field,
         stream: StreamLike | BlockType = DEFAULT_STREAM,
         site: str = "",
+        depth: int | None = None,
     ) -> None: ...
 
     def exchange(
@@ -408,6 +435,7 @@ class ExchangeRuntime(Protocol):
         *fields: gtx.Field | data_alloc.NDArray,
         stream: StreamLike | BlockType = DEFAULT_STREAM,
         site: str = "",
+        depth: int | None = None,
     ) -> None:
         """Perform a full halo exchange.
 
@@ -432,6 +460,7 @@ class ExchangeRuntime(Protocol):
             *fields,
             stream=(DEFAULT_STREAM if stream is BLOCK else stream),  # type: ignore[arg-type]
             site=site,
+            depth=depth,
         )
         ex_req.finish(stream)
 
@@ -519,15 +548,18 @@ class SingleNodeExchange(ExchangeRuntime):
         stream: StreamLike = DEFAULT_STREAM,
         site: str = "",
         concurrent: bool = False,
+        depth: int | None = None,
     ) -> ExchangeResult:
         return SingleNodeResult()
 
     def start_merged(
         self,
-        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        fields: Mapping[ExchangeGroup, Sequence[gtx.Field | data_alloc.NDArray]],
         *,
         stream: StreamLike = DEFAULT_STREAM,
         site: str = "",
+        concurrent: bool = False,
+        depth: int | None = None,
     ) -> ExchangeResult:
         return SingleNodeResult()
 
@@ -714,6 +746,23 @@ MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE: bool = env.flag_to_bool("ICON4PY_HALO_MERGE_
 START_EDGE_EXCHANGE_EARLY: bool = env.flag_to_bool("ICON4PY_HALO_EARLY_EDGE", False)
 """In halo exchange mode 'entry', solve_nonhydro exchanges the fields it carries to its next call before returning."""
 
+LIMIT_EXCHANGE_DEPTH: bool = env.flag_to_bool("ICON4PY_HALO_FIELD_DEPTH", False)
+"""In halo exchange mode 'entry', exchange a field only on the halo rings its readers need."""
+
+
+def fields_by_depth(
+    dim: gtx.Dimension, fields: Sequence[gtx.Field], depths: Sequence[int | None] | None
+) -> dict[ExchangeGroup, list[gtx.Field]]:
+    """Group the fields of a dimension by the number of halo rings they are exchanged on.
+
+    A depth of `None` stands for all rings, a field of depth 0 is left out.
+    """
+    groups: dict[ExchangeGroup, list[gtx.Field]] = {}
+    for field, depth in zip(fields, depths or [None] * len(fields), strict=True):
+        if depth != 0:
+            groups.setdefault((dim, depth), []).append(field)
+    return groups
+
 
 def exchange_edges_and_cells(
     exchange: ExchangeRuntime,
@@ -723,8 +772,21 @@ def exchange_edges_and_cells(
     merge: bool,
     site: str,
     stream: StreamLike | BlockType = DEFAULT_STREAM,
+    edge_depths: Sequence[int | None] | None = None,
+    cell_depths: Sequence[int | None] | None = None,
 ) -> None:
-    """Exchange the edge fields and then the cell fields, or with `merge` both in one exchange."""
+    """Exchange the edge fields and then the cell fields, or with `merge` both in one exchange.
+
+    With depths, a field is exchanged on its first `depth` halo rings (`None`: on all rings,
+    0: not at all), and the fields of one dimension share an exchange whatever their depths.
+    """
+    if edge_depths is not None or cell_depths is not None:
+        edge_groups = fields_by_depth(dims.EdgeDim, edge_fields, edge_depths)
+        cell_groups = fields_by_depth(dims.CellDim, cell_fields, cell_depths)
+        for groups in [edge_groups | cell_groups] if merge else [edge_groups, cell_groups]:
+            if groups:
+                exchange.exchange_merged(groups, stream=stream, site=site)
+        return
     fields = {
         dim: dim_fields
         for dim, dim_fields in ((dims.EdgeDim, edge_fields), (dims.CellDim, cell_fields))

@@ -147,6 +147,8 @@ def grid_init(  # noqa: PLR0917 [too-many-positional-arguments]
             num_edges=num_edges,
             num_vertices=num_vertices,
             comm_id=comm_id,
+            c2v=c2v.ndarray,
+            c2e=c2e.ndarray,
         )
 
     grid = wrapper_common.construct_icon_grid(

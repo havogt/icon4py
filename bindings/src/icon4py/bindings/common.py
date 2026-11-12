@@ -22,7 +22,7 @@ from gt4py.next import common as gtx_common
 from gt4py.next.type_system import type_specifications as ts
 
 from icon4py.model.common import dimension as dims, model_backends
-from icon4py.model.common.decomposition import definitions, mpi_decomposition
+from icon4py.model.common.decomposition import definitions, halo, mpi_decomposition
 from icon4py.model.common.grid import base, horizontal as h_grid, icon
 from icon4py.model.common.utils import data_allocation as data_alloc
 from icon4py.model.common.utils.data_allocation import adjust_fortran_indices
@@ -306,6 +306,8 @@ def construct_decomposition(
     num_edges: int,
     num_vertices: int,
     comm_id: int,
+    c2v: NDArray,
+    c2e: NDArray,
 ) -> tuple[
     definitions.ProcessProperties, definitions.DecompositionInfo, definitions.ExchangeRuntime
 ]:
@@ -326,6 +328,14 @@ def construct_decomposition(
         .set_dimension(dims.VertexDim, v_glb_index, v_owner_mask, None)
     )
     process_props = definitions.get_process_properties(definitions.MultiNodeRun(), comm_id)
+    if definitions.LIMIT_EXCHANGE_DEPTH and not process_props.is_single_rank():
+        decomposition_info.set_halo_rings(
+            halo.compute_halo_rings(
+                decomposition_info,
+                c2v=adjust_fortran_indices(c2v),
+                c2e=adjust_fortran_indices(c2e),
+            )
+        )
     exchange = definitions.create_exchange(process_props, decomposition_info)
 
     return process_props, decomposition_info, exchange

@@ -298,6 +298,7 @@ def solve_nh_init(  # noqa: PLR0917 [too-many-positional-arguments]
             exchange=grid_wrapper.grid_state.exchange_runtime,
             max_nudging_coefficient=nudge_max_coeff,
             exchange_results_at_last_substep=True,
+            halo_depth_of_results=wrapper_config.HALO_DEPTH_OF_SOLVE_NH_RESULTS,
         ),
         dummy_field_factory=wrapper_common.cached_dummy_field_factory(allocator),
     )
@@ -447,20 +448,29 @@ def solve_nh_run(  # noqa: PLR0917 [too-many-positional-arguments]
     ):
         # The entry exchange of the first substep only reaches later substeps when the caller
         # passes the same buffers again.
-        edge_fields = [ddt_vn_phy]
-        cell_fields = [ddt_exner_phy, exner_pr]
+        edge_fields = {"normal_wind_tendency_due_to_slow_physics_process": ddt_vn_phy}
+        cell_fields = {
+            "exner_tendency_due_to_slow_physics": ddt_exner_phy,
+            "perturbed_exner_at_cells_on_model_levels": exner_pr,
+        }
         if grid_wrapper.grid_state.grid.limited_area:
-            edge_fields.append(grf_tend_vn)
-            cell_fields.extend((grf_tend_rho, grf_tend_thv, grf_tend_w))
+            edge_fields["grf_tend_vn"] = grf_tend_vn
+            cell_fields |= {
+                "grf_tend_rho": grf_tend_rho,
+                "grf_tend_thv": grf_tend_thv,
+                "grf_tend_w": grf_tend_w,
+            }
         if is_iau_active:
-            edge_fields.append(vn_incr)
-            cell_fields.extend((rho_incr, exner_incr))
+            edge_fields["normal_wind_iau_increment"] = vn_incr
+            cell_fields |= {"rho_iau_increment": rho_incr, "exner_iau_increment": exner_incr}
         decomposition.exchange_edges_and_cells(
             grid_wrapper.grid_state.exchange_runtime,
-            edge_fields,
-            cell_fields,
+            list(edge_fields.values()),
+            list(cell_fields.values()),
             merge=decomposition.MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE,
             site="wrap/snh_carried_inputs",
+            edge_depths=solve_nonhydro.entry_exchange_depths(edge_fields, at_first_substep=True),
+            cell_depths=solve_nonhydro.entry_exchange_depths(cell_fields, at_first_substep=True),
         )
 
     granule.solve_nh.time_step(
@@ -485,12 +495,23 @@ def solve_nh_run(  # noqa: PLR0917 [too-many-positional-arguments]
         # The caller reads the halo of the results, which the granule leaves stale in this mode
         # unless it exchanges them itself.
         if not granule.solve_nh.exchanges_results_at_last_substep:
+            depths = wrapper_config.HALO_DEPTH_OF_SOLVE_NH_RESULTS
             decomposition.exchange_edges_and_cells(
                 grid_wrapper.grid_state.exchange_runtime,
                 [vn_new, vn_traj, mass_flx_me],
                 [w_new, rho_new, exner_new, theta_v_new],
                 merge=decomposition.MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE,
                 site="wrap/snh_exit",
+                edge_depths=(
+                    None
+                    if depths is None
+                    else [depths[name] for name in ("vn", "vn_traj", "mass_flx_me")]
+                ),
+                cell_depths=(
+                    None
+                    if depths is None
+                    else [depths[name] for name in ("w", "rho", "exner", "theta_v")]
+                ),
             )
         wrapper_common.buffers_with_halo_of_solve_nh_results = decomposition.buffers_of(
             (vn_new, w_new, exner_new, theta_v_new)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import typing
+from collections.abc import Iterable, Mapping
 from typing import Final
 
 import gt4py.next as gtx
@@ -79,6 +80,39 @@ from icon4py.model.common.utils import data_allocation as data_alloc
 
 
 log = logging.getLogger(__name__)
+
+#: Halo rings on which a first substep reads a field of its entry exchange. A field that is
+#: not listed is read on all rings one call of the component needs.
+HALO_DEPTH_AT_FIRST_SUBSTEP: dict[str, int] = {
+    "vertical_wind_advective_tendency": 2,
+    "normal_wind_tendency_due_to_slow_physics_process": 2,
+    "exner_tendency_due_to_slow_physics": 2,
+    "grf_tend_vn": 2,
+    "grf_tend_rho": 2,
+    "grf_tend_thv": 2,
+    "grf_tend_w": 2,
+    "normal_wind_iau_increment": 2,
+    "rho_iau_increment": 2,
+    "exner_iau_increment": 2,
+}
+#: The same for the later substeps, which do not advect the velocity in the predictor.
+HALO_DEPTH_AT_LATER_SUBSTEPS: dict[str, int] = {
+    "vn": 2,
+    "tangential_wind": 2,
+    "normal_wind_advective_tendency": 2,
+    "w": 2,
+    "vertical_wind_advective_tendency": 2,
+}
+
+
+def entry_exchange_depths(
+    field_names: Iterable[str], *, at_first_substep: bool
+) -> list[int | None] | None:
+    """Halo rings the entry exchange of a substep fills for the fields, `None` for all rings."""
+    if not decomposition.LIMIT_EXCHANGE_DEPTH:
+        return None
+    depths = HALO_DEPTH_AT_FIRST_SUBSTEP if at_first_substep else HALO_DEPTH_AT_LATER_SUBSTEPS
+    return [depths.get(field_name) for field_name in field_names]
 
 
 @dataclasses.dataclass
@@ -437,6 +471,7 @@ class SolveNonhydro:
         exchange: decomposition.ExchangeRuntime,
         max_nudging_coefficient: state_utils.FloatType,
         exchange_results_at_last_substep: bool = False,
+        halo_depth_of_results: Mapping[str, int | None] | None = None,
     ):
         self._exchange = exchange
 
@@ -485,6 +520,8 @@ class SolveNonhydro:
         self.exchanges_results_at_last_substep = (
             self._exchange_at_exit and exchange_results_at_last_substep
         )
+        #: Halo rings on which the caller reads a result of the last substep, all rings if `None`.
+        self._halo_depth_of_results = halo_depth_of_results
         self._early_edge_exchange: decomposition.ExchangeResult | None = None
         self._buffers_exchanged_at_exit: frozenset[gtx_common.BufferInfo] = frozenset()
         self._determine_local_domains()
@@ -1218,58 +1255,62 @@ class SolveNonhydro:
         at_first_substep: bool,
         is_iau_active: bool,
     ) -> None:
-        edge_fields: list[typing.Any] = [prognostic_state.vn]
-        cell_fields: list[typing.Any] = [
-            prognostic_state.w,
-            prognostic_state.rho,
-            prognostic_state.exner,
-            prognostic_state.theta_v,
-        ]
+        edge_fields: dict[str, typing.Any] = {"vn": prognostic_state.vn}
+        cell_fields: dict[str, typing.Any] = {
+            "w": prognostic_state.w,
+            "rho": prognostic_state.rho,
+            "exner": prognostic_state.exner,
+            "theta_v": prognostic_state.theta_v,
+        }
         if at_first_substep:
-            edge_fields.append(diagnostic_state_nh.normal_wind_tendency_due_to_slow_physics_process)
-            cell_fields.extend(
-                (
-                    diagnostic_state_nh.exner_tendency_due_to_slow_physics,
-                    diagnostic_state_nh.perturbed_exner_at_cells_on_model_levels,
-                )
+            edge_fields["normal_wind_tendency_due_to_slow_physics_process"] = (
+                diagnostic_state_nh.normal_wind_tendency_due_to_slow_physics_process
+            )
+            cell_fields["exner_tendency_due_to_slow_physics"] = (
+                diagnostic_state_nh.exner_tendency_due_to_slow_physics
+            )
+            cell_fields["perturbed_exner_at_cells_on_model_levels"] = (
+                diagnostic_state_nh.perturbed_exner_at_cells_on_model_levels
             )
             if self._grid.limited_area:
-                edge_fields.append(diagnostic_state_nh.grf_tend_vn)
-                cell_fields.extend(
-                    (
-                        diagnostic_state_nh.grf_tend_rho,
-                        diagnostic_state_nh.grf_tend_thv,
-                        diagnostic_state_nh.grf_tend_w,
-                    )
-                )
+                edge_fields["grf_tend_vn"] = diagnostic_state_nh.grf_tend_vn
+                cell_fields["grf_tend_rho"] = diagnostic_state_nh.grf_tend_rho
+                cell_fields["grf_tend_thv"] = diagnostic_state_nh.grf_tend_thv
+                cell_fields["grf_tend_w"] = diagnostic_state_nh.grf_tend_w
             if is_iau_active:
-                edge_fields.append(diagnostic_state_nh.normal_wind_iau_increment)
-                cell_fields.extend(
-                    (diagnostic_state_nh.rho_iau_increment, diagnostic_state_nh.exner_iau_increment)
+                edge_fields["normal_wind_iau_increment"] = (
+                    diagnostic_state_nh.normal_wind_iau_increment
                 )
+                cell_fields["rho_iau_increment"] = diagnostic_state_nh.rho_iau_increment
+                cell_fields["exner_iau_increment"] = diagnostic_state_nh.exner_iau_increment
         else:
             # The first substep recomputes both from the exchanged `vn`.
-            edge_fields.extend(
-                (
-                    diagnostic_state_nh.tangential_wind,
-                    diagnostic_state_nh.normal_wind_advective_tendency.predictor,
-                )
+            edge_fields["tangential_wind"] = diagnostic_state_nh.tangential_wind
+            edge_fields["normal_wind_advective_tendency"] = (
+                diagnostic_state_nh.normal_wind_advective_tendency.predictor
             )
         if not (at_initial_timestep and at_first_substep):
-            cell_fields.append(diagnostic_state_nh.vertical_wind_advective_tendency.predictor)
+            cell_fields["vertical_wind_advective_tendency"] = (
+                diagnostic_state_nh.vertical_wind_advective_tendency.predictor
+            )
 
         buffers_exchanged_at_exit = self._buffers_exchanged_at_exit
         self._buffers_exchanged_at_exit = frozenset()
-        if decomposition.buffers_of((*edge_fields, *cell_fields)) <= buffers_exchanged_at_exit:
+        if (
+            decomposition.buffers_of((*edge_fields.values(), *cell_fields.values()))
+            <= buffers_exchanged_at_exit
+        ):
             return
 
         log.debug("exchanging the fields read on the halo during the substep")
         decomposition.exchange_edges_and_cells(
             self._exchange,
-            edge_fields,
-            cell_fields,
+            list(edge_fields.values()),
+            list(cell_fields.values()),
             merge=self._merge_dimensions_in_entry_exchange,
             site="snh/entry",
+            edge_depths=entry_exchange_depths(edge_fields, at_first_substep=at_first_substep),
+            cell_depths=entry_exchange_depths(cell_fields, at_first_substep=at_first_substep),
         )
 
     def _fields_exchanged_at_exit(
@@ -1278,31 +1319,54 @@ class SolveNonhydro:
         prognostic_state: prognostics.PrognosticState,
         prep_adv: dycore_states.PrepAdvection,
         at_last_substep: bool,
-    ) -> tuple[list[typing.Any], list[typing.Any]]:
+    ) -> tuple[dict[str, typing.Any], dict[str, typing.Any]]:
         """Edge and cell fields whose halo is exchanged before `time_step` returns.
 
         Before the last substep these are the fields the next substep reads on the halo and
         nothing but this component writes: the next substep finds them in the `current`
         prognostic state and in the `predictor` slots of the advective tendencies.
         """
-        cell_fields: list[typing.Any] = [
-            prognostic_state.w,
-            prognostic_state.rho,
-            prognostic_state.exner,
-            prognostic_state.theta_v,
-        ]
+        cell_fields: dict[str, typing.Any] = {
+            "w": prognostic_state.w,
+            "rho": prognostic_state.rho,
+            "exner": prognostic_state.exner,
+            "theta_v": prognostic_state.theta_v,
+        }
         if not at_last_substep:
             return (
-                [
-                    prognostic_state.vn,
-                    diagnostic_state_nh.tangential_wind,
-                    diagnostic_state_nh.normal_wind_advective_tendency.corrector,
-                ],
-                [*cell_fields, diagnostic_state_nh.vertical_wind_advective_tendency.corrector],
+                {
+                    "vn": prognostic_state.vn,
+                    "tangential_wind": diagnostic_state_nh.tangential_wind,
+                    "normal_wind_advective_tendency": (
+                        diagnostic_state_nh.normal_wind_advective_tendency.corrector
+                    ),
+                },
+                {
+                    **cell_fields,
+                    "vertical_wind_advective_tendency": (
+                        diagnostic_state_nh.vertical_wind_advective_tendency.corrector
+                    ),
+                },
             )
         if self.exchanges_results_at_last_substep:
-            return [prognostic_state.vn, prep_adv.vn_traj, prep_adv.mass_flx_me], cell_fields
-        return [], []
+            return (
+                {
+                    "vn": prognostic_state.vn,
+                    "vn_traj": prep_adv.vn_traj,
+                    "mass_flx_me": prep_adv.mass_flx_me,
+                },
+                cell_fields,
+            )
+        return {}, {}
+
+    def _depths_exchanged_at_exit(
+        self, field_names: Iterable[str], at_last_substep: bool
+    ) -> list[int | None] | None:
+        if not at_last_substep:
+            return entry_exchange_depths(field_names, at_first_substep=False)
+        if self._halo_depth_of_results is None:
+            return None
+        return [self._halo_depth_of_results.get(field_name) for field_name in field_names]
 
     def _finish_exchange_at_exit(
         self,
@@ -1319,10 +1383,20 @@ class SolveNonhydro:
         assert self._early_edge_exchange is not None
         self._early_edge_exchange.finish(stream=decomposition.DEFAULT_STREAM)
         self._early_edge_exchange = None
-        self._exchange.exchange(
-            dims.CellDim, *cell_fields, stream=decomposition.DEFAULT_STREAM, site="snh/exit_cells"
+        cell_depths = self._depths_exchanged_at_exit(cell_fields, at_last_substep)
+        decomposition.exchange_edges_and_cells(
+            self._exchange,
+            [],
+            list(cell_fields.values()),
+            merge=False,
+            site="snh/exit_cells",
+            cell_depths=cell_depths,
         )
-        self._buffers_exchanged_at_exit = decomposition.buffers_of((*edge_fields, *cell_fields))
+        # A limited depth is the one the next substep reads, not the one a first substep reads.
+        if cell_depths is None or not at_last_substep:
+            self._buffers_exchanged_at_exit = decomposition.buffers_of(
+                (*edge_fields.values(), *cell_fields.values())
+            )
 
     def time_step(
         self,
@@ -1808,10 +1882,20 @@ class SolveNonhydro:
             edge_fields, _ = self._fields_exchanged_at_exit(
                 diagnostic_state_nh, prognostic_states.next, prep_adv, at_last_substep
             )
-            if edge_fields:
+            edge_depths = self._depths_exchanged_at_exit(edge_fields, at_last_substep)
+            if edge_fields and edge_depths is None:
                 self._early_edge_exchange = self._exchange.start(
                     dims.EdgeDim,
-                    *edge_fields,
+                    *edge_fields.values(),
+                    stream=decomposition.DEFAULT_STREAM,
+                    site="snh/early_edge",
+                    concurrent=True,
+                )
+            elif edge_fields:
+                self._early_edge_exchange = self._exchange.start_merged(
+                    decomposition.fields_by_depth(
+                        dims.EdgeDim, list(edge_fields.values()), edge_depths
+                    ),
                     stream=decomposition.DEFAULT_STREAM,
                     site="snh/early_edge",
                     concurrent=True,

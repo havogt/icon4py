@@ -438,6 +438,14 @@ class GridManager:
         distributed_size = self._decomposition_info.get_horizontal_size()
 
         neighbor_tables = self._get_local_connectivities(global_neighbor_tables)
+        if decomposition.LIMIT_EXCHANGE_DEPTH and not process_props.is_single_rank():
+            self._decomposition_info.set_halo_rings(
+                halo.compute_halo_rings(
+                    self._decomposition_info,
+                    c2v=neighbor_tables[dims.C2V],
+                    c2e=neighbor_tables[dims.C2E],
+                )
+            )
 
         # COMPUTE remaining derived connectivities
         neighbor_tables.update(_get_derived_connectivities(neighbor_tables))

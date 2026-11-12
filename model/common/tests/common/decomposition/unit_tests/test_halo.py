@@ -242,6 +242,38 @@ def test_global_to_local_index(offset, rank):
                 )
 
 
+@pytest.mark.parametrize("extra_rings", (0, 1))
+@pytest.mark.parametrize("rank", (0, 1, 2, 3))
+def test_halo_rings_match_halo_levels(rank, extra_rings):
+    neighbor_tables = get_neighbor_tables_for_simple_grid()
+    halo_constructor = halo.IconLikeHaloConstructor(
+        dummy_four_ranks(rank), neighbor_tables, extra_rings=extra_rings
+    )
+    decomposition_info = halo_constructor(utils.SIMPLE_DISTRIBUTION)
+    local_cells = decomposition_info.global_index(dims.CellDim)
+
+    halo_rings = halo.compute_halo_rings(
+        decomposition_info,
+        **{
+            name: halo.global_to_local(
+                decomposition_info.global_index(offset.source),
+                neighbor_tables[offset.value][local_cells],
+            )
+            for name, offset in (("c2v", dims.C2V), ("c2e", dims.C2E))
+        },
+    )
+
+    for dim in dims.horizontal_dims():
+        rings = halo_rings[dim]
+        halo_levels = decomposition_info.halo_levels(dim)
+        assert ((rings == 0) == decomposition_info.owner_mask(dim)).all()
+        icon_like_halo = ~decomposition_info.owner_mask(dim) & (
+            halo_levels != definitions.DecompositionFlag.EXTRA_HALO_LEVEL
+        )
+        assert (rings[icon_like_halo] == 1).all()
+        assert (rings[halo_levels == definitions.DecompositionFlag.EXTRA_HALO_LEVEL] == 2).all()
+
+
 @pytest.mark.parametrize("rank", (0, 1, 2, 3))
 def test_horizontal_size(rank):
     simple_neighbor_tables = get_neighbor_tables_for_simple_grid()

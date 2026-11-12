@@ -323,12 +323,18 @@ def diffusion_run(  # noqa: PLR0917 [too-many-positional-arguments]
 
     if wrapper_config.HALO_EXCHANGE_MODE == decomposition.HaloExchangeMode.ENTRY:
         # The granule leaves the halo of its results stale in this mode, the caller reads it.
+        cell_fields = (
+            [w, theta_v, exner]
+            if linit or granule.diffusion.config.iforcing not in (ForcingType.NWP, ForcingType.AES)
+            else []
+        )
+        depth = wrapper_config.HALO_DEPTH_READ_BY_CALLER
         decomposition.exchange_edges_and_cells(
             grid_wrapper.grid_state.exchange_runtime,
             [vn],
-            [w, theta_v, exner]
-            if linit or granule.diffusion.config.iforcing not in (ForcingType.NWP, ForcingType.AES)
-            else [],
+            cell_fields,
             merge=decomposition.MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE,
             site="wrap/diff_exit",
+            edge_depths=None if depth is None else [depth],
+            cell_depths=None if depth is None else [depth] * len(cell_fields),
         )
