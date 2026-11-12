@@ -56,8 +56,8 @@ def linit(timeloop_diffusion_linit_exit: bool) -> bool:
 
 
 BENCHMARK_EXPERIMENTS: list[test_defs.ExperimentDescription] = [test_defs.Experiments.JW]
-BENCHMARK_STEPS: int = 5
-BENCHMARK_ROUNDS: int = 2
+BENCHMARK_STEPS: int = int(os.environ.get("ICON4PY_BENCH_STEPS", "5"))
+BENCHMARK_ROUNDS: int = int(os.environ.get("ICON4PY_BENCH_ROUNDS", "2"))
 BENCHMARK_WARMUP_ROUNDS: int = 1
 
 #: Basename of the file series the output tests write (a counter and the backend's suffix
