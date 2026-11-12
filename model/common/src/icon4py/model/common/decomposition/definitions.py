@@ -63,8 +63,11 @@ class CudaStreamProtocol(Protocol):
 
 type StreamLike = CupyLikeStream | CudaStreamProtocol
 
-#: The fields of a dimension, exchanged on all halo rings or on a number of them.
-type ExchangeGroup = gtx.Dimension | tuple[gtx.Dimension, int | None]
+#: Fields by dimension, or by dimension and the number of halo rings they are exchanged on.
+type ExchangeGroups = (
+    Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]]
+    | Mapping[tuple[gtx.Dimension, int | None], Sequence[gtx.Field | data_alloc.NDArray]]
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -378,7 +381,7 @@ class ExchangeRuntime(Protocol):
     @abc.abstractmethod
     def start_merged(
         self,
-        fields: Mapping[ExchangeGroup, Sequence[gtx.Field | data_alloc.NDArray]],
+        fields: ExchangeGroups,
         *,
         stream: StreamLike = DEFAULT_STREAM,
         site: str = "",
@@ -394,7 +397,7 @@ class ExchangeRuntime(Protocol):
 
     def exchange_merged(
         self,
-        fields: Mapping[ExchangeGroup, Sequence[gtx.Field | data_alloc.NDArray]],
+        fields: ExchangeGroups,
         *,
         stream: StreamLike | BlockType = DEFAULT_STREAM,
         site: str = "",
@@ -554,7 +557,7 @@ class SingleNodeExchange(ExchangeRuntime):
 
     def start_merged(
         self,
-        fields: Mapping[ExchangeGroup, Sequence[gtx.Field | data_alloc.NDArray]],
+        fields: ExchangeGroups,
         *,
         stream: StreamLike = DEFAULT_STREAM,
         site: str = "",
@@ -752,12 +755,12 @@ LIMIT_EXCHANGE_DEPTH: bool = env.flag_to_bool("ICON4PY_HALO_FIELD_DEPTH", False)
 
 def fields_by_depth(
     dim: gtx.Dimension, fields: Sequence[gtx.Field], depths: Sequence[int | None] | None
-) -> dict[ExchangeGroup, list[gtx.Field]]:
+) -> dict[tuple[gtx.Dimension, int | None], list[gtx.Field]]:
     """Group the fields of a dimension by the number of halo rings they are exchanged on.
 
     A depth of `None` stands for all rings, a field of depth 0 is left out.
     """
-    groups: dict[ExchangeGroup, list[gtx.Field]] = {}
+    groups: dict[tuple[gtx.Dimension, int | None], list[gtx.Field]] = {}
     for field, depth in zip(fields, depths or [None] * len(fields), strict=True):
         if depth != 0:
             groups.setdefault((dim, depth), []).append(field)

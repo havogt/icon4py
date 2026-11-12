@@ -16,8 +16,9 @@ import gt4py.next.typing as gtx_typing
 import numpy as np
 import pytest
 
+from icon4py.model.atmosphere.diffusion import diffusion
 from icon4py.model.atmosphere.dycore import solve_nonhydro as solve_nh
-from icon4py.model.common import model_backends, time
+from icon4py.model.common import dimension as dims, model_backends, time
 from icon4py.model.common.decomposition import definitions as decomp_defs
 from icon4py.model.common.states import nonhydro_states
 from icon4py.model.common.utils import data_allocation as data_alloc
@@ -266,6 +267,133 @@ def test_driver_compare_single_multi_rank_without_exchange_of_carried_field(  # 
         expect_mismatch=True,
     )
     assert num_drops > 0, f"'{dropped_field_name}' was never dropped from an exchange."
+
+
+_HALO_DEPTHS: dict[str, dict[str, int]] = {
+    "first_substep": solve_nh.HALO_DEPTH_AT_FIRST_SUBSTEP,
+    "later_substeps": solve_nh.HALO_DEPTH_AT_LATER_SUBSTEPS,
+    "diffusion": diffusion.HALO_DEPTH_AT_ENTRY,
+}
+
+
+@pytest.mark.datatest
+@pytest.mark.embedded_remap_error
+@pytest.mark.mpi
+@pytest.mark.level("integration")
+@pytest.mark.parametrize("process_props", [True], indirect=True)
+@pytest.mark.parametrize("experiment_description", [test_defs.Experiments.JW], ids=["jw"])
+@pytest.mark.parametrize(
+    "reader, field_name",
+    [
+        pytest.param(reader, field_name, id=f"depth-minus-one-{reader}-{field_name}")
+        for reader, field_name in (
+            ("later_substeps", "vn"),
+            ("later_substeps", "tangential_wind"),
+            ("later_substeps", "normal_wind_advective_tendency"),
+            ("later_substeps", "w"),
+            ("later_substeps", "vertical_wind_advective_tendency"),
+            ("first_substep", "vertical_wind_advective_tendency"),
+            ("diffusion", "w"),
+            ("diffusion", "theta_v"),
+        )
+    ],
+)
+def test_driver_compare_single_multi_rank_with_halo_depth_reduced_by_one(  # noqa: PLR0917 [too-many-positional-arguments]
+    download_ser_data: None,
+    experiment_description: test_defs.ExperimentDescription,
+    reader: str,
+    field_name: str,
+    tmp_path: pathlib.Path,
+    process_props: decomp_defs.ProcessProperties,
+    backend: gtx_typing.Backend,
+    backend_like: model_backends.BackendLike,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not decomp_defs.LIMIT_EXCHANGE_DEPTH:
+        pytest.skip("The exchange depth is limited only with 'ICON4PY_HALO_FIELD_DEPTH' set.")
+    depths = _HALO_DEPTHS[reader]
+    monkeypatch.setitem(depths, field_name, depths[field_name] - 1)
+
+    _run_driver_compare_single_multi_rank(
+        experiment_description=experiment_description,
+        end_of_simulation=time.NumTimeSteps(2),
+        tmp_path=tmp_path,
+        process_props=process_props,
+        backend=backend,
+        backend_like=backend_like,
+        extra_halo_rings=2,
+        halo_exchange_mode=decomp_defs.HaloExchangeMode.ENTRY,
+        expect_mismatch=True,
+    )
+
+
+@pytest.mark.datatest
+@pytest.mark.embedded_remap_error
+@pytest.mark.mpi
+@pytest.mark.level("integration")
+@pytest.mark.parametrize("process_props", [True], indirect=True)
+@pytest.mark.parametrize("experiment_description", [test_defs.Experiments.JW], ids=["jw"])
+def test_driver_compare_single_multi_rank_with_nan_beyond_exchange_depth(  # noqa: PLR0917 [too-many-positional-arguments]
+    download_ser_data: None,
+    experiment_description: test_defs.ExperimentDescription,
+    tmp_path: pathlib.Path,
+    process_props: decomp_defs.ProcessProperties,
+    backend: gtx_typing.Backend,
+    backend_like: model_backends.BackendLike,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not decomp_defs.LIMIT_EXCHANGE_DEPTH:
+        pytest.skip("The exchange depth is limited only with 'ICON4PY_HALO_FIELD_DEPTH' set.")
+    exchange_edges_and_cells = decomp_defs.exchange_edges_and_cells
+    num_invalidated_points = 0
+
+    def exchange_and_invalidate_other_rings(
+        exchange: decomp_defs.ExchangeRuntime,
+        edge_fields: Sequence[gtx.Field],
+        cell_fields: Sequence[gtx.Field],
+        *,
+        edge_depths: Sequence[int | None] | None = None,
+        cell_depths: Sequence[int | None] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        nonlocal num_invalidated_points
+        exchange_edges_and_cells(
+            exchange,
+            edge_fields,
+            cell_fields,
+            edge_depths=edge_depths,
+            cell_depths=cell_depths,
+            **kwargs,
+        )
+        if isinstance(exchange, decomp_defs.SingleNodeExchange):
+            return
+        for dim, fields, depths in (
+            (dims.EdgeDim, edge_fields, edge_depths),
+            (dims.CellDim, cell_fields, cell_depths),
+        ):
+            halo_rings = exchange._decomposition_info.halo_rings(dim)  # type: ignore[attr-defined]
+            for field, depth in zip(fields, depths or [None] * len(fields), strict=True):
+                if depth is not None:
+                    array: Any = field.ndarray
+                    beyond_depth = data_alloc.array_namespace(array).asarray(halo_rings > depth)
+                    array[beyond_depth] = np.nan
+                    num_invalidated_points += int(beyond_depth.sum())
+
+    monkeypatch.setattr(
+        decomp_defs, "exchange_edges_and_cells", exchange_and_invalidate_other_rings
+    )
+
+    _run_driver_compare_single_multi_rank(
+        experiment_description=experiment_description,
+        end_of_simulation=time.NumTimeSteps(2),
+        tmp_path=tmp_path,
+        process_props=process_props,
+        backend=backend,
+        backend_like=backend_like,
+        extra_halo_rings=2,
+        halo_exchange_mode=decomp_defs.HaloExchangeMode.ENTRY,
+    )
+    assert num_invalidated_points > 0, "No field was exchanged on fewer rings than the halo has."
 
 
 def _with_halo_exchange_mode(

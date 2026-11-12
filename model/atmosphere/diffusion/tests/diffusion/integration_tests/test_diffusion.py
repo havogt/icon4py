@@ -542,7 +542,11 @@ def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-argume
     )
     verify_diffusion_fields(config, diagnostic_state, prognostic_state, savepoint_diffusion_exit)
     if halo_exchange_mode == decomp_defs.HaloExchangeMode.ENTRY:
-        assert exchange.calls == [(dims.EdgeDim, 1), (dims.CellDim, 3)]
+        if decomp_defs.LIMIT_EXCHANGE_DEPTH:
+            # `vn` on all halo rings, `w` and `theta_v` on the first one, `exner` not at all
+            assert exchange.calls == [((dims.EdgeDim, None), 1), ((dims.CellDim, 1), 2)]
+        else:
+            assert exchange.calls == [(dims.EdgeDim, 1), (dims.CellDim, 3)]
     else:
         assert exchange.calls[:4] == [
             (dims.VertexDim, 2),

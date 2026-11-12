@@ -269,7 +269,7 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
 
     def _create_depth_limited_patterns(
         self, process_props: decomp_defs.ProcessProperties
-    ) -> dict[tuple[gtx.Dimension, int], Any]:
+    ) -> dict[tuple[gtx.Dimension, int | None], Any]:
         halo_rings: dict[gtx.Dimension, data_alloc.NDArray] = {}
         for dim in dims.horizontal_dims():
             rings = self._decomposition_info.halo_rings(dim)
@@ -381,7 +381,7 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
 
     def start_merged(
         self,
-        fields: Mapping[decomp_defs.ExchangeGroup, Sequence[gtx.Field | data_alloc.NDArray]],
+        fields: decomp_defs.ExchangeGroups,
         *,
         stream: decomp_defs.StreamLike = decomp_defs.DEFAULT_STREAM,
         site: str = "",
