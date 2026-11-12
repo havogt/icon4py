@@ -20,6 +20,7 @@ composes them.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from typing import Any
 
 import gt4py.next as gtx
@@ -203,6 +204,11 @@ class PhysicsGlobal:
         self.surface = surface
         self.tmx = tmx
         self.recompute_virtual_temperature = recompute_virtual_temperature
+        #: in place of the surface scheme's step: `surface_fn(surface_static, SurfaceInputState)`
+        self.surface_fn: (
+            Callable[[Any, surface_states.SurfaceInputState], SurfaceFluxState] | None
+        ) = None
+        self.surface_static: Any = None
         self._num_levels = int(grid.num_levels)
         self._num_cells = int(grid.num_cells)
         self._num_edges = int(grid.num_edges)
@@ -331,6 +337,8 @@ class PhysicsGlobal:
 
     def run_surface(self, input_state: surface_states.SurfaceInputState) -> SurfaceFluxState:
         assert self.surface is not None
+        if self.surface_fn is not None:
+            return self.surface_fn(self.surface_static, input_state)
         return self.surface.run(input_state=input_state)
 
     def run_tmx(

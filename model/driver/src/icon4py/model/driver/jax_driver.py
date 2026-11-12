@@ -175,7 +175,7 @@ _PHYSICS_PROCESSES = ("muphys", "surface", "tmx")
 
 
 def _physics_constants_of(physics: Any) -> dict[str, Any]:
-    """`_constants_of` the physics and of each of its processes."""
+    """`_constants_of` the physics and of each of its processes, and its `surface_static`."""
     return {
         "physics": _constants_of(physics),
         **{
@@ -183,6 +183,7 @@ def _physics_constants_of(physics: Any) -> dict[str, Any]:
             for process in _PHYSICS_PROCESSES
             if (granule := getattr(physics, process)) is not None
         },
+        "surface_static": physics.surface_static,
     }
 
 
@@ -191,6 +192,7 @@ def _with_physics_constants(physics: Any, constants: dict[str, Any]) -> Any:
     for process in _PHYSICS_PROCESSES:
         if (granule := getattr(physics, process)) is not None:
             setattr(bound, process, _with_constants(granule, constants[process]))
+    bound.surface_static = constants["surface_static"]
     return bound
 
 
@@ -310,8 +312,15 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         layout: spmd_layout.PaddedLayout | None = None,
         finite_halo_padding: bool = False,
         spmd_transport: driver_utils.SpmdTransport = driver_utils.SpmdTransport.ALL_TO_ALL,
+        surface_fn: Callable[[Any, Any], Any] | None = None,
+        surface_static: Any = None,
         **kwargs: Any,
     ):
+        """
+        `surface_fn(surface_static, SurfaceInputState) -> SurfaceFluxState` replaces the surface
+        scheme's step in the physics: a pure function of the cell fields, whose static fields
+        `surface_static`, a pytree of this rank's cells (axis 0), are passed as arguments.
+        """
         super().__init__(**kwargs)
         self._distributed = not kwargs["process_props"].is_single_rank()
         self._num_local = {dim: self.grid.size[dim] for dim in dims.horizontal_dims()}
@@ -370,6 +379,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         self.global_granules = global_granules
         self.halo_exchange = driver_utils.HaloExchange(halo_exchange)
         self.exchange_read_fields_only = exchange_read_fields_only
+        self._install_surface_fn(global_granules, layout, surface_fn, surface_static)
         self._constants = _granule_constants(
             global_granules, constants_as_arguments, spmd=layout is not None
         )
@@ -391,6 +401,35 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
         self.on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None
         self._jax = jax_utils.import_jax()
         self._jitted: dict[tuple, Callable] = {}
+
+    def _install_surface_fn(
+        self,
+        global_granules: driver_utils.GlobalGranules,
+        layout: spmd_layout.PaddedLayout | None,
+        surface_fn: Callable[[Any, Any], Any] | None,
+        surface_static: Any,
+    ) -> None:
+        """Put `surface_fn` and its static fields, padded as the layout pads, into the physics."""
+        if surface_fn is None:
+            return
+        physics = global_granules.physics
+        if physics is None or physics.surface is None:
+            raise ValueError("'surface_fn' replaces the surface scheme: configure 'surface'.")
+        if layout is not None:
+            num_cells = self.grid.num_cells
+            surface_static = jax_utils.import_jax().tree_util.tree_map(
+                lambda leaf: (
+                    driver_utils.pad_fields(leaf, layout)
+                    if isinstance(leaf, gtx.Field)
+                    else spmd_layout.pad_rows(layout, dims.CellDim, leaf)
+                    if getattr(leaf, "shape", ())[:1] == (num_cells,)
+                    else leaf
+                ),
+                surface_static,
+                is_leaf=lambda x: isinstance(x, gtx.Field),
+            )
+        physics.surface_fn = surface_fn
+        physics.surface_static = surface_static
 
     def _with_halo(self, tree: dict[str, Any], reads: frozenset[str] | None = None) -> dict:
         """
