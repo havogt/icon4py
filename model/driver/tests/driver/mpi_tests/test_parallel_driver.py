@@ -8,7 +8,7 @@
 
 import logging
 import pathlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import gt4py.next as gtx
@@ -106,13 +106,14 @@ def test_driver_compare_single_multi_rank(  # noqa: PLR0917 [too-many-positional
 @pytest.mark.parametrize("process_props", [True], indirect=True)
 @pytest.mark.parametrize("experiment_description", [test_defs.Experiments.JW], ids=["jw"])
 @pytest.mark.parametrize(
-    "extra_halo_rings, halo_exchange_mode, expect_mismatch",
+    "extra_halo_rings, halo_exchange_mode, num_time_steps, expect_mismatch",
     [
-        pytest.param(2, decomp_defs.HaloExchangeMode.INNER, False, id="rings2-inner"),
-        pytest.param(2, decomp_defs.HaloExchangeMode.INNER_WIDE, False, id="rings2-inner_wide"),
-        pytest.param(2, decomp_defs.HaloExchangeMode.ENTRY, False, id="rings2-entry"),
+        pytest.param(2, decomp_defs.HaloExchangeMode.INNER, 1, False, id="rings2-inner"),
+        pytest.param(2, decomp_defs.HaloExchangeMode.INNER_WIDE, 1, False, id="rings2-inner_wide"),
+        pytest.param(2, decomp_defs.HaloExchangeMode.ENTRY, 1, False, id="rings2-entry"),
+        pytest.param(2, decomp_defs.HaloExchangeMode.ENTRY, 2, False, id="rings2-entry-2steps"),
         # the halo is too shallow for a component without inner exchanges
-        pytest.param(1, decomp_defs.HaloExchangeMode.ENTRY, True, id="rings1-entry"),
+        pytest.param(1, decomp_defs.HaloExchangeMode.ENTRY, 1, True, id="rings1-entry"),
     ],
 )
 def test_driver_compare_single_multi_rank_halo_exchange_mode(  # noqa: PLR0917 [too-many-positional-arguments]
@@ -120,6 +121,7 @@ def test_driver_compare_single_multi_rank_halo_exchange_mode(  # noqa: PLR0917 [
     experiment_description: test_defs.ExperimentDescription,
     extra_halo_rings: int,
     halo_exchange_mode: decomp_defs.HaloExchangeMode,
+    num_time_steps: int,
     expect_mismatch: bool,
     tmp_path: pathlib.Path,
     process_props: decomp_defs.ProcessProperties,
@@ -128,7 +130,7 @@ def test_driver_compare_single_multi_rank_halo_exchange_mode(  # noqa: PLR0917 [
 ) -> None:
     _run_driver_compare_single_multi_rank(
         experiment_description=experiment_description,
-        end_of_simulation=time.NumTimeSteps(1),
+        end_of_simulation=time.NumTimeSteps(num_time_steps),
         tmp_path=tmp_path,
         process_props=process_props,
         backend=backend,
@@ -139,31 +141,60 @@ def test_driver_compare_single_multi_rank_halo_exchange_mode(  # noqa: PLR0917 [
     )
 
 
-_SOLVE_NONHYDRO_ENTRY_EXCHANGE_FIELDS: dict[
-    str, Callable[[nonhydro_states.DiagnosticStateNonHydro], Any]
+# A field carried from one substep to the next is exchanged in the slot the reading substep
+# finds it in, or in the slot the writing substep leaves it in.
+_SOLVE_NONHYDRO_CARRIED_FIELDS: dict[
+    str, Callable[[nonhydro_states.DiagnosticStateNonHydro], tuple[Any, ...]]
 ] = {
-    "tangential_wind": lambda diagnostic_state: diagnostic_state.tangential_wind,
+    "tangential_wind": lambda diagnostic_state: (diagnostic_state.tangential_wind,),
     "normal_wind_advective_tendency": (
-        lambda diagnostic_state: diagnostic_state.normal_wind_advective_tendency.predictor
+        lambda diagnostic_state: (
+            diagnostic_state.normal_wind_advective_tendency.predictor,
+            diagnostic_state.normal_wind_advective_tendency.corrector,
+        )
     ),
     "vertical_wind_advective_tendency": (
-        lambda diagnostic_state: diagnostic_state.vertical_wind_advective_tendency.predictor
+        lambda diagnostic_state: (
+            diagnostic_state.vertical_wind_advective_tendency.predictor,
+            diagnostic_state.vertical_wind_advective_tendency.corrector,
+        )
     ),
 }
 
 
 class _FieldDroppingExchange:
-    """Forwards `exchange` calls without one field and counts how often it dropped it."""
+    """Forwards exchanges without the dropped fields and counts how often it dropped one."""
 
-    def __init__(self, exchange: decomp_defs.ExchangeRuntime, dropped_field: Any) -> None:
+    def __init__(
+        self, exchange: decomp_defs.ExchangeRuntime, dropped_fields: tuple[Any, ...]
+    ) -> None:
         self._exchange = exchange
-        self._dropped_field = dropped_field
+        self._dropped_fields = dropped_fields
         self.num_drops = 0
 
-    def exchange(self, dim: gtx.Dimension, *fields: gtx.Field, stream: Any) -> None:
-        kept_fields = [field for field in fields if field is not self._dropped_field]
+    def _kept(self, fields: Sequence[gtx.Field]) -> list[gtx.Field]:
+        kept_fields = [
+            field
+            for field in fields
+            if not any(field is dropped_field for dropped_field in self._dropped_fields)
+        ]
         self.num_drops += len(fields) - len(kept_fields)
-        self._exchange.exchange(dim, *kept_fields, stream=stream)
+        return kept_fields
+
+    def start(
+        self, dim: gtx.Dimension, *fields: gtx.Field, **kwargs: Any
+    ) -> decomp_defs.ExchangeResult:
+        return self._exchange.start(dim, *self._kept(fields), **kwargs)
+
+    def exchange(self, dim: gtx.Dimension, *fields: gtx.Field, **kwargs: Any) -> None:
+        self._exchange.exchange(dim, *self._kept(fields), **kwargs)
+
+    def exchange_merged(
+        self, fields: Mapping[gtx.Dimension, Sequence[gtx.Field]], **kwargs: Any
+    ) -> None:
+        self._exchange.exchange_merged(
+            {dim: self._kept(dim_fields) for dim, dim_fields in fields.items()}, **kwargs
+        )
 
 
 @pytest.mark.datatest
@@ -176,10 +207,10 @@ class _FieldDroppingExchange:
     "dropped_field_name",
     [
         pytest.param(field_name, id=f"drop-{field_name}")
-        for field_name in _SOLVE_NONHYDRO_ENTRY_EXCHANGE_FIELDS
+        for field_name in _SOLVE_NONHYDRO_CARRIED_FIELDS
     ],
 )
-def test_driver_compare_single_multi_rank_without_entry_exchange_of_field(  # noqa: PLR0917 [too-many-positional-arguments]
+def test_driver_compare_single_multi_rank_without_exchange_of_carried_field(  # noqa: PLR0917 [too-many-positional-arguments]
     download_ser_data: None,
     experiment_description: test_defs.ExperimentDescription,
     dropped_field_name: str,
@@ -189,10 +220,10 @@ def test_driver_compare_single_multi_rank_without_entry_exchange_of_field(  # no
     backend_like: model_backends.BackendLike,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    exchange_at_entry = solve_nh.SolveNonhydro._exchange_at_entry
+    time_step = solve_nh.SolveNonhydro.time_step
     num_drops = 0
 
-    def exchange_at_entry_without_field(
+    def time_step_without_field(
         self: solve_nh.SolveNonhydro,
         *,
         diagnostic_state_nh: nonhydro_states.DiagnosticStateNonHydro,
@@ -201,18 +232,16 @@ def test_driver_compare_single_multi_rank_without_entry_exchange_of_field(  # no
         nonlocal num_drops
         exchange = self._exchange
         dropping_exchange = _FieldDroppingExchange(
-            exchange, _SOLVE_NONHYDRO_ENTRY_EXCHANGE_FIELDS[dropped_field_name](diagnostic_state_nh)
+            exchange, _SOLVE_NONHYDRO_CARRIED_FIELDS[dropped_field_name](diagnostic_state_nh)
         )
         self._exchange = dropping_exchange  # type: ignore[assignment]
         try:
-            exchange_at_entry(self, diagnostic_state_nh=diagnostic_state_nh, **kwargs)
+            time_step(self, diagnostic_state_nh=diagnostic_state_nh, **kwargs)
         finally:
             self._exchange = exchange
         num_drops += dropping_exchange.num_drops
 
-    monkeypatch.setattr(
-        solve_nh.SolveNonhydro, "_exchange_at_entry", exchange_at_entry_without_field
-    )
+    monkeypatch.setattr(solve_nh.SolveNonhydro, "time_step", time_step_without_field)
 
     # the dropped fields are carried from one substep to the next
     config = driver_config.read_experiment_config_from_yaml(
@@ -231,7 +260,7 @@ def test_driver_compare_single_multi_rank_without_entry_exchange_of_field(  # no
         halo_exchange_mode=decomp_defs.HaloExchangeMode.ENTRY,
         expect_mismatch=True,
     )
-    assert num_drops > 0, f"'{dropped_field_name}' was never dropped from the entry exchange."
+    assert num_drops > 0, f"'{dropped_field_name}' was never dropped from an exchange."
 
 
 def _with_halo_exchange_mode(
