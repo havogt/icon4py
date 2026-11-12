@@ -24,3 +24,6 @@ EXCHANGE_CARRIED_INPUTS_AT_EVERY_SUBSTEP: bool = env.flag_to_bool(
     "ICON4PY_EXCHANGE_CARRIED_INPUTS_AT_EVERY_SUBSTEP", False
 )
 """In halo exchange mode 'entry', exchange the fields of the first substep's entry exchange at every substep."""
+
+SKIP_REDUNDANT_ENTRY_EXCHANGE: bool = env.flag_to_bool("ICON4PY_HALO_SKIP_REDUNDANT", False)
+"""In halo exchange mode 'entry', diffusion does not exchange at entry the fields whose halo solve_nonhydro has just exchanged."""

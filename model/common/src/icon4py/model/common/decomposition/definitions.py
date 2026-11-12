@@ -13,17 +13,19 @@ import dataclasses
 import functools
 import logging
 import warnings
+from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
 from typing import Any, ClassVar, Literal, Protocol, overload, runtime_checkable
 
 import gt4py.next as gtx
 import numpy as np
+from gt4py.next import common as gtx_common
 
 from icon4py.model.common import dimension as dims, utils
 from icon4py.model.common.config import config_io
 from icon4py.model.common.grid import base
 from icon4py.model.common.states import utils as state_utils
-from icon4py.model.common.utils import data_allocation as data_alloc
+from icon4py.model.common.utils import data_allocation as data_alloc, env
 
 
 log = logging.getLogger(__name__)
@@ -312,6 +314,8 @@ class ExchangeRuntime(Protocol):
         dim: gtx.Dimension,
         *buffers: data_alloc.NDArray,
         stream: StreamLike = DEFAULT_STREAM,
+        site: str = "",
+        concurrent: bool = False,
     ) -> ExchangeResult: ...
 
     @overload
@@ -320,6 +324,8 @@ class ExchangeRuntime(Protocol):
         dim: gtx.Dimension,
         *fields: gtx.Field,
         stream: StreamLike = DEFAULT_STREAM,
+        site: str = "",
+        concurrent: bool = False,
     ) -> ExchangeResult: ...
 
     @abc.abstractmethod
@@ -328,6 +334,8 @@ class ExchangeRuntime(Protocol):
         dim: gtx.Dimension,
         *fields: gtx.Field | data_alloc.NDArray,
         stream: StreamLike = DEFAULT_STREAM,
+        site: str = "",
+        concurrent: bool = False,
     ) -> ExchangeResult:
         """Initiate a halo exchanges.
 
@@ -337,6 +345,11 @@ class ExchangeRuntime(Protocol):
         returned `ExchangeResult`. There is also the `exchange()` function which
         combines these two steps into one.
 
+        `site` names the call site and does not change the exchange. Only one exchange
+        may be in flight at a time, except for exchanges started with `concurrent`: these
+        may be in flight together with one other exchange and with the concurrent
+        exchanges of other sites. All ranks must start exchanges in the same order.
+
         Note:
             - For fields on the host the exchange will begin immediately, regardless
                 which stream has been passed.
@@ -345,12 +358,39 @@ class ExchangeRuntime(Protocol):
         """
         ...
 
+    @abc.abstractmethod
+    def start_merged(
+        self,
+        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        *,
+        stream: StreamLike = DEFAULT_STREAM,
+        site: str = "",
+    ) -> ExchangeResult:
+        """Initiate one halo exchange of fields of several dimensions, see `start()`."""
+        ...
+
+    def exchange_merged(
+        self,
+        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        *,
+        stream: StreamLike | BlockType = DEFAULT_STREAM,
+        site: str = "",
+    ) -> None:
+        """Perform one full halo exchange of fields of several dimensions, see `exchange()`."""
+        ex_req = self.start_merged(
+            fields,
+            stream=(DEFAULT_STREAM if stream is BLOCK else stream),  # type: ignore[arg-type]
+            site=site,
+        )
+        ex_req.finish(stream)
+
     @overload
     def exchange(
         self,
         dim: gtx.Dimension,
         *buffers: data_alloc.NDArray,
         stream: StreamLike | BlockType = DEFAULT_STREAM,
+        site: str = "",
     ) -> None: ...
 
     @overload
@@ -359,6 +399,7 @@ class ExchangeRuntime(Protocol):
         dim: gtx.Dimension,
         *fields: gtx.Field,
         stream: StreamLike | BlockType = DEFAULT_STREAM,
+        site: str = "",
     ) -> None: ...
 
     def exchange(
@@ -366,6 +407,7 @@ class ExchangeRuntime(Protocol):
         dim: gtx.Dimension,
         *fields: gtx.Field | data_alloc.NDArray,
         stream: StreamLike | BlockType = DEFAULT_STREAM,
+        site: str = "",
     ) -> None:
         """Perform a full halo exchange.
 
@@ -389,6 +431,7 @@ class ExchangeRuntime(Protocol):
             dim,
             *fields,
             stream=(DEFAULT_STREAM if stream is BLOCK else stream),  # type: ignore[arg-type]
+            site=site,
         )
         ex_req.finish(stream)
 
@@ -399,6 +442,7 @@ class ExchangeRuntime(Protocol):
         dim: gtx.Dimension,
         full_exchange: Literal[True],
         stream: StreamLike | BlockType = DEFAULT_STREAM,
+        site: str = "",
     ) -> None: ...
 
     @overload
@@ -408,6 +452,7 @@ class ExchangeRuntime(Protocol):
         dim: gtx.Dimension,
         full_exchange: Literal[False],
         stream: StreamLike = DEFAULT_STREAM,
+        site: str = "",
     ) -> ExchangeResult: ...
 
     def __call__(
@@ -416,6 +461,7 @@ class ExchangeRuntime(Protocol):
         dim: gtx.Dimension,
         full_exchange: bool = True,
         stream: StreamLike | BlockType = DEFAULT_STREAM,
+        site: str = "",
     ) -> None | ExchangeResult:
         """Performs either a full exchange or a partial exchange.
 
@@ -432,6 +478,7 @@ class ExchangeRuntime(Protocol):
             dim,
             *fields,
             stream=(DEFAULT_STREAM if stream is BLOCK else stream),  # type: ignore[arg-type]
+            site=site,
         )
         if not full_exchange:
             return ex_req
@@ -470,6 +517,17 @@ class SingleNodeExchange(ExchangeRuntime):
         dim: gtx.Dimension,
         *fields: gtx.Field | data_alloc.NDArray,
         stream: StreamLike = DEFAULT_STREAM,
+        site: str = "",
+        concurrent: bool = False,
+    ) -> ExchangeResult:
+        return SingleNodeResult()
+
+    def start_merged(
+        self,
+        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        *,
+        stream: StreamLike = DEFAULT_STREAM,
+        site: str = "",
     ) -> ExchangeResult:
         return SingleNodeResult()
 
@@ -648,6 +706,40 @@ def create_single_reduction_exchange(
     process_props: SingleNodeProcessProperties, decomposition_info: DecompositionInfo
 ) -> Reductions:
     return SingleNodeReductions()
+
+
+MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE: bool = env.flag_to_bool("ICON4PY_HALO_MERGE_DIMS", False)
+"""In halo exchange mode 'entry', exchange the edge and the cell fields of a call site in one exchange."""
+
+START_EDGE_EXCHANGE_EARLY: bool = env.flag_to_bool("ICON4PY_HALO_EARLY_EDGE", False)
+"""In halo exchange mode 'entry', solve_nonhydro exchanges the fields it carries to its next call before returning."""
+
+
+def exchange_edges_and_cells(
+    exchange: ExchangeRuntime,
+    edge_fields: Sequence[gtx.Field],
+    cell_fields: Sequence[gtx.Field],
+    *,
+    merge: bool,
+    site: str,
+    stream: StreamLike | BlockType = DEFAULT_STREAM,
+) -> None:
+    """Exchange the edge fields and then the cell fields, or with `merge` both in one exchange."""
+    fields = {
+        dim: dim_fields
+        for dim, dim_fields in ((dims.EdgeDim, edge_fields), (dims.CellDim, cell_fields))
+        if dim_fields
+    }
+    if merge and len(fields) > 1:
+        exchange.exchange_merged(fields, stream=stream, site=site)
+    else:
+        for dim, dim_fields in fields.items():
+            exchange.exchange(dim, *dim_fields, stream=stream, site=site)
+
+
+def buffers_of(fields: Iterable[gtx.Field]) -> frozenset[gtx_common.BufferInfo]:
+    """The memory buffers of `fields`: equal for two field objects sharing memory, shape and strides."""
+    return frozenset(field.__gt_buffer_info__ for field in fields)  # type: ignore[attr-defined]
 
 
 @config_io.register_enum

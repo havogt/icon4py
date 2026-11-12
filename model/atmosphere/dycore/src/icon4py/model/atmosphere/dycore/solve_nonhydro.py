@@ -436,6 +436,7 @@ class SolveNonhydro:
         | None,
         exchange: decomposition.ExchangeRuntime,
         max_nudging_coefficient: state_utils.FloatType,
+        exchange_results_at_last_substep: bool = False,
     ):
         self._exchange = exchange
 
@@ -473,6 +474,19 @@ class SolveNonhydro:
         self._inner_exchange = (
             decomposition.SingleNodeExchange() if self._exchange_at_entry_only else exchange
         )
+        self._merge_dimensions_in_entry_exchange = (
+            self._exchange_at_entry_only and decomposition.MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE
+        )
+        self._exchange_at_exit = (
+            self._exchange_at_entry_only and decomposition.START_EDGE_EXCHANGE_EARLY
+        )
+        #: With the exchange at exit, the last substep exchanges the halo of its results. A caller
+        #: that reads them on the halo sets it, one that exchanges them itself does not.
+        self.exchanges_results_at_last_substep = (
+            self._exchange_at_exit and exchange_results_at_last_substep
+        )
+        self._early_edge_exchange: decomposition.ExchangeResult | None = None
+        self._buffers_exchanged_at_exit: frozenset[gtx_common.BufferInfo] = frozenset()
         self._determine_local_domains()
 
         self._compute_exner_from_rhotheta_in_lateral_boundary = setup_program(
@@ -1244,9 +1258,71 @@ class SolveNonhydro:
         if not (at_initial_timestep and at_first_substep):
             cell_fields.append(diagnostic_state_nh.vertical_wind_advective_tendency.predictor)
 
+        buffers_exchanged_at_exit = self._buffers_exchanged_at_exit
+        self._buffers_exchanged_at_exit = frozenset()
+        if decomposition.buffers_of((*edge_fields, *cell_fields)) <= buffers_exchanged_at_exit:
+            return
+
         log.debug("exchanging the fields read on the halo during the substep")
-        self._exchange.exchange(dims.EdgeDim, *edge_fields, stream=decomposition.DEFAULT_STREAM)
-        self._exchange.exchange(dims.CellDim, *cell_fields, stream=decomposition.DEFAULT_STREAM)
+        decomposition.exchange_edges_and_cells(
+            self._exchange,
+            edge_fields,
+            cell_fields,
+            merge=self._merge_dimensions_in_entry_exchange,
+            site="snh/entry",
+        )
+
+    def _fields_exchanged_at_exit(
+        self,
+        diagnostic_state_nh: nonhydro_states.DiagnosticStateNonHydro,
+        prognostic_state: prognostics.PrognosticState,
+        prep_adv: dycore_states.PrepAdvection,
+        at_last_substep: bool,
+    ) -> tuple[list[typing.Any], list[typing.Any]]:
+        """Edge and cell fields whose halo is exchanged before `time_step` returns.
+
+        Before the last substep these are the fields the next substep reads on the halo and
+        nothing but this component writes: the next substep finds them in the `current`
+        prognostic state and in the `predictor` slots of the advective tendencies.
+        """
+        cell_fields: list[typing.Any] = [
+            prognostic_state.w,
+            prognostic_state.rho,
+            prognostic_state.exner,
+            prognostic_state.theta_v,
+        ]
+        if not at_last_substep:
+            return (
+                [
+                    prognostic_state.vn,
+                    diagnostic_state_nh.tangential_wind,
+                    diagnostic_state_nh.normal_wind_advective_tendency.corrector,
+                ],
+                [*cell_fields, diagnostic_state_nh.vertical_wind_advective_tendency.corrector],
+            )
+        if self.exchanges_results_at_last_substep:
+            return [prognostic_state.vn, prep_adv.vn_traj, prep_adv.mass_flx_me], cell_fields
+        return [], []
+
+    def _finish_exchange_at_exit(
+        self,
+        diagnostic_state_nh: nonhydro_states.DiagnosticStateNonHydro,
+        prognostic_state: prognostics.PrognosticState,
+        prep_adv: dycore_states.PrepAdvection,
+        at_last_substep: bool,
+    ) -> None:
+        edge_fields, cell_fields = self._fields_exchanged_at_exit(
+            diagnostic_state_nh, prognostic_state, prep_adv, at_last_substep
+        )
+        if not edge_fields:
+            return
+        assert self._early_edge_exchange is not None
+        self._early_edge_exchange.finish(stream=decomposition.DEFAULT_STREAM)
+        self._early_edge_exchange = None
+        self._exchange.exchange(
+            dims.CellDim, *cell_fields, stream=decomposition.DEFAULT_STREAM, site="snh/exit_cells"
+        )
+        self._buffers_exchanged_at_exit = decomposition.buffers_of((*edge_fields, *cell_fields))
 
     def time_step(
         self,
@@ -1345,6 +1421,10 @@ class SolveNonhydro:
                 rho=prognostic_states.next.rho,
                 theta_v=prognostic_states.next.theta_v,
                 exner=prognostic_states.next.exner,
+            )
+        if self._exchange_at_exit:
+            self._finish_exchange_at_exit(
+                diagnostic_state_nh, prognostic_states.next, prep_adv, at_last_substep
             )
         if not self._exchange_at_entry_only:
             self._update_theta_and_exner_in_halo(
@@ -1470,6 +1550,7 @@ class SolveNonhydro:
             prognostic_states.next.vn,
             z_fields.rho_at_edges_on_model_levels,
             stream=decomposition.DEFAULT_STREAM,
+            site="snh/predictor_vn",
         )
 
         self._compute_horizontal_velocity_quantities_and_fluxes(
@@ -1567,6 +1648,7 @@ class SolveNonhydro:
                 prognostic_states.next.w,
                 z_fields.dwdz_at_cells_on_model_levels,
                 stream=decomposition.DEFAULT_STREAM,
+                site="snh/predictor_w",
             )
         else:
             log.debug("exchanging prognostic field 'w'")
@@ -1574,6 +1656,7 @@ class SolveNonhydro:
                 dims.CellDim,
                 prognostic_states.next.w,
                 stream=decomposition.DEFAULT_STREAM,
+                site="snh/predictor_w",
             )
 
     def run_corrector_step(
@@ -1703,6 +1786,7 @@ class SolveNonhydro:
             dims.EdgeDim,
             prognostic_states.next.vn,
             stream=decomposition.DEFAULT_STREAM,
+            site="snh/corrector_vn",
         )
 
         self._compute_averaged_vn_and_fluxes(
@@ -1718,6 +1802,20 @@ class SolveNonhydro:
             at_first_substep=at_first_substep,
             r_nsubsteps=r_nsubsteps,
         )
+
+        if self._exchange_at_exit:
+            # None of these fields is written in the rest of the substep.
+            edge_fields, _ = self._fields_exchanged_at_exit(
+                diagnostic_state_nh, prognostic_states.next, prep_adv, at_last_substep
+            )
+            if edge_fields:
+                self._early_edge_exchange = self._exchange.start(
+                    dims.EdgeDim,
+                    *edge_fields,
+                    stream=decomposition.DEFAULT_STREAM,
+                    site="snh/early_edge",
+                    concurrent=True,
+                )
 
         self._vertically_implicit_solver_at_corrector_step(
             next_w=prognostic_states.next.w,
@@ -1782,4 +1880,5 @@ class SolveNonhydro:
             prognostic_states.next.exner,
             prognostic_states.next.w,
             stream=decomposition.DEFAULT_STREAM,
+            site="snh/corrector_cells",
         )

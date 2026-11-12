@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Union
@@ -227,6 +227,9 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         self._patterns = {dim: self._create_pattern(dim) for dim in dims.horizontal_dims()}
         log.info(f"patterns for dimensions {self._patterns.keys()} initialized ")
         self._comm = make_communication_object(self._context)
+        # A communication object allows one exchange in flight, and reusing one for a fixed field
+        # set keeps its buffers at one size: concurrent exchanges get one object per site.
+        self._concurrent_comms: dict[str, Any] = {}
 
         self._applied_patterns_cache: dict = {}
 
@@ -320,33 +323,66 @@ class GHexMultiNodeExchange(decomp_defs.ExchangeRuntime):
         dim: gtx.Dimension,
         *fields: gtx.Field | data_alloc.NDArray,
         stream: decomp_defs.StreamLike = decomp_defs.DEFAULT_STREAM,
+        site: str = "",
+        concurrent: bool = False,
     ) -> MultiNodeResult:
         """Synchronize with `stream` and start the halo exchange of `*fields`."""
-        assert dim in dims.horizontal_dims(), (
-            f"first dimension must be one of ({list(dims.horizontal_dims())})"
+        if concurrent:
+            if (comm := self._concurrent_comms.get(site)) is None:
+                comm = self._concurrent_comms[site] = make_communication_object(self._context)
+        else:
+            comm = self._comm
+        result = self._start(comm, {dim: fields}, stream=stream, site=site)
+        log.debug(f"exchange for {len(fields)} fields of dimension ='{dim.value}' initiated.")
+        return result
+
+    def start_merged(
+        self,
+        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        *,
+        stream: decomp_defs.StreamLike = decomp_defs.DEFAULT_STREAM,
+        site: str = "",
+    ) -> MultiNodeResult:
+        """Synchronize with `stream` and start one halo exchange of the fields of all dimensions."""
+        return self._start(self._comm, fields, stream=stream, site=site)
+
+    def _start(
+        self,
+        comm: Any,
+        fields: Mapping[gtx.Dimension, Sequence[gtx.Field | data_alloc.NDArray]],
+        *,
+        stream: decomp_defs.StreamLike,
+        site: str,
+    ) -> MultiNodeResult:
+        assert all(dim in dims.horizontal_dims() for dim in fields), (
+            f"dimensions must be among ({list(dims.horizontal_dims())})"
         )
 
-        applied_patterns = [self._get_applied_pattern(dim, f) for f in fields]
+        applied_patterns = [
+            self._get_applied_pattern(dim, f)
+            for dim, dim_fields in fields.items()
+            for f in dim_fields
+        ]
         if not ghex.__config__["gpu"]:
             # No GPU support fall back to the regular exchange function.
-            handle = self._comm.exchange(applied_patterns)
+            handle = comm.exchange(applied_patterns)
         else:
             assert stream is not None
-            handle = self._comm.schedule_exchange(
+            handle = comm.schedule_exchange(
                 patterns=applied_patterns,
                 stream=stream,
             )
-        log.debug(f"exchange for {len(fields)} fields of dimension ='{dim.value}' initiated.")
-        return MultiNodeResult(handle, applied_patterns)
+        return MultiNodeResult(handle, applied_patterns, site)
 
     def exchange(
         self,
         dim: gtx.Dimension,
         *fields: gtx.Field | data_alloc.NDArray,
         stream: decomp_defs.StreamLike | decomp_defs.BlockType = decomp_defs.DEFAULT_STREAM,
+        site: str = "",
     ) -> None:
         # Fall back to the default implementation provided by the protocol.
-        super().exchange(dim, *fields, stream=stream)
+        super().exchange(dim, *fields, stream=stream, site=site)
         log.debug(f"exchange for {len(fields)} fields of dimension ='{dim.value}' done.")
 
 
@@ -371,6 +407,7 @@ def create_multinode_halo_exchange_wait(runtime: GHexMultiNodeExchange) -> HaloE
 class MultiNodeResult(decomp_defs.ExchangeResult):
     handle: Any
     pattern_refs: Any
+    site: str = ""
 
     def finish(
         self,

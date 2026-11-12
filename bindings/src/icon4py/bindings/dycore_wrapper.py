@@ -297,6 +297,7 @@ def solve_nh_init(  # noqa: PLR0917 [too-many-positional-arguments]
             backend=actual_backend,
             exchange=grid_wrapper.grid_state.exchange_runtime,
             max_nudging_coefficient=nudge_max_coeff,
+            exchange_results_at_last_substep=True,
         ),
         dummy_field_factory=wrapper_common.cached_dummy_field_factory(allocator),
     )
@@ -437,6 +438,8 @@ def solve_nh_run(  # noqa: PLR0917 [too-many-positional-arguments]
     # adjust for Fortran indexes
     idyn_timestep = idyn_timestep - 1
 
+    wrapper_common.buffers_with_halo_of_solve_nh_results = frozenset()
+
     if (
         wrapper_config.HALO_EXCHANGE_MODE == decomposition.HaloExchangeMode.ENTRY
         and wrapper_config.EXCHANGE_CARRIED_INPUTS_AT_EVERY_SUBSTEP
@@ -452,9 +455,13 @@ def solve_nh_run(  # noqa: PLR0917 [too-many-positional-arguments]
         if is_iau_active:
             edge_fields.append(vn_incr)
             cell_fields.extend((rho_incr, exner_incr))
-        exchange = grid_wrapper.grid_state.exchange_runtime
-        exchange.exchange(dims.EdgeDim, *edge_fields, stream=decomposition.DEFAULT_STREAM)
-        exchange.exchange(dims.CellDim, *cell_fields, stream=decomposition.DEFAULT_STREAM)
+        decomposition.exchange_edges_and_cells(
+            grid_wrapper.grid_state.exchange_runtime,
+            edge_fields,
+            cell_fields,
+            merge=decomposition.MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE,
+            site="wrap/snh_carried_inputs",
+        )
 
     granule.solve_nh.time_step(
         diagnostic_state_nh=diagnostic_state_nh,
@@ -475,18 +482,18 @@ def solve_nh_run(  # noqa: PLR0917 [too-many-positional-arguments]
         wrapper_config.HALO_EXCHANGE_MODE == decomposition.HaloExchangeMode.ENTRY
         and idyn_timestep == ndyn_substeps_var - 1
     ):
-        # The granule leaves the halo of its results stale in this mode, the caller reads it.
-        exchange = grid_wrapper.grid_state.exchange_runtime
-        exchange.exchange(
-            dims.EdgeDim, vn_new, vn_traj, mass_flx_me, stream=decomposition.DEFAULT_STREAM
-        )
-        exchange.exchange(
-            dims.CellDim,
-            w_new,
-            rho_new,
-            exner_new,
-            theta_v_new,
-            stream=decomposition.DEFAULT_STREAM,
+        # The caller reads the halo of the results, which the granule leaves stale in this mode
+        # unless it exchanges them itself.
+        if not granule.solve_nh.exchanges_results_at_last_substep:
+            decomposition.exchange_edges_and_cells(
+                grid_wrapper.grid_state.exchange_runtime,
+                [vn_new, vn_traj, mass_flx_me],
+                [w_new, rho_new, exner_new, theta_v_new],
+                merge=decomposition.MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE,
+                site="wrap/snh_exit",
+            )
+        wrapper_common.buffers_with_halo_of_solve_nh_results = decomposition.buffers_of(
+            (vn_new, w_new, exner_new, theta_v_new)
         )
 
     # TODO(havogt): create separate bindings for writing the timers

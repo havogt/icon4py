@@ -378,12 +378,14 @@ class Icon4pyDriver:
                     tracer_prep_adv.vn_traj,
                     tracer_prep_adv.mass_flx_me,
                     stream=decomposition_defs.DEFAULT_STREAM,
+                    site="driver/tracer_entry",
                 )
                 self.exchange.exchange(
                     dims.CellDim,
                     tracer_advection_diagnostic_state.airmass_now,
                     tracer_advection_diagnostic_state.airmass_new,
                     stream=decomposition_defs.DEFAULT_STREAM,
+                    site="driver/tracer_entry",
                 )
             for tracer_current in tracers.current.active_fields():
                 tracer_next_field = getattr(tracers.next, tracer_current.name)

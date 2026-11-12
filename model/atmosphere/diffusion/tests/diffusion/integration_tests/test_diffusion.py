@@ -45,9 +45,13 @@ class _RecordingExchange(decomp_defs.SingleNodeExchange):
     def __init__(self) -> None:
         self.calls: list[tuple[gtx.Dimension, int]] = []
 
-    def start(self, dim, *fields, stream=decomp_defs.DEFAULT_STREAM):
+    def start(self, dim, *fields, stream=decomp_defs.DEFAULT_STREAM, site="", concurrent=False):
         self.calls.append((dim, len(fields)))
-        return super().start(dim, *fields, stream=stream)
+        return super().start(dim, *fields, stream=stream, site=site, concurrent=concurrent)
+
+    def start_merged(self, fields, *, stream=decomp_defs.DEFAULT_STREAM, site=""):
+        self.calls.extend((dim, len(dim_fields)) for dim, dim_fields in fields.items())
+        return super().start_merged(fields, stream=stream, site=site)
 
 
 class _GridWithDistinctZoneEnds:

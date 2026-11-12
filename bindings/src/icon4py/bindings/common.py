@@ -18,6 +18,7 @@ import gt4py.next.typing as gtx_typing
 import numpy as np
 from gt4py import eve
 from gt4py._core import definitions as gt4py_definitions
+from gt4py.next import common as gtx_common
 from gt4py.next.type_system import type_specifications as ts
 
 from icon4py.model.common import dimension as dims, model_backends
@@ -46,6 +47,9 @@ type NDArray = np.ndarray | xp.ndarray
 assert hasattr(mpi_decomposition, "get_multinode_properties")
 
 log = logging.getLogger(__name__)
+
+#: Buffers whose whole halo the last `solve_nh_run` exchanged with its results.
+buffers_with_halo_of_solve_nh_results: frozenset[gtx_common.BufferInfo] = frozenset()
 
 type Int32Array1D = Annotated[
     data_alloc.NDArray,

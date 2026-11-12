@@ -802,6 +802,7 @@ class Diffusion:
         prognostic_state: prognostics.PrognosticState,
         dtime: wpfloat,
         initial_run: bool = False,
+        exchange_at_entry: bool = True,
     ) -> None:
         """
         Do one diffusion step.
@@ -812,20 +813,21 @@ class Diffusion:
         step because no other filtering of the interpolated velocity field is done'
 
         The initial run uses special values for diff_multfac_vn, smag_limit and smag_offset.
+
+        In halo exchange mode 'entry', `exchange_at_entry` may be unset when `vn`, `w`,
+        `theta_v` and `exner` are valid on the whole halo.
         """
-        if self.config.halo_exchange_mode == decomposition.HaloExchangeMode.ENTRY:
+        if (
+            self.config.halo_exchange_mode == decomposition.HaloExchangeMode.ENTRY
+            and exchange_at_entry
+        ):
             log.debug("communication of the prognostic fields at entry - start")
-            self._exchange.exchange(
-                dims.EdgeDim,
-                prognostic_state.vn,
-                stream=decomposition.DEFAULT_STREAM,
-            )
-            self._exchange.exchange(
-                dims.CellDim,
-                prognostic_state.w,
-                prognostic_state.theta_v,
-                prognostic_state.exner,
-                stream=decomposition.DEFAULT_STREAM,
+            decomposition.exchange_edges_and_cells(
+                self._exchange,
+                [prognostic_state.vn],
+                [prognostic_state.w, prognostic_state.theta_v, prognostic_state.exner],
+                merge=decomposition.MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE,
+                site="diff/entry",
             )
             log.debug("communication of the prognostic fields at entry - end")
 
@@ -850,6 +852,7 @@ class Diffusion:
             dim=dims.VertexDim,
             full_exchange=True,
             stream=decomposition.DEFAULT_STREAM,
+            site="diff/rbf_vn",
         )
         log.debug("communication rbf extrapolation of vn - end")
 
@@ -871,6 +874,7 @@ class Diffusion:
             dims.EdgeDim,
             self.z_nabla2_e,
             stream=decomposition.DEFAULT_STREAM,
+            site="diff/z_nabla2_e",
         )
         log.debug("communication of z_nabla2_e - end")
 
@@ -889,6 +893,7 @@ class Diffusion:
             dim=dims.VertexDim,
             full_exchange=True,
             stream=decomposition.DEFAULT_STREAM,
+            site="diff/rbf_z_nabla2_e",
         )
         log.debug("communication rbf extrapolation of z_nable2_e - end")
 
@@ -931,6 +936,7 @@ class Diffusion:
             dims.EdgeDim,
             prognostic_state.vn,
             stream=decomposition.DEFAULT_STREAM,
+            site="diff/vn",
         )
         log.debug("communication of prognostic.vn - end")
 
@@ -945,6 +951,7 @@ class Diffusion:
                     prognostic_state.theta_v,
                     prognostic_state.exner,
                     stream=decomposition.DEFAULT_STREAM,
+                    site="diff/theta_v_exner",
                 )
                 log.debug("communication of prognostic cell fields: theta and exner - done")
 
@@ -953,5 +960,6 @@ class Diffusion:
                 dims.CellDim,
                 prognostic_state.w,
                 stream=decomposition.DEFAULT_STREAM,
+                site="diff/w",
             )
             log.debug("communication of prognostic cell field: w - done")

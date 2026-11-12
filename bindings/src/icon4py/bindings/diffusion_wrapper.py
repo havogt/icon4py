@@ -305,16 +305,30 @@ def diffusion_run(  # noqa: PLR0917 [too-many-positional-arguments]
         dwdy=dwdy,
     )
 
+    halo_is_exchanged = (
+        wrapper_config.SKIP_REDUNDANT_ENTRY_EXCHANGE
+        and not linit
+        and decomposition.buffers_of((vn, w, theta_v, exner))
+        <= wrapper_common.buffers_with_halo_of_solve_nh_results
+    )
+    wrapper_common.buffers_with_halo_of_solve_nh_results = frozenset()
+
     granule.diffusion.run(
         diagnostic_state=diagnostic_state,
         prognostic_state=prognostic_state,
         dtime=dtime,
         initial_run=linit,
+        exchange_at_entry=not halo_is_exchanged,
     )
 
     if wrapper_config.HALO_EXCHANGE_MODE == decomposition.HaloExchangeMode.ENTRY:
         # The granule leaves the halo of its results stale in this mode, the caller reads it.
-        exchange = grid_wrapper.grid_state.exchange_runtime
-        exchange.exchange(dims.EdgeDim, vn, stream=decomposition.DEFAULT_STREAM)
-        if linit or granule.diffusion.config.iforcing not in (ForcingType.NWP, ForcingType.AES):
-            exchange.exchange(dims.CellDim, w, theta_v, exner, stream=decomposition.DEFAULT_STREAM)
+        decomposition.exchange_edges_and_cells(
+            grid_wrapper.grid_state.exchange_runtime,
+            [vn],
+            [w, theta_v, exner]
+            if linit or granule.diffusion.config.iforcing not in (ForcingType.NWP, ForcingType.AES)
+            else [],
+            merge=decomposition.MERGE_DIMENSIONS_IN_ENTRY_EXCHANGE,
+            site="wrap/diff_exit",
+        )
