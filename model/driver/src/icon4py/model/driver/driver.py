@@ -721,6 +721,7 @@ def initialize_driver(
     jax_jit_time_step: bool = False,
     jax_spmd: bool = False,
     jax_spmd_transport: driver_utils.SpmdTransport = driver_utils.SpmdTransport.ALL_TO_ALL,
+    cell_topography: data_alloc.NDArray | None = None,
 ) -> Icon4pyDriver:
     """
     Set up the driver.
@@ -728,7 +729,8 @@ def initialize_driver(
     With `jax`, the setup runs on the embedded backend and the time loop runs the
     single-field-operator global diffusion and dynamical core steps on JAX arrays under jax.jit,
     each substep on its own or, with `jax_jit_time_step`, the whole time step with its halo
-    exchanges.
+    exchanges. `cell_topography`, the surface height [m] of the grid file's cells in its order,
+    replaces the configured topography.
     """
     if jax and backend is not None:
         raise ValueError("The JAX driver sets up on the embedded backend: pass backend=None.")
@@ -753,12 +755,17 @@ def initialize_driver(
     )
 
     log.info("initializing the topography")
-    cell_topography = topography.create(
-        config=config.topography,
-        grid_manager=grid_manager,
-        backend=backend,
-        exchange=exchange,
-    )
+    if cell_topography is None:
+        cell_topography = topography.create(
+            config=config.topography,
+            grid_manager=grid_manager,
+            backend=backend,
+            exchange=exchange,
+        )
+    else:
+        array_ns = data_alloc.import_array_ns(allocator)
+        cells = decomposition_info.global_index(dims.CellDim)
+        cell_topography = array_ns.asarray(cell_topography)[array_ns.asarray(cells)]
 
     log.info("initializing the static-field factories")
     static_field_factories = driver_utils.create_static_field_factories(

@@ -222,3 +222,54 @@ def test_jax_api_heights_are_icons(
         actual, expected = computed.asnumpy(), reference.asnumpy()
         print(f"{name}: max |jax_api - ICON| {np.max(np.abs(actual - expected)):.3e}")
         assert test_utils.dallclose(actual, expected, rtol=1e-9), name
+
+
+@pytest.mark.datatest
+@pytest.mark.embedded_only
+@pytest.mark.parametrize("experiment_description", [test_defs.Experiments.JW])
+def test_jax_api_topography_array(
+    experiment_description: test_defs.ExperimentDescription,
+    metrics_savepoint: sb.MetricSavepoint,
+    tmp_path: pathlib.Path,
+) -> None:
+    """
+    The JW topography as an array, with a flat topography configured, gives ICON's serialized
+    heights, at the metrics' tolerance.
+    """
+    pytest.importorskip("jax")
+    from icon4py.model.common.topography.analytical import (  # noqa: PLC0415 [import-outside-top-level]
+        flat_topography,
+        jablonowski_williamson as jw_topography,
+    )
+    from icon4py.model.driver import jax_api  # noqa: PLC0415 [import-outside-top-level]
+
+    config = driver_config.read_experiment_config_from_yaml(
+        dt_utils.get_path_for_experiment(
+            experiment_description, decomp_defs.SingleNodeProcessProperties()
+        )
+        / "config.yml"
+    )
+    assert isinstance(config.topography, jw_topography.JablonowskiWilliamsonConfig)
+    grid_file = grid_utils._download_grid_file(experiment_description.grid)
+    topography = jw_topography.jablonowski_williamson(
+        config=config.topography,
+        grid_manager=driver_utils.create_grid_manager(
+            grid_file_path=grid_file,
+            vertical_grid_config=config.vertical_grid,
+            allocator=model_backends.get_allocator(None),
+            process_props=decomp_defs.SingleNodeProcessProperties(),
+        ),
+    )
+    config = config.with_overrides(
+        driver={"output_path": tmp_path / "output"},
+        topography=flat_topography.FlatTopographyConfig(),
+    )
+    static, _ = jax_api.init_from_grid_file(grid_file, config, topography=np.asarray(topography))
+
+    for name, computed, reference in (
+        ("z_mc", static.z_mc, metrics_savepoint.z_mc()),
+        ("z_ifc", static.z_ifc, metrics_savepoint.z_ifc()),
+    ):
+        actual, expected = computed.asnumpy(), reference.asnumpy()
+        print(f"{name}: max |jax_api - ICON| {np.max(np.abs(actual - expected)):.3e}")
+        assert test_utils.dallclose(actual, expected, rtol=1e-9), name

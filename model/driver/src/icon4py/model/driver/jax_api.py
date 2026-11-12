@@ -159,9 +159,17 @@ def _physics(static: IconStatic) -> physics_global.PhysicsGlobal:
 
 
 def init_from_grid_file(
-    grid_file: pathlib.Path, config: driver_config.ExperimentConfig
+    grid_file: pathlib.Path,
+    config: driver_config.ExperimentConfig,
+    *,
+    topography: Any = None,
 ) -> tuple[IconStatic, IconState]:
-    """The static fields and the initial state of the experiment `config` on one rank."""
+    """
+    The static fields and the initial state of the experiment `config` on one rank.
+
+    `topography`, the surface height [m] of the grid file's cells in its order, replaces the
+    configured topography.
+    """
     assert config.nonhydrostatic is not None
     if (
         config.nonhydrostatic.divdamp_order == dycore_states.DivergenceDampingOrder.COMBINED
@@ -185,6 +193,7 @@ def init_from_grid_file(
         backend=None,
         jax=True,
         jax_jit_time_step=True,
+        cell_topography=topography,
     )
     assert isinstance(icon_driver, jax_driver.JaxIcon4pyDriver)
     ds = driver.initialize_driver_states(icon_driver, allocator, validate_granules=False)
