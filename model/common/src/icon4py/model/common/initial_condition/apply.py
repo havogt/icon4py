@@ -142,14 +142,31 @@ def apply(
             )
 
     if solve_nonhydro_diagnostic_state is not None:
-        # exner_pr, diagnosed from the initial state (compute_exner_pert in mo_nh_stepping.f90)
-        gt4py_math_op.compute_difference_on_cell_k.with_backend(backend)(
-            field_a=prognostic_state_now.exner,
-            field_b=static_fields.metrics.get(metrics_attributes.EXNER_REF_MC),
-            output_field=solve_nonhydro_diagnostic_state.perturbed_exner_at_cells_on_model_levels,
-            horizontal_start=0,
-            horizontal_end=grid.num_cells,
-            vertical_start=0,
-            vertical_end=grid.num_levels,
-            offset_provider={},
+        diagnose_perturbed_exner(
+            grid=grid,
+            static_fields=static_fields,
+            prognostic_state_now=prognostic_state_now,
+            solve_nonhydro_diagnostic_state=solve_nonhydro_diagnostic_state,
+            backend=backend,
         )
+
+
+def diagnose_perturbed_exner(
+    *,
+    grid: icon_grid.IconGrid,
+    static_fields: static_fields.StaticFieldFactories,
+    prognostic_state_now: prognostics.PrognosticState,
+    solve_nonhydro_diagnostic_state: nonhydro_states.DiagnosticStateNonHydro,
+    backend: gtx_typing.Backend | None,
+) -> None:
+    """exner_pr, diagnosed from the initial state (compute_exner_pert in mo_nh_stepping.f90)."""
+    gt4py_math_op.compute_difference_on_cell_k.with_backend(backend)(
+        field_a=prognostic_state_now.exner,
+        field_b=static_fields.metrics.get(metrics_attributes.EXNER_REF_MC),
+        output_field=solve_nonhydro_diagnostic_state.perturbed_exner_at_cells_on_model_levels,
+        horizontal_start=0,
+        horizontal_end=grid.num_cells,
+        vertical_start=0,
+        vertical_end=grid.num_levels,
+        offset_provider={},
+    )

@@ -273,3 +273,71 @@ def test_jax_api_topography_array(
         actual, expected = computed.asnumpy(), reference.asnumpy()
         print(f"{name}: max |jax_api - ICON| {np.max(np.abs(actual - expected)):.3e}")
         assert test_utils.dallclose(actual, expected, rtol=1e-9), name
+
+
+@pytest.mark.datatest
+@pytest.mark.embedded_only
+def test_jax_api_initial_state_from_arrays(tmp_path: pathlib.Path) -> None:
+    """
+    The JW initial state, as the column arrays `dyn2phy` gives (cell wind, temperature, surface
+    pressure) and its moisture, balanced by `initial_condition.from_arrays`, is the JW initial
+    state again: its thermodynamics to rounding, vn and w to the interpolation of the cell wind to
+    the edges, and icon4py diagnoses the given surface pressure from it.
+    """
+    pytest.importorskip("jax")
+    from icon4py.model.common.initial_condition import (  # noqa: PLC0415 [import-outside-top-level]
+        from_arrays,
+    )
+    from icon4py.model.driver import jax_api  # noqa: PLC0415 [import-outside-top-level]
+
+    experiment = test_defs.Experiments.JW
+    config = driver_config.read_experiment_config_from_yaml(
+        dt_utils.get_path_for_experiment(experiment, decomp_defs.SingleNodeProcessProperties())
+        / "config.yml"
+    )
+    config = config.with_overrides(
+        driver={"output_path": tmp_path / "output"},
+        tracer_config=tracer_states.TracerConfig(**dict.fromkeys(from_arrays.MOISTURE, True)),
+        external_physics=True,
+    )
+    grid_file = grid_utils._download_grid_file(experiment.grid)
+
+    def fields_and_column(static, state):  # type: ignore[no-untyped-def]
+        col = jax_api.dyn2phy(static, state)
+        fields = {k: state.prognostic[k].asnumpy() for k in _FIELDS} | {
+            k: v.asnumpy() for k, v in state.tracers.items()
+        }
+        surface = col.pressure_ifc.asnumpy()[:, -1]
+        return fields, col.u.asnumpy(), col.v.asnumpy(), col.temperature.asnumpy(), surface
+
+    reference, u, v, temperature, surface_pressure = fields_and_column(
+        *jax_api.init_from_grid_file(grid_file, config)
+    )
+    gc.collect()
+    initial_state = from_arrays.ColumnInitialState(
+        u=u,
+        v=v,
+        temperature=temperature,
+        q={name: reference[name] for name in from_arrays.MOISTURE},
+        surface_pressure=surface_pressure,
+    )
+    computed, *_, diagnosed_surface_pressure = fields_and_column(
+        *jax_api.init_from_grid_file(grid_file, config, initial_state=initial_state)
+    )
+
+    for name, expected in reference.items():
+        scale = np.max(np.abs(expected))
+        print(
+            f"{name}: max |arrays - JW| {np.max(np.abs(computed[name] - expected)):.3e}, max {scale:.3e}"
+        )
+    for name in ("rho", "exner", "theta_v"):
+        np.testing.assert_allclose(computed[name], reference[name], rtol=1e-13, err_msg=name)
+    for name in from_arrays.MOISTURE:
+        np.testing.assert_array_equal(computed[name], reference[name], err_msg=name)
+    np.testing.assert_allclose(
+        computed["vn"], reference["vn"], rtol=0, atol=5e-3 * np.max(np.abs(reference["vn"]))
+    )
+    np.testing.assert_allclose(
+        computed["w"], reference["w"], rtol=0, atol=1e-2 * np.max(np.abs(reference["w"]))
+    )
+    np.testing.assert_allclose(diagnosed_surface_pressure, surface_pressure, rtol=1e-13)

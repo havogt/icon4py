@@ -35,6 +35,7 @@ from icon4py.model.atmosphere.dycore import dycore_states, solve_nonhydro_global
 from icon4py.model.atmosphere.subgrid_scale_physics.surface import surface_states
 from icon4py.model.common import model_backends
 from icon4py.model.common.decomposition import definitions as decomposition_defs
+from icon4py.model.common.initial_condition import from_arrays as from_arrays_ic
 from icon4py.model.common.metrics import metrics_attributes
 from icon4py.model.common.states import (
     prognostic_state as prognostics,
@@ -163,12 +164,15 @@ def init_from_grid_file(
     config: driver_config.ExperimentConfig,
     *,
     topography: Any = None,
+    initial_state: from_arrays_ic.ColumnInitialState | None = None,
 ) -> tuple[IconStatic, IconState]:
     """
     The static fields and the initial state of the experiment `config` on one rank.
 
     `topography`, the surface height [m] of the grid file's cells in its order, replaces the
-    configured topography.
+    configured topography; `initial_state` replaces the configured initial condition, balanced
+    as `initial_condition.from_arrays` describes (its temperature is then a diagnostic and
+    differs from the given one at the level of the discretisation).
     """
     assert config.nonhydrostatic is not None
     if (
@@ -196,7 +200,9 @@ def init_from_grid_file(
         cell_topography=topography,
     )
     assert isinstance(icon_driver, jax_driver.JaxIcon4pyDriver)
-    ds = driver.initialize_driver_states(icon_driver, allocator, validate_granules=False)
+    ds = driver.initialize_driver_states(
+        icon_driver, allocator, validate_granules=False, initial_state=initial_state
+    )
     prognostic, diagnostic, intermediate, prep_adv, tracers, constants = icon_driver._prepare(ds)
     granules = icon_driver.global_granules
     time_vars = icon_driver.model_time_variables

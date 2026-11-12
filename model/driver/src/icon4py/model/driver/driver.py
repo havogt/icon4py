@@ -39,7 +39,8 @@ from icon4py.model.common.grid import (
     vertical as v_grid,
 )
 from icon4py.model.common.grid.icon import IconGrid
-from icon4py.model.common.initial_condition import apply as ic_apply
+from icon4py.model.common.initial_condition import from_arrays as from_arrays_ic
+from icon4py.model.common.initial_condition.apply import apply as ic_apply, diagnose_perturbed_exner
 from icon4py.model.common.interpolation import interpolation_attributes as intp_attr
 from icon4py.model.common.io import io as common_io
 from icon4py.model.common.metrics import metrics_attributes as metrics_attr
@@ -880,12 +881,14 @@ def initialize_driver_states(
     allocator: gtx.typing.Allocator,
     *,
     validate_granules: bool = True,
+    initial_state: from_arrays_ic.ColumnInitialState | None = None,
 ) -> driver_states.DriverStates:
     """Build and validate the initial driver states from a freshly initialized driver.
 
     This wraps the creation of the prognostic/tracer/nonhydro/diagnostic states, the
     application of the initial condition, the assembly of ``DriverStates``, and the
-    consistency check that precedes the time loop.
+    consistency check that precedes the time loop. `initial_state` replaces the configured
+    initial condition (`initial_condition.from_arrays`).
     """
     prognostic_state_now = prognostics.initialize_prognostic_state(
         grid=icon4py_driver.grid,
@@ -910,18 +913,39 @@ def initialize_driver_states(
         if icon4py_driver.config.tracer_advection is not None
         else None
     )
-    ic_apply(
-        config=driver_utils.make_ic_config_ctx(icon4py_driver.config),
-        grid=icon4py_driver.grid,
-        static_fields=icon4py_driver.static_field_factories,
-        prognostic_state_now=prognostic_state_now,
-        tracer_state_now=tracer_state_now,
-        solve_nonhydro_diagnostic_state=solve_nonhydro_diagnostic_state,
-        tracer_prep_adv_state=tracer_prep_adv_state,
-        backend=icon4py_driver.backend,
-        exchange=icon4py_driver.exchange,
-        global_reductions=icon4py_driver.global_reductions,
-    )
+    if initial_state is not None:
+        from_arrays_ic.initialize_from_arrays(
+            state=initial_state,
+            vertical_grid_config=icon4py_driver.config.vertical_grid,
+            grid=icon4py_driver.grid,
+            decomposition_info=icon4py_driver.decomposition_info,
+            static_fields=icon4py_driver.static_field_factories,
+            prognostic_state_now=prognostic_state_now,
+            tracer_state_now=tracer_state_now,
+            backend=icon4py_driver.backend,
+            exchange=icon4py_driver.exchange,
+        )
+        if solve_nonhydro_diagnostic_state is not None:
+            diagnose_perturbed_exner(
+                grid=icon4py_driver.grid,
+                static_fields=icon4py_driver.static_field_factories,
+                prognostic_state_now=prognostic_state_now,
+                solve_nonhydro_diagnostic_state=solve_nonhydro_diagnostic_state,
+                backend=icon4py_driver.backend,
+            )
+    else:
+        ic_apply(
+            config=driver_utils.make_ic_config_ctx(icon4py_driver.config),
+            grid=icon4py_driver.grid,
+            static_fields=icon4py_driver.static_field_factories,
+            prognostic_state_now=prognostic_state_now,
+            tracer_state_now=tracer_state_now,
+            solve_nonhydro_diagnostic_state=solve_nonhydro_diagnostic_state,
+            tracer_prep_adv_state=tracer_prep_adv_state,
+            backend=icon4py_driver.backend,
+            exchange=icon4py_driver.exchange,
+            global_reductions=icon4py_driver.global_reductions,
+        )
     diagnostic_state = diagnostics.initialize_diagnostic_state(
         grid=icon4py_driver.grid, allocator=allocator
     )
