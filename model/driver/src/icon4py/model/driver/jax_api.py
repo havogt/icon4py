@@ -35,6 +35,7 @@ from icon4py.model.atmosphere.dycore import dycore_states, solve_nonhydro_global
 from icon4py.model.atmosphere.subgrid_scale_physics.surface import surface_states
 from icon4py.model.common import model_backends
 from icon4py.model.common.decomposition import definitions as decomposition_defs
+from icon4py.model.common.metrics import metrics_attributes
 from icon4py.model.common.states import (
     prognostic_state as prognostics,
     surface_flux_state,
@@ -90,9 +91,15 @@ class _Setup:
 
 @dataclasses.dataclass(frozen=True)
 class IconStatic:
-    """The static fields of the granules, by granule, and what a time step is."""
+    """
+    The static fields of the granules, by granule, and what a time step is.
+
+    `z_mc` and `z_ifc` are the heights of the cell centres on the full and the half levels [m].
+    """
 
     constants: dict[str, Any]
+    z_mc: Any
+    z_ifc: Any
     setup: _Setup
     dtime: float
     substep_dtime: float
@@ -122,7 +129,7 @@ class IconState:
 
 _jax.tree_util.register_dataclass(
     IconStatic,
-    data_fields=["constants"],
+    data_fields=["constants", "z_mc", "z_ifc"],
     meta_fields=["setup", "dtime", "substep_dtime", "ndyn_substeps", "second_order_divdamp_factor"],
 )
 _jax.tree_util.register_dataclass(
@@ -184,8 +191,11 @@ def init_from_grid_file(
     prognostic, diagnostic, intermediate, prep_adv, tracers, constants = icon_driver._prepare(ds)
     granules = icon_driver.global_granules
     time_vars = icon_driver.model_time_variables
+    metrics = icon_driver.static_field_factories.metrics
     static = IconStatic(
         constants=constants,
+        z_mc=jax_utils.to_jax(metrics.get(metrics_attributes.Z_MC)),
+        z_ifc=jax_utils.to_jax(metrics.get(metrics_attributes.CELL_HEIGHT_ON_HALF_LEVEL)),
         setup=_Setup(granules, icon_driver.config),
         dtime=float(time_vars.dtime_in_seconds),
         substep_dtime=float(time_vars.substep_timestep),

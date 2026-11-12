@@ -17,7 +17,22 @@ from icon4py.model.common import constants, model_backends
 from icon4py.model.common.decomposition import definitions as decomp_defs
 from icon4py.model.common.states import tracer_states
 from icon4py.model.driver import config as driver_config, driver, driver_utils
-from icon4py.model.testing import datatest_utils as dt_utils, definitions as test_defs, grid_utils
+from icon4py.model.testing import (
+    datatest_utils as dt_utils,
+    definitions as test_defs,
+    grid_utils,
+    serialbox as sb,
+    test_utils,
+)
+from icon4py.model.testing.fixtures.datatest import (
+    backend,
+    data_provider,
+    download_ser_data,
+    experiment,
+    experiment_description,
+    metrics_savepoint,
+    process_props,
+)
 
 
 _FIELDS = ("vn", "w", "rho", "exner", "theta_v")
@@ -174,3 +189,36 @@ def test_jax_api_external_physics_without_tendencies(tmp_path: pathlib.Path) -> 
             np.testing.assert_allclose(actual, expected, rtol=1e-14, atol=0, err_msg=name)
         else:
             np.testing.assert_array_equal(actual, expected, err_msg=name)
+
+
+@pytest.mark.datatest
+@pytest.mark.embedded_only
+@pytest.mark.parametrize("experiment_description", [test_defs.Experiments.JW])
+def test_jax_api_heights_are_icons(
+    experiment_description: test_defs.ExperimentDescription,
+    metrics_savepoint: sb.MetricSavepoint,
+    tmp_path: pathlib.Path,
+) -> None:
+    """`IconStatic.z_mc` and `z_ifc` against ICON's serialized heights, at the metrics' tolerance."""
+    pytest.importorskip("jax")
+    from icon4py.model.driver import jax_api  # noqa: PLC0415 [import-outside-top-level]
+
+    config = driver_config.read_experiment_config_from_yaml(
+        dt_utils.get_path_for_experiment(
+            experiment_description, decomp_defs.SingleNodeProcessProperties()
+        )
+        / "config.yml"
+    )
+    config = config.with_overrides(driver={"output_path": tmp_path / "output"})
+    static, _ = jax_api.init_from_grid_file(
+        grid_utils._download_grid_file(experiment_description.grid), config
+    )
+
+    for name, computed, reference in (
+        ("z_mc", static.z_mc, metrics_savepoint.z_mc()),
+        ("z_ifc", static.z_ifc, metrics_savepoint.z_ifc()),
+    ):
+        assert computed.domain.dims == reference.domain.dims, name
+        actual, expected = computed.asnumpy(), reference.asnumpy()
+        print(f"{name}: max |jax_api - ICON| {np.max(np.abs(actual - expected)):.3e}")
+        assert test_utils.dallclose(actual, expected, rtol=1e-9), name
