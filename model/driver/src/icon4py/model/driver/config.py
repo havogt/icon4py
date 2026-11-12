@@ -230,6 +230,9 @@ class ExperimentConfig(config_io.ConfigWithShared):
     tmx: tmx_config.TmxConfig | None = None
     #: The surface scheme: surface fluxes for tmx and, later, radiation; carried like `tmx`.
     surface: surface_config.SurfaceConfig | None = None
+    #: Physics computed outside icon4py: the JAX path builds its physics coupling (`jax_api`'s
+    #: dyn2phy / phy2dyn) also when none of muphys, surface and tmx is configured.
+    external_physics: bool = False
 
     def __post_init__(self) -> None:
         if self.driver.diffuse_before_time_loop and not (

@@ -781,7 +781,12 @@ def initialize_global_granules(
     states = create_dynamics_states(static_field_factories)
     transport_tracers = config.tracer_advection is not None and bool(config.tracer_config)
     physics_states: dict[str, Any] | None = None
-    if config.muphys is not None or config.surface is not None or config.tmx is not None:
+    if (
+        config.external_physics
+        or config.muphys is not None
+        or config.surface is not None
+        or config.tmx is not None
+    ):
         interpolation_source = static_field_factories.interpolation
         physics_states = {
             "ddqz_z_full": static_field_factories.metrics.get(metrics_attributes.DDQZ_Z_FULL),

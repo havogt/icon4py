@@ -362,6 +362,6 @@ def physics_step(static: IconStatic, state: IconState) -> IconState:
 def time_step(static: IconStatic, state: IconState) -> IconState:
     """One time step of the JAX driver: `dynamics_step`, then `physics_step` with physics."""
     state = dynamics_step(static, state)
-    if static.setup.granules.physics is not None:
+    if static.setup.granules.physics is not None and static.setup.granules.physics.has_processes:
         state = physics_step(static, state)
     return state

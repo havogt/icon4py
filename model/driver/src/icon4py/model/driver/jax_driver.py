@@ -349,7 +349,11 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
             raise NotImplementedError("The JAX driver does not write output or apply tendencies.")
         if self.config.graupel is not None:
             raise NotImplementedError("The JAX driver does not run the NWP graupel scheme.")
-        if global_granules.physics is not None and self._distributed:
+        if (
+            global_granules.physics is not None
+            and global_granules.physics.has_processes
+            and self._distributed
+        ):
             rings = _cell_halo_rings(
                 self.grid, self._xp.asarray(self.decomposition_info.owner_mask(dims.CellDim))
             )
@@ -819,7 +823,7 @@ class JaxIcon4pyDriver(driver.Icon4pyDriver):
                     )
                 }
             )["tracers"]
-        if self.global_granules.physics is not None:
+        if self.global_granules.physics is not None and self.global_granules.physics.has_processes:
             prognostic, tracers, perturbed_exner = self._jitted_physics(dtime)(
                 constants["physics"],
                 prognostic,

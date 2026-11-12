@@ -228,6 +228,11 @@ class PhysicsGlobal:
         }
 
     @property
+    def has_processes(self) -> bool:
+        """Whether any of muphys, the surface scheme and tmx runs in `run`."""
+        return any(p is not None for p in (self.muphys, self.surface, self.tmx))
+
+    @property
     def _cell_k(self) -> dict:
         return {dims.CellDim: (0, self._num_cells), dims.KDim: (0, self._num_levels)}
 
