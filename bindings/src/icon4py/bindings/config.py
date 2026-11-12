@@ -19,3 +19,8 @@ HALO_EXCHANGE_MODE: decomposition.HaloExchangeMode = decomposition.HaloExchangeM
     os.environ.get("ICON4PY_HALO_EXCHANGE_MODE", decomposition.HaloExchangeMode.INNER.value).lower()
 )
 """Halo exchange mode of the diffusion and solve_nonhydro granules: 'inner', 'inner_wide' or 'entry'."""
+
+EXCHANGE_CARRIED_INPUTS_AT_EVERY_SUBSTEP: bool = env.flag_to_bool(
+    "ICON4PY_EXCHANGE_CARRIED_INPUTS_AT_EVERY_SUBSTEP", False
+)
+"""In halo exchange mode 'entry', exchange the fields of the first substep's entry exchange at every substep."""

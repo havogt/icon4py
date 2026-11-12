@@ -437,6 +437,25 @@ def solve_nh_run(  # noqa: PLR0917 [too-many-positional-arguments]
     # adjust for Fortran indexes
     idyn_timestep = idyn_timestep - 1
 
+    if (
+        wrapper_config.HALO_EXCHANGE_MODE == decomposition.HaloExchangeMode.ENTRY
+        and wrapper_config.EXCHANGE_CARRIED_INPUTS_AT_EVERY_SUBSTEP
+        and idyn_timestep > 0
+    ):
+        # The entry exchange of the first substep only reaches later substeps when the caller
+        # passes the same buffers again.
+        edge_fields = [ddt_vn_phy]
+        cell_fields = [ddt_exner_phy, exner_pr]
+        if grid_wrapper.grid_state.grid.limited_area:
+            edge_fields.append(grf_tend_vn)
+            cell_fields.extend((grf_tend_rho, grf_tend_thv, grf_tend_w))
+        if is_iau_active:
+            edge_fields.append(vn_incr)
+            cell_fields.extend((rho_incr, exner_incr))
+        exchange = grid_wrapper.grid_state.exchange_runtime
+        exchange.exchange(dims.EdgeDim, *edge_fields, stream=decomposition.DEFAULT_STREAM)
+        exchange.exchange(dims.CellDim, *cell_fields, stream=decomposition.DEFAULT_STREAM)
+
     granule.solve_nh.time_step(
         diagnostic_state_nh=diagnostic_state_nh,
         prognostic_states=prognostic_states,
