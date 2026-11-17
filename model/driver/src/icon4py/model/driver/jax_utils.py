@@ -33,10 +33,18 @@ def initialize_distributed(comm: Any) -> None:
     """
     Join every rank of the MPI communicator `comm` into one multi-process JAX runtime.
 
-    Must run before JAX creates any array. The collectives between the CPU devices of the
-    processes go through gloo.
+    Must run before JAX creates any array: a caller that builds JAX state before `run_driver`
+    (a `surface_fn`'s static fields, say) calls it first, and the driver's own call is then a no-op.
+    The collectives between the CPU devices of the processes go through gloo.
     """
     jax = import_jax()
+    if jax.distributed.is_initialized():
+        if jax.process_count() != comm.size:
+            raise ValueError(
+                f"JAX is initialised over {jax.process_count()} processes, the communicator has "
+                f"{comm.size} ranks."
+            )
+        return
     jax.config.update("jax_cpu_collectives_implementation", "gloo")
     address = None
     if comm.rank == 0:
