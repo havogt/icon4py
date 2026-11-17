@@ -13,6 +13,7 @@ import logging
 import pathlib
 import types
 from collections.abc import Callable
+from typing import Any
 
 import gt4py.next as gtx
 from gt4py.next import config as gtx_config
@@ -723,6 +724,8 @@ def initialize_driver(
     jax_spmd: bool = False,
     jax_spmd_transport: driver_utils.SpmdTransport = driver_utils.SpmdTransport.ALL_TO_ALL,
     cell_topography: data_alloc.NDArray | None = None,
+    jax_surface_fn: Callable[..., Any] | None = None,
+    jax_surface_static: Any = None,
 ) -> Icon4pyDriver:
     """
     Set up the driver.
@@ -813,6 +816,8 @@ def initialize_driver(
             jit_time_step=jax_jit_time_step or jax_spmd,
             layout=layout,
             spmd_transport=jax_spmd_transport,
+            surface_fn=jax_surface_fn,
+            surface_static=jax_surface_static,
             global_granules=driver_utils.initialize_global_granules(
                 config=config,
                 grid=grid_manager.grid,
@@ -984,6 +989,8 @@ def run_driver(
     jax_jit_time_step: bool = False,
     jax_spmd: bool = False,
     jax_spmd_transport: driver_utils.SpmdTransport = driver_utils.SpmdTransport.ALL_TO_ALL,
+    jax_surface_fn: Callable[..., Any] | None = None,
+    jax_surface_static: Any = None,
     on_step_end: Callable[[int, prognostics.PrognosticState], None] | None = None,
 ) -> tuple[driver_states.DriverStates, Icon4pyDriver]:
     if jax_spmd and not process_props.is_single_rank():
@@ -1000,6 +1007,8 @@ def run_driver(
         jax_jit_time_step=jax_jit_time_step,
         jax_spmd=jax_spmd,
         jax_spmd_transport=jax_spmd_transport,
+        jax_surface_fn=jax_surface_fn,
+        jax_surface_static=jax_surface_static,
     )
     allocator = model_backends.get_allocator(backend)
     ds = initialize_driver_states(
