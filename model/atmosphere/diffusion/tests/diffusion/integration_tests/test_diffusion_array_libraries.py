@@ -180,31 +180,31 @@ def diffusion_inputs(
     }
 
 
-def make_granule(inputs: dict[str, Any], xp: Any) -> diffusion.Diffusion:
+def granule_arguments(inputs: dict[str, Any], xp: Any) -> dict[str, Any]:
     grid = inputs["grid"]
     if xp is not np:
         grid = dataclasses.replace(
             grid, connectivities={k: to_array_ns(v, xp) for k, v in grid.connectivities.items()}
         )
     config = inputs["config"]
-    return diffusion.Diffusion(
-        grid=grid,
-        config=config,
-        params=diffusion.DiffusionParams(config),
-        vertical_grid=v_grid.VerticalGrid(
+    return {
+        "grid": grid,
+        "config": config,
+        "params": diffusion.DiffusionParams(config),
+        "vertical_grid": v_grid.VerticalGrid(
             config=inputs["vertical_config"],
             vct_a=to_array_ns(inputs["vct_a"], xp),
             vct_b=to_array_ns(inputs["vct_b"], xp),
         ),
-        metric_state=to_array_ns(inputs["metric_state"], xp),
-        interpolation_state=to_array_ns(inputs["interpolation_state"], xp),
-        edge_params=to_array_ns(inputs["edge_params"], xp),
-        cell_params=to_array_ns(inputs["cell_params"], xp),
-        backend=None,
-        exchange=decomp_defs.SingleNodeExchange(),
-        ndyn_substeps=5,
-        max_nudging_coefficient=0.375,
-    )
+        "metric_state": to_array_ns(inputs["metric_state"], xp),
+        "interpolation_state": to_array_ns(inputs["interpolation_state"], xp),
+        "edge_params": to_array_ns(inputs["edge_params"], xp),
+        "cell_params": to_array_ns(inputs["cell_params"], xp),
+        "backend": None,
+        "exchange": decomp_defs.SingleNodeExchange(),
+        "ndyn_substeps": 5,
+        "max_nudging_coefficient": 0.375,
+    }
 
 
 _OUTPUTS = ("vn", "w", "theta_v", "exner", "div_ic", "hdef_ic", "dwdx", "dwdy")
@@ -235,6 +235,10 @@ def _array_ns(execution: str) -> Any:
     return jnp
 
 
+def _fields(state: Any) -> dict[str, Any]:
+    return {f.name: getattr(state, f.name) for f in dataclasses.fields(state)}
+
+
 def run(
     inputs: dict[str, Any],
     execution: str,
@@ -247,7 +251,8 @@ def run(
     monkeypatch.setattr(diffusion.model_backends, "get_allocator", lambda backend: xp)
     diagnostic_state = to_array_ns(inputs["diagnostic_state"], xp)
     prognostic_state = to_array_ns(inputs["prognostic_state"], xp)
-    granule = make_granule(inputs, xp)
+    arguments = granule_arguments(inputs, xp)
+    granule = diffusion.Diffusion(**arguments)
 
     def step(diagnostic_state, prognostic_state):
         granule.run(
@@ -267,7 +272,44 @@ def run(
     elif execution == "jax_jit":
         import jax  # noqa: PLC0415 [import-outside-top-level]
 
-        step = jax.jit(step)
+        offset_provider = arguments["grid"].connectivities
+        concrete_offset_provider = dict(offset_provider)
+        scratch_fields = {
+            name: value for name, value in vars(granule).items() if isinstance(value, gtx.Field)
+        }
+
+        def jittable_step(connectivities, diagnostic_fields, prognostic_fields):
+            # The programs bound by setup_program share the grid's offset provider dict; a
+            # connectivity closed over by a jax trace is not supported (gt4py ADR 0029), so the
+            # traced ones replace them during the trace. The granule's scratch fields get traced
+            # buffers, which must not outlive the trace.
+            concrete_buffers = {name: field.ndarray for name, field in scratch_fields.items()}
+            offset_provider.update(connectivities)
+            try:
+                diagnostic_state = diffusion_states.DiffusionDiagnosticState(**diagnostic_fields)
+                prognostic_state = prognostics.PrognosticState(**prognostic_fields)
+                granule.run(
+                    diagnostic_state=diagnostic_state,
+                    prognostic_state=prognostic_state,
+                    dtime=10.0,
+                    initial_run=initial_run,
+                )
+            finally:
+                offset_provider.update(concrete_offset_provider)
+                for name, field in scratch_fields.items():
+                    object.__setattr__(field, "_ndarray", concrete_buffers[name])
+            return _fields(diagnostic_state), _fields(prognostic_state)
+
+        jitted = jax.jit(jittable_step)
+
+        def step(diagnostic_state, prognostic_state):
+            diagnostic_fields, prognostic_fields = jitted(
+                concrete_offset_provider, _fields(diagnostic_state), _fields(prognostic_state)
+            )
+            return (
+                diffusion_states.DiffusionDiagnosticState(**diagnostic_fields),
+                prognostics.PrognosticState(**prognostic_fields),
+            )
 
     for _ in range(steps):
         diagnostic_state, prognostic_state = step(diagnostic_state, prognostic_state)
