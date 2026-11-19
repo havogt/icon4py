@@ -12,6 +12,7 @@ from typing import Any
 
 import dace
 import gt4py.next as gtx
+import numpy as np
 import gt4py.next.typing as gtx_typing
 from gt4py.next import backend as gtx_backend
 from gt4py.next.program_processors.runners.dace import transformations as gtx_transformations
@@ -256,10 +257,10 @@ def setup_program(
             offset_provider=offset_provider,
         )
 
-    return functools.partial(
-        static_args_program,
-        **constant_args,
-        **horizontal_sizes,
-        **vertical_sizes,
-        offset_provider=offset_provider,
-    )
+    bound_args = {**constant_args, **horizontal_sizes, **vertical_sizes}
+    if backend is None:
+        # torch.compile cannot pass NumPy scalars to an embedded program
+        bound_args = {
+            k: v.item() if isinstance(v, np.generic) else v for k, v in bound_args.items()
+        }
+    return functools.partial(static_args_program, **bound_args, offset_provider=offset_provider)

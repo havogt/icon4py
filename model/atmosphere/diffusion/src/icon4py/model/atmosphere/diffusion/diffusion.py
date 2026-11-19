@@ -647,6 +647,7 @@ class Diffusion:
             self.smag_limit,
             self.enh_smag_fac,
         )
+        self._init_smag_values_for_run(embedded=backend is None)
 
         setup_program(
             backend=backend,
@@ -741,36 +742,32 @@ class Diffusion:
 
         self._horizontal_start_index_w_diffusion = _get_start_index_for_w_diffusion()
 
-    def _smag_values_for_run(
-        self, initial_run: bool
-    ) -> tuple[
-        gtx.Field[gtx.Dims[dims.KDim], wpfloat],
-        gtx.Field[gtx.Dims[dims.KDim], wpfloat],
-        vpfloat,
-    ]:
-        """Return the (diff_multfac_vn, smag_limit, smag_offset) values for a run.
+    def _init_smag_values_for_run(self, embedded: bool) -> None:
+        """
+        Set the (diff_multfac_vn, smag_limit, smag_offset) values for a run, by `initial_run`.
 
         The initial run uses special values, see `run`.
         """
-        if initial_run:
-            diff_multfac_vn = data_alloc.zero_field(
-                self._grid, dims.KDim, dtype=ta.wpfloat, allocator=self._allocator
-            )
-            smag_limit = data_alloc.zero_field(
-                self._grid, dims.KDim, dtype=ta.wpfloat, allocator=self._allocator
-            )
-            self.setup_fields_for_initial_step(
-                self._params.K4,
-                self.config.hdiff_efdt_ratio,
-                diff_multfac_vn,
-                smag_limit,
-            )
-            smag_offset = vpfloat(0.0)
-        else:
-            diff_multfac_vn = self.diff_multfac_vn
-            smag_limit = self.smag_limit
-            smag_offset = self.smag_offset
-        return diff_multfac_vn, smag_limit, smag_offset
+        diff_multfac_vn_initial = data_alloc.zero_field(
+            self._grid, dims.KDim, dtype=ta.wpfloat, allocator=self._allocator
+        )
+        smag_limit_initial = data_alloc.zero_field(
+            self._grid, dims.KDim, dtype=ta.wpfloat, allocator=self._allocator
+        )
+        self.setup_fields_for_initial_step(
+            self._params.K4,
+            self.config.hdiff_efdt_ratio,
+            diff_multfac_vn_initial,
+            smag_limit_initial,
+        )
+        smag_offset = {False: self.smag_offset, True: vpfloat(0.0)}
+        if embedded:
+            # torch.compile cannot pass NumPy scalars to an embedded program
+            smag_offset = {k: v.item() for k, v in smag_offset.items()}
+        self._smag_values_for_run = {
+            False: (self.diff_multfac_vn, self.smag_limit, smag_offset[False]),
+            True: (diff_multfac_vn_initial, smag_limit_initial, smag_offset[True]),
+        }
 
     def run(
         self,
@@ -789,7 +786,7 @@ class Diffusion:
 
         The initial run uses special values for diff_multfac_vn, smag_limit and smag_offset.
         """
-        diff_multfac_vn, smag_limit, smag_offset = self._smag_values_for_run(initial_run)
+        diff_multfac_vn, smag_limit, smag_offset = self._smag_values_for_run[initial_run]
 
         self.scale_k(self.enh_smag_fac, dtime, self.diff_multfac_smag)
 
