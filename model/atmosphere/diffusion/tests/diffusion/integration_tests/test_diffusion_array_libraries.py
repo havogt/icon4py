@@ -225,7 +225,7 @@ def outputs(
 
 
 def _array_ns(execution: str) -> Any:
-    if execution == "numpy":
+    if execution in ("numpy", "gtfn_cpu"):
         return np
     if execution.startswith("torch"):
         return pytest.importorskip("torch")
@@ -248,11 +248,16 @@ def run(
     steps: int = 2,
 ) -> dict[str, np.ndarray]:
     xp = _array_ns(execution)
-    monkeypatch.setattr(diffusion.model_backends, "get_allocator", lambda backend: xp)
     diagnostic_state = to_array_ns(inputs["diagnostic_state"], xp)
     prognostic_state = to_array_ns(inputs["prognostic_state"], xp)
     arguments = granule_arguments(inputs, xp)
+    if execution == "gtfn_cpu":
+        arguments["backend"] = model_backends.BACKENDS["gtfn_cpu"]
+    else:
+        monkeypatch.setattr(diffusion.model_backends, "get_allocator", lambda backend: xp)
     granule = diffusion.Diffusion(**arguments)
+    program = granule.apply_diffusion_to_prognostic_fields.func
+    assert (program.backend is None) == (execution != "gtfn_cpu"), program.backend
 
     def step(diagnostic_state, prognostic_state):
         granule.run(
@@ -344,4 +349,13 @@ def test_diffusion_array_library(
     for name in ("vn", "w", "theta_v"):
         assert not np.array_equal(reference[name], initial[name]), name
     result = run(diffusion_inputs, execution, monkeypatch, initial_run=initial_run)
+    assert all(r <= 1e-12 for r in compare(result, reference).values())
+
+
+@pytest.mark.parametrize("initial_run", [False, True], ids=["regular", "initial"])
+def test_diffusion_numpy_against_gtfn(
+    diffusion_inputs: dict[str, Any], monkeypatch: pytest.MonkeyPatch, initial_run: bool
+) -> None:
+    reference = run(diffusion_inputs, "gtfn_cpu", monkeypatch, initial_run=initial_run)
+    result = run(diffusion_inputs, "numpy", monkeypatch, initial_run=initial_run)
     assert all(r <= 1e-12 for r in compare(result, reference).values())

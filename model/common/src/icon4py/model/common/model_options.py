@@ -12,8 +12,8 @@ from typing import Any
 
 import dace
 import gt4py.next as gtx
-import numpy as np
 import gt4py.next.typing as gtx_typing
+import numpy as np
 from gt4py.next import backend as gtx_backend
 from gt4py.next.program_processors.runners.dace import transformations as gtx_transformations
 

@@ -763,7 +763,7 @@ class Diffusion:
         smag_offset = {False: self.smag_offset, True: vpfloat(0.0)}
         if embedded:
             # torch.compile cannot pass NumPy scalars to an embedded program
-            smag_offset = {k: v.item() for k, v in smag_offset.items()}
+            smag_offset = {k: float(v) for k, v in smag_offset.items()}
         self._smag_values_for_run = {
             False: (self.diff_multfac_vn, self.smag_limit, smag_offset[False]),
             True: (diff_multfac_vn_initial, smag_limit_initial, smag_offset[True]),
