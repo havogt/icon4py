@@ -32,8 +32,6 @@ from icon4py.model.common.physics.thermodynamics import compute_tendencies
 
 
 if TYPE_CHECKING:
-    import gt4py.next.typing as gtx_typing
-
     from icon4py.model.common.grid import icon as icon_grid
     from icon4py.model.common.states import model
 
@@ -66,7 +64,7 @@ class MuphysComponent:
         grid: icon_grid.IconGrid,
         dtime: time.RelativeTime,
         qnc: float,
-        backend: gtx_typing.Backend | None = None,
+        backend: model_backends.BackendLike = None,
         *,
         step: Callable[..., Any] | None = None,
     ) -> None:
@@ -228,7 +226,7 @@ class MuphysComponent:
         driver never copies a diagnostic out of our results.
 
         ``PhysicsDriver`` calls this once per process while it is being built,
-        passing the buffers its ``DiagnosticsStore`` owns. If nobody calls it the
+        passing the buffers its ``PhysicsState`` owns. If nobody calls it the
         component allocates its own on the first step, which is what lets it run
         on its own in the granule datatests.
         """
