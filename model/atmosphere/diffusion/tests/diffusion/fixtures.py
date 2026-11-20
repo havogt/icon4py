@@ -23,6 +23,7 @@ from icon4py.model.testing.fixtures.datatest import (
     download_ser_data,
     experiment,
     experiment_description,
+    granule_run,
     grid_savepoint,
     icon_grid,
     interpolation_savepoint,

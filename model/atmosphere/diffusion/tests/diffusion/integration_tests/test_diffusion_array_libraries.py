@@ -31,6 +31,7 @@ from icon4py.model.common.interpolation import interpolation_attributes, interpo
 from icon4py.model.common.metrics import metrics_attributes, metrics_factory
 from icon4py.model.common.states import prognostic_state as prognostics
 from icon4py.model.common.utils import data_allocation as data_alloc
+from icon4py.model.testing import compiled_run
 from icon4py.model.testing.fixtures.benchmark import (
     geometry_field_source,
     interpolation_field_source,
@@ -38,34 +39,6 @@ from icon4py.model.testing.fixtures.benchmark import (
 )
 from icon4py.model.testing.fixtures.datatest import backend_like
 from icon4py.model.testing.fixtures.stencil_tests import grid_manager
-
-
-def to_array_ns(obj: Any, xp: Any) -> Any:
-    if isinstance(obj, gtx_common.Connectivity):
-        return gtx.as_connectivity(
-            obj.domain,
-            obj.codomain,
-            xp.asarray(obj.asnumpy()),
-            skip_value=obj.skip_value,
-            allocator=xp,
-        )
-    if isinstance(obj, gtx.Field):
-        return gtx.as_field(obj.domain, xp.asarray(obj.asnumpy()), allocator=xp)
-    if isinstance(obj, tuple):
-        converted = [to_array_ns(x, xp) for x in obj]
-        return type(obj)(*converted) if hasattr(obj, "_fields") else tuple(converted)
-    if isinstance(obj, dict):
-        return {k: to_array_ns(v, xp) for k, v in obj.items()}
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return dataclasses.replace(
-            obj,
-            **{
-                f.name: to_array_ns(getattr(obj, f.name), xp)
-                for f in dataclasses.fields(obj)
-                if f.init
-            },
-        )
-    return obj
 
 
 @pytest.fixture
@@ -180,12 +153,9 @@ def diffusion_inputs(
     }
 
 
-def granule_arguments(inputs: dict[str, Any], xp: Any) -> dict[str, Any]:
-    grid = inputs["grid"]
-    if xp is not np:
-        grid = dataclasses.replace(
-            grid, connectivities={k: to_array_ns(v, xp) for k, v in grid.connectivities.items()}
-        )
+def granule_arguments(inputs: dict[str, Any], backend: Any) -> dict[str, Any]:
+    xp = backend if isinstance(backend, model_backends.EmbeddedBackend) else np
+    grid = inputs["grid"] if xp is np else compiled_run.with_connectivities_on(inputs["grid"], xp)
     config = inputs["config"]
     return {
         "grid": grid,
@@ -193,14 +163,14 @@ def granule_arguments(inputs: dict[str, Any], xp: Any) -> dict[str, Any]:
         "params": diffusion.DiffusionParams(config),
         "vertical_grid": v_grid.VerticalGrid(
             config=inputs["vertical_config"],
-            vct_a=to_array_ns(inputs["vct_a"], xp),
-            vct_b=to_array_ns(inputs["vct_b"], xp),
+            vct_a=compiled_run.to_array_ns(inputs["vct_a"], xp),
+            vct_b=compiled_run.to_array_ns(inputs["vct_b"], xp),
         ),
-        "metric_state": to_array_ns(inputs["metric_state"], xp),
-        "interpolation_state": to_array_ns(inputs["interpolation_state"], xp),
-        "edge_params": to_array_ns(inputs["edge_params"], xp),
-        "cell_params": to_array_ns(inputs["cell_params"], xp),
-        "backend": None,
+        "metric_state": compiled_run.to_array_ns(inputs["metric_state"], xp),
+        "interpolation_state": compiled_run.to_array_ns(inputs["interpolation_state"], xp),
+        "edge_params": compiled_run.to_array_ns(inputs["edge_params"], xp),
+        "cell_params": compiled_run.to_array_ns(inputs["cell_params"], xp),
+        "backend": backend,
         "exchange": decomp_defs.SingleNodeExchange(),
         "ndyn_substeps": 5,
         "max_nudging_coefficient": 0.375,
@@ -224,106 +194,41 @@ def outputs(
     }
 
 
-def _array_ns(execution: str) -> Any:
-    if execution in ("numpy", "gtfn_cpu"):
-        return np
-    if execution.startswith("torch"):
-        return pytest.importorskip("torch")
-    pytest.importorskip("jax")
-    import jax.numpy as jnp  # noqa: PLC0415 [import-outside-top-level]
-
-    return jnp
-
-
-def _fields(state: Any) -> dict[str, Any]:
-    return {f.name: getattr(state, f.name) for f in dataclasses.fields(state)}
+_EXECUTIONS: dict[str, tuple[str, bool]] = {
+    "numpy": ("embedded", False),
+    "gtfn_cpu": ("gtfn_cpu", False),
+    "torch": ("embedded_torch", False),
+    "torch_compile": ("embedded_torch", True),
+    "jax": ("embedded_jax", False),
+    "jax_jit": ("embedded_jax", True),
+}
 
 
 def run(
-    inputs: dict[str, Any],
-    execution: str,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    initial_run: bool = False,
-    steps: int = 2,
+    inputs: dict[str, Any], execution: str, *, initial_run: bool = False, steps: int = 2
 ) -> dict[str, np.ndarray]:
-    xp = _array_ns(execution)
-    diagnostic_state = to_array_ns(inputs["diagnostic_state"], xp)
-    prognostic_state = to_array_ns(inputs["prognostic_state"], xp)
-    arguments = granule_arguments(inputs, xp)
-    if execution == "gtfn_cpu":
-        arguments["backend"] = model_backends.BACKENDS["gtfn_cpu"]
-    else:
-        monkeypatch.setattr(diffusion.model_backends, "get_allocator", lambda backend: xp)
-    granule = diffusion.Diffusion(**arguments)
+    backend_name, compiled = _EXECUTIONS[execution]
+    pytest.importorskip(
+        {"embedded_torch": "torch", "embedded_jax": "jax"}.get(backend_name, "numpy")
+    )
+    backend = model_backends.BACKENDS[backend_name]
+    xp = backend if isinstance(backend, model_backends.EmbeddedBackend) else np
+    diagnostic_state = compiled_run.to_array_ns(inputs["diagnostic_state"], xp)
+    prognostic_state = compiled_run.to_array_ns(inputs["prognostic_state"], xp)
+    granule = diffusion.Diffusion(**granule_arguments(inputs, backend))
     program = granule.apply_diffusion_to_prognostic_fields.func
     assert (program.backend is None) == (execution != "gtfn_cpu"), program.backend
-
-    def step(diagnostic_state, prognostic_state):
-        granule.run(
+    step = compiled_run.compiled_run(granule, backend) if compiled else granule.run
+    for _ in range(steps):
+        step(
             diagnostic_state=diagnostic_state,
             prognostic_state=prognostic_state,
             dtime=10.0,
             initial_run=initial_run,
         )
-        return diagnostic_state, prognostic_state
-
-    if execution == "torch_compile":
-        torch = xp
-        monkeypatch.setattr(
-            torch._dynamo.config, "ignore_logging_functions", {logging.Logger.debug}
-        )
-        step = torch.compile(step, fullgraph=True)
-    elif execution == "jax_jit":
-        import jax  # noqa: PLC0415 [import-outside-top-level]
-
-        offset_provider = arguments["grid"].connectivities
-        concrete_offset_provider = dict(offset_provider)
-        scratch_fields = {
-            name: value for name, value in vars(granule).items() if isinstance(value, gtx.Field)
-        }
-
-        def jittable_step(connectivities, diagnostic_fields, prognostic_fields):
-            # The programs bound by setup_program share the grid's offset provider dict; a
-            # connectivity closed over by a jax trace is not supported (gt4py ADR 0029), so the
-            # traced ones replace them during the trace. The granule's scratch fields get traced
-            # buffers, which must not outlive the trace.
-            concrete_buffers = {name: field.ndarray for name, field in scratch_fields.items()}
-            offset_provider.update(connectivities)
-            try:
-                diagnostic_state = diffusion_states.DiffusionDiagnosticState(**diagnostic_fields)
-                prognostic_state = prognostics.PrognosticState(**prognostic_fields)
-                granule.run(
-                    diagnostic_state=diagnostic_state,
-                    prognostic_state=prognostic_state,
-                    dtime=10.0,
-                    initial_run=initial_run,
-                )
-            finally:
-                offset_provider.update(concrete_offset_provider)
-                for name, field in scratch_fields.items():
-                    object.__setattr__(field, "_ndarray", concrete_buffers[name])
-            return _fields(diagnostic_state), _fields(prognostic_state)
-
-        jitted = jax.jit(jittable_step)
-
-        def step(diagnostic_state, prognostic_state):
-            diagnostic_fields, prognostic_fields = jitted(
-                concrete_offset_provider, _fields(diagnostic_state), _fields(prognostic_state)
-            )
-            return (
-                diffusion_states.DiffusionDiagnosticState(**diagnostic_fields),
-                prognostics.PrognosticState(**prognostic_fields),
-            )
-
-    for _ in range(steps):
-        diagnostic_state, prognostic_state = step(diagnostic_state, prognostic_state)
+    array_type = type(xp.asarray(np.zeros(1)))
     for name in ("vn", "w", "theta_v", "exner"):
-        ndarray = getattr(prognostic_state, name).ndarray
-        assert (
-            data_alloc.array_namespace(ndarray).__name__.split(".")[-1]
-            == xp.__name__.split(".")[-1]
-        ), name
+        assert isinstance(getattr(prognostic_state, name).ndarray, array_type), name
     return outputs(diagnostic_state, prognostic_state)
 
 
@@ -340,22 +245,19 @@ def compare(result: dict[str, np.ndarray], reference: dict[str, np.ndarray]) -> 
 @pytest.mark.parametrize("execution", ["torch", "torch_compile", "jax", "jax_jit"])
 def test_diffusion_array_library(
     diffusion_inputs: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
     execution: str,
     initial_run: bool,
 ) -> None:
-    reference = run(diffusion_inputs, "numpy", monkeypatch, initial_run=initial_run)
+    reference = run(diffusion_inputs, "numpy", initial_run=initial_run)
     initial = outputs(diffusion_inputs["diagnostic_state"], diffusion_inputs["prognostic_state"])
     for name in ("vn", "w", "theta_v"):
         assert not np.array_equal(reference[name], initial[name]), name
-    result = run(diffusion_inputs, execution, monkeypatch, initial_run=initial_run)
+    result = run(diffusion_inputs, execution, initial_run=initial_run)
     assert all(r <= 1e-12 for r in compare(result, reference).values())
 
 
 @pytest.mark.parametrize("initial_run", [False, True], ids=["regular", "initial"])
-def test_diffusion_numpy_against_gtfn(
-    diffusion_inputs: dict[str, Any], monkeypatch: pytest.MonkeyPatch, initial_run: bool
-) -> None:
-    reference = run(diffusion_inputs, "gtfn_cpu", monkeypatch, initial_run=initial_run)
-    result = run(diffusion_inputs, "numpy", monkeypatch, initial_run=initial_run)
+def test_diffusion_numpy_against_gtfn(diffusion_inputs: dict[str, Any], initial_run: bool) -> None:
+    reference = run(diffusion_inputs, "gtfn_cpu", initial_run=initial_run)
+    result = run(diffusion_inputs, "numpy", initial_run=initial_run)
     assert all(r <= 1e-12 for r in compare(result, reference).values())

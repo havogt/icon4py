@@ -647,7 +647,7 @@ class Diffusion:
             self.smag_limit,
             self.enh_smag_fac,
         )
-        self._init_smag_values_for_run(embedded=backend is None)
+        self._init_smag_values_for_run(embedded=model_backends.as_gt4py_backend(backend) is None)
 
         setup_program(
             backend=backend,

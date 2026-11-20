@@ -823,6 +823,8 @@ def get_backend_from_name(
             f"Available backends are {', '.join([*model_backends.BACKENDS.keys()])}"
         )
     backend = model_backends.BACKENDS[backend_name]
+    if isinstance(backend, model_backends.EmbeddedBackend):
+        raise ValueError(f"The driver does not run on '{backend_name}'.")
     log.info(f"Backend name used for the model: {backend_name}")
     log.info(f"BackendLike derived from the backend name: {backend}")
     return backend

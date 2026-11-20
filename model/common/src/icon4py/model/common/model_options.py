@@ -173,6 +173,7 @@ def customize_backend(
     | None,
     backend_config: backend_cfg.BackendConfig | None = None,
 ) -> gtx_typing.Backend | None:
+    backend = model_backends.as_gt4py_backend(backend)
     backend_config = backend_config or backend_cfg.backend_config_from_env()
     program_name = program.__name__ if program is not None else ""
     if backend is None or isinstance(backend, gtx_backend.Backend):

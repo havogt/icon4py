@@ -53,7 +53,7 @@ import gt4py.next.typing as gtx_typing
 import numpy as np
 from gt4py.next import common as gtx_common
 
-from icon4py.model.common import dimension as dims
+from icon4py.model.common import dimension as dims, model_backends
 from icon4py.model.common.decomposition import definitions as decomposition
 from icon4py.model.common.grid import horizontal as h_grid, icon as icon_grid, vertical as v_grid
 from icon4py.model.common.states import model, utils as state_utils
@@ -580,7 +580,9 @@ class ProgramFieldProvider(FieldProvider, NeedsExchange):
         dims = self._domain_args(grid)
         offset_providers = self._get_offset_providers(grid.grid)
         deps.update(dims)
-        self._func.with_backend(backend)(**deps, offset_provider=offset_providers)
+        self._func.with_backend(model_backends.as_gt4py_backend(backend))(
+            **deps, offset_provider=offset_providers
+        )
 
     @property
     def fields(self) -> Mapping[str, state_utils.FieldType]:

@@ -18,7 +18,7 @@ import numpy.testing as np_testing
 import numpy.typing as npt
 import pytest
 
-from icon4py.model.common import model_options
+from icon4py.model.common import model_backends, model_options
 from icon4py.model.common.constants import DP_EPS, VP_EPS
 from icon4py.model.common.type_alias import anyfloat, precision, vpfloat
 from icon4py.model.testing import config
@@ -170,7 +170,7 @@ def get_backend_fixture_value(item: pytest.Item) -> gtx_typing.Backend | None:
 
 
 def is_embedded(backend: gtx_typing.Backend | None) -> bool:
-    return backend is None
+    return model_backends.as_gt4py_backend(backend) is None
 
 
 def is_roundtrip(backend: gtx_typing.Backend | None) -> bool:

@@ -7,6 +7,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 from __future__ import annotations
 
+import dataclasses
+import functools
+import importlib
+from types import ModuleType
 from typing import Any, Final, TypeAlias, TypeGuard
 
 import gt4py.next as gtx
@@ -24,7 +28,41 @@ CPU = DeviceType.CPU
 GPU = gtx.CUPY_DEVICE_TYPE
 
 type BackendDescriptor = dict[str, Any]
+
+
+@dataclasses.dataclass(frozen=True)
+class EmbeddedBackend:
+    """
+    Embedded execution on the arrays of `array_ns_name` (e.g. 'torch', 'jax.numpy').
+
+    It is an array namespace, which GT4Py takes as an allocator; for execution it stands for the
+    embedded backend, `None`, see `as_gt4py_backend`.
+    """
+
+    array_ns_name: str
+
+    @property
+    def name(self) -> str:
+        return f"embedded_{self.array_ns_name.split('.')[0]}"
+
+    @functools.cached_property
+    def array_ns(self) -> ModuleType:
+        return importlib.import_module(self.array_ns_name)
+
+    def __getattr__(self, attr: str) -> Any:
+        # dunders and the fields must not reach the namespace: copy and pickle look them up
+        # before the instance is initialized
+        if attr.startswith("__") or attr in ("array_ns_name", "array_ns"):
+            raise AttributeError(attr)
+        return getattr(self.array_ns, attr)
+
+
 type BackendLike = DeviceType | gtx_typing.Backend | BackendDescriptor | None
+
+
+def as_gt4py_backend(backend: Any) -> Any:
+    """`backend` for GT4Py's execution: `None` for an `EmbeddedBackend`."""
+    return None if isinstance(backend, EmbeddedBackend) else backend
 
 
 DEFAULT_BACKEND: Final = "embedded"
@@ -57,8 +95,8 @@ def is_gpu_backend(
 def get_allocator(
     backend: BackendLike,
 ) -> gtx_typing.Backend:
-    if isinstance(backend, gtx_backend.Backend):
-        return backend
+    if isinstance(backend, gtx_backend.Backend | EmbeddedBackend):
+        return backend  # type: ignore[return-value] # an EmbeddedBackend is an array namespace
     if backend is None:
         # TODO(havogt): currently the testing infrastructure doesn't allow to specify
         # embedded backend aka `None` for cupy, as there is no separation
@@ -139,8 +177,10 @@ def make_custom_dace_backend(
     )
 
 
-BACKENDS: dict[str, BackendLike] = {
+BACKENDS: dict[str, BackendLike | EmbeddedBackend] = {
     "embedded": None,
+    "embedded_torch": EmbeddedBackend("torch"),
+    "embedded_jax": EmbeddedBackend("jax.numpy"),
     "gtfn_cpu": {"backend_factory": make_custom_gtfn_backend, "device": CPU},
     "gtfn_gpu": {"backend_factory": make_custom_gtfn_backend, "device": GPU},
     "dace_cpu": {"backend_factory": make_custom_dace_backend, "device": CPU},
