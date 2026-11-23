@@ -16,6 +16,7 @@ the compiled program: one compilation per set of values.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -23,6 +24,7 @@ from typing import Any
 import gt4py.next as gtx
 import numpy as np
 from gt4py.next import common as gtx_common
+from gt4py.next.ffront import decorator as gtx_decorator
 
 from icon4py.model.common import model_backends
 
@@ -100,9 +102,53 @@ def compiled_run(granule: Any, backend: Any) -> Callable[..., None]:
     return run
 
 
-def _torch_compile(granule: Any, constants: dict[str, Any]) -> Callable[..., None]:
+_programs: dict[int, Callable[..., Any]] = {}
+
+
+@functools.cache
+def _nonstrict_program_call() -> Callable[..., tuple]:
     import torch  # type: ignore[import-not-found]  # noqa: PLC0415 [import-outside-top-level]
 
+    @torch.compiler.nonstrict_trace
+    def call(program_id: int, args: tuple, kwargs: dict[str, Any]) -> tuple:
+        _programs[program_id](*args, **kwargs)
+        # a `None` output is not supported by `nonstrict_trace`
+        return ()
+
+    return call
+
+
+class _NonstrictProgram:
+    """An embedded program bound by `setup_program`, called through `torch.compiler.nonstrict_trace`."""
+
+    def __init__(self, bound: functools.partial) -> None:
+        self._program = bound.func
+        self._args = bound.args
+        self._keywords = bound.keywords
+        _programs[id(self._program)] = self._program
+        self._call = _nonstrict_program_call()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> None:
+        # the bound fields and connectivities are arguments of the traced function: closed over by
+        # it, a connectivity is not supported (GT4Py ADR 0029)
+        self._call(id(self._program), (*self._args, *args), {**self._keywords, **kwargs})
+
+
+def _call_embedded_programs_nonstrictly(granule: Any) -> None:
+    # Dynamo cannot trace embedded GT4Py code, which has to run in a `nonstrict_trace` call
+    for name, value in vars(granule).items():
+        if (
+            isinstance(value, functools.partial)
+            and isinstance(value.func, gtx_decorator.Program)
+            and value.func.backend is None
+        ):
+            setattr(granule, name, _NonstrictProgram(value))
+
+
+def _torch_compile(granule: Any, constants: dict[str, Any]) -> Callable[..., None]:
+    import torch  # noqa: PLC0415 [import-outside-top-level]
+
+    _call_embedded_programs_nonstrictly(granule)
     # the granules log in `run`, which Dynamo cannot trace
     torch._dynamo.config.ignore_logging_functions.add(logging.Logger.debug)
     # GT4Py puts the domains in the pytree context, which takes no symbolic ints: a recompilation
