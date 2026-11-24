@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import pathlib
+import re
 import statistics
 import tarfile
 import time
@@ -175,3 +176,172 @@ def compare(
             "finite": bool(np.isfinite(a).all()),
         }
     return result
+
+
+def placement(tree: Any) -> dict[str, int]:
+    """Number of array leaves per device platform."""
+    counts: dict[str, int] = {}
+    for leaf in jax.tree_util.tree_leaves(tree):
+        if hasattr(leaf, "devices"):
+            for device in leaf.devices():
+                counts[device.platform] = counts.get(device.platform, 0) + 1
+    return counts
+
+
+_COMPUTATION = re.compile(r"^(?:ENTRY )?%?([\w.\-]+) .*\{$")
+_INSTRUCTION = re.compile(r"^\s*(?:ROOT )?%?([\w.\-]+) = .*?\s([a-z][a-z0-9\-]*)\((.*)$")
+_CALLED = re.compile(r"(?:calls|to_apply|body|condition|branch_computations)=\{?%?([\w.\-, %]+)\}?")
+
+
+def _hlo_ops(hlo: str) -> dict[str, dict[str, Any]]:
+    """Each instruction of an optimized HLO module: opcode, fusion kind, gather inside, in a while body."""
+    instructions: dict[str, dict[str, Any]] = {}
+    calls: dict[str, set[str]] = {}
+    bodies: set[str] = set()
+    computation = None
+    for line in hlo.splitlines():
+        if (m := _COMPUTATION.match(line)) and "=" not in line.split("{")[0]:
+            computation = m.group(1)
+            calls.setdefault(computation, set())
+            continue
+        if computation is None or not (m := _INSTRUCTION.match(line)):
+            continue
+        name, opcode, rest = m.groups()
+        called = {
+            c.strip().lstrip("%") for g in _CALLED.findall(rest) for c in g.split(",") if c.strip()
+        }
+        calls[computation] |= called
+        if opcode == "while" and (b := re.search(r"body=%?([\w.\-]+)", rest)):
+            bodies.add(b.group(1))
+        kind = re.search(r"kind=(k\w+)", rest)
+        instructions[name] = {
+            "computation": computation,
+            "opcode": opcode,
+            "kind": kind.group(1) if kind else "",
+            "called": called,
+        }
+
+    def reachable(roots: set[str]) -> set[str]:
+        seen, todo = set(), list(roots)
+        while todo:
+            c = todo.pop()
+            if c not in seen:
+                seen.add(c)
+                todo.extend(calls.get(c, ()))
+        return seen
+
+    gather_computations = {
+        i["computation"] for i in instructions.values() if i["opcode"] == "gather"
+    }
+    in_while = reachable(bodies)
+    for op in instructions.values():
+        op["gather"] = op["opcode"] == "gather" or bool(
+            reachable(op["called"]) & gather_computations
+        )
+        op["in_while"] = op["computation"] in in_while
+    return instructions
+
+
+def profile_steps(static: Any, state: Any, num_steps: int, log_dir: pathlib.Path) -> dict[str, Any]:
+    """
+    Device time per HLO op of `num_steps` jitted steps (after a warm-up step), from a
+    jax.profiler trace, keyed to the optimized HLO of the step.
+
+    `busy_ms_per_step` sums the ops on the device (control ops whose body is traced op by op,
+    while/conditional/call, are left out so nothing is counted twice); `wall_ms_per_step` is the
+    synchronised wall time of the profiled steps. Their difference is time the device waits.
+    """
+    import gzip  # noqa: PLC0415 [import-outside-top-level]
+    import json  # noqa: PLC0415 [import-outside-top-level]
+
+    step = jax.jit(jax_api.time_step)
+    state = jax.block_until_ready(step(static, state))
+    state = jax.block_until_ready(step(static, state))
+    ops = _hlo_ops(step.lower(static, state).compile().as_text())
+    with jax.profiler.trace(str(log_dir), create_perfetto_trace=True):
+        t0 = time.perf_counter()
+        for _ in range(num_steps):
+            state = jax.block_until_ready(step(static, state))
+        wall = time.perf_counter() - t0
+    trace_file = max(log_dir.rglob("perfetto_trace.json.gz"), key=lambda p: p.stat().st_mtime)
+    with gzip.open(trace_file) as f:
+        events = json.load(f)
+    events = events["traceEvents"] if isinstance(events, dict) else events
+    processes = {
+        e["pid"]: e["args"]["name"]
+        for e in events
+        if e.get("ph") == "M" and e.get("name") == "process_name"
+    }
+    threads = {
+        (e["pid"], e["tid"]): e["args"]["name"]
+        for e in events
+        if e.get("ph") == "M" and e.get("name") == "thread_name"
+    }
+    lines: dict[tuple[Any, Any], int] = {}
+    for e in events:
+        if e.get("ph") == "X":
+            lines[e["pid"], e["tid"]] = lines.get((e["pid"], e["tid"]), 0) + 1
+    per_op: dict[str, list[float]] = {}
+    unmatched = 0.0
+    for e in events:
+        if e.get("ph") != "X":
+            continue
+        name = (e.get("args") or {}).get("hlo_op") or (
+            e["name"]
+            if "XLA Ops" in threads.get((e["pid"], e["tid"]), "")
+            and "TPU" in processes.get(e["pid"], "")
+            else None
+        )
+        if name is None:
+            continue
+        if name not in ops:
+            unmatched += e["dur"]
+            continue
+        per_op.setdefault(name, []).append(e["dur"])
+    control = {"while", "conditional", "call"}
+    rows = []
+    for name, durations in per_op.items():
+        op = ops[name]
+        if op["opcode"] in control:
+            continue
+        rows.append(
+            {
+                "op": name,
+                "opcode": op["opcode"],
+                "kind": op["kind"],
+                "gather": op["gather"],
+                "in_while": op["in_while"],
+                "ms_per_step": sum(durations) / 1e3 / num_steps,
+                "calls_per_step": len(durations) / num_steps,
+            }
+        )
+    rows.sort(key=lambda r: -r["ms_per_step"])
+    busy = sum(r["ms_per_step"] for r in rows)
+
+    def share(predicate: Any) -> float:
+        return sum(r["ms_per_step"] for r in rows if predicate(r)) / busy if busy else float("nan")
+
+    return {
+        "steps": num_steps,
+        "trace_file": str(trace_file),
+        "wall_ms_per_step": 1e3 * wall / num_steps,
+        "busy_ms_per_step": busy,
+        "unmatched_ms_per_step": unmatched / 1e3 / num_steps,
+        "ops_traced": len(rows),
+        "launches_per_step": sum(r["calls_per_step"] for r in rows),
+        "share_gather": share(lambda r: r["gather"]),
+        "share_in_while": share(lambda r: r["in_while"]),
+        "share_gather_in_while": share(lambda r: r["gather"] and r["in_while"]),
+        "trace_lines": sorted(
+            (
+                {
+                    "process": processes.get(pid, str(pid)),
+                    "thread": threads.get((pid, tid), str(tid)),
+                    "events": n,
+                }
+                for (pid, tid), n in lines.items()
+            ),
+            key=lambda line: -line["events"],
+        )[:12],
+        "top": rows[:25],
+    }
