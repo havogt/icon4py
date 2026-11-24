@@ -26,6 +26,7 @@ from typing import Any
 
 import gt4py.next as gtx
 import numpy as np
+from gt4py._core import ndarray_utils as core_ndarray_utils
 from gt4py.next import backend as gtx_backend, common as gtx_common
 from gt4py.next.ffront import decorator as gtx_decorator
 
@@ -154,7 +155,7 @@ def compiled_run(granule: Any, backend: Any) -> Callable[..., None]:
     return run
 
 
-_programs: dict[int, Callable[..., Any]] = {}
+_programs: dict[int, gtx_decorator.Program] = {}
 
 
 @functools.cache
@@ -162,10 +163,29 @@ def _nonstrict_program_call() -> Callable[..., tuple]:
     import torch  # type: ignore[import-not-found]  # noqa: PLC0415 [import-outside-top-level]
 
     @torch.compiler.nonstrict_trace
-    def call(program_id: int, args: tuple, kwargs: dict[str, Any]) -> tuple:
-        _programs[program_id](*args, **kwargs)
+    def traced(program_id: int, args: tuple, kwargs: dict[str, Any]) -> tuple:
+        # the embedded runner, not `Program.__call__`: its argument check takes no 0-d tensors
+        # for scalars
+        _programs[program_id]._embedded_runner(*args, **kwargs)
         # a `None` output is not supported by `nonstrict_trace`
         return ()
+
+    def as_traced_argument(value: Any) -> Any:
+        # `nonstrict_trace` takes no NumPy scalars: a float of the region as a 0-d tensor, which
+        # embedded GT4Py takes as a scalar of its dtype; ints and bools stay Python, they can be
+        # domain bounds or conditions
+        if isinstance(value, float):
+            return torch.tensor(value, dtype=torch.float64)
+        # Dynamo holds a NumPy scalar of the region as an ndarray
+        if isinstance(value, np.floating) or isinstance(value, np.ndarray):  # noqa: SIM101 [duplicate-isinstance-call] # Dynamo cannot trace a union type
+            return torch.as_tensor(value)
+        return value
+
+    def call(program_id: int, args: tuple, kwargs: dict[str, Any]) -> tuple:
+        # the scalars are arguments of the program: a tree map would rebuild the connectivities
+        args = tuple(as_traced_argument(value) for value in args)
+        kwargs = {name: as_traced_argument(value) for name, value in kwargs.items()}
+        return traced(program_id, args, kwargs)
 
     return call
 
@@ -173,10 +193,13 @@ def _nonstrict_program_call() -> Callable[..., tuple]:
 class _NonstrictProgram:
     """An embedded program bound by `setup_program`, called through `torch.compiler.nonstrict_trace`."""
 
-    def __init__(self, bound: functools.partial) -> None:
-        self._program = bound.func
+    def __init__(self, bound: functools.partial[None]) -> None:
+        self._program: gtx_decorator.Program = bound.func  # type: ignore[assignment]  # checked by the caller
         self._args = bound.args
-        self._keywords = bound.keywords
+        # bound before the region: as Python scalars, constants of the region
+        self._keywords = {
+            k: v.item() if isinstance(v, np.generic) else v for k, v in bound.keywords.items()
+        }
         _programs[id(self._program)] = self._program
         self._call = _nonstrict_program_call()
 
@@ -197,10 +220,21 @@ def _call_embedded_programs_nonstrictly(granule: Any) -> None:
             setattr(granule, name, _NonstrictProgram(value))
 
 
+def _namespace_dtype_as_constant(torch: Any) -> None:
+    # A field allocated in the region (e.g. by a granule's `run`) looks up its dtype through
+    # NumPy, which Dynamo replaces by `torch._numpy`: the lookup misses. The dtype depends on the
+    # namespace and the scalar type only.
+    if not getattr(core_ndarray_utils.namespace_dtype, "_constant_for_dynamo", False):
+        constant = torch.compiler.assume_constant_result(core_ndarray_utils.namespace_dtype)
+        constant._constant_for_dynamo = True
+        core_ndarray_utils.namespace_dtype = constant
+
+
 def _torch_compile(granule: Any, template: _Template) -> Callable[[list[gtx.Field]], None]:
     import torch  # noqa: PLC0415 [import-outside-top-level]
 
     _call_embedded_programs_nonstrictly(granule)
+    _namespace_dtype_as_constant(torch)
     # the granules log in `run`, which Dynamo cannot trace
     torch._dynamo.config.ignore_logging_functions.add(logging.Logger.debug)
     # GT4Py puts the domains in the pytree context, which takes no symbolic ints: a recompilation
