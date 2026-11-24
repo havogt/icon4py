@@ -48,6 +48,7 @@ from icon4py.model.common.physics.thermodynamics.compute_tendencies import (
     _compute_virtual_temperature_tendency,
 )
 from icon4py.model.common.states.surface_flux_state import SurfaceFluxState
+from icon4py.model.common.type_alias import wpfloat
 
 
 _MOISTURE = ("qv", "qc", "qi", "qr", "qs", "qg")
@@ -169,7 +170,7 @@ def _surface_and_hydrostatic_pressure(
         _pressure_pass,
         range=(dims.KDim, 0, num_levels),
         forward=False,
-        init=(0.0, surface_pressure),
+        init=(wpfloat(0.0), surface_pressure),
     )(ddqz_z_full, virtual_temperature)
     pressure_ifc = concat_where(
         dims.KHalfDim < num_levels,

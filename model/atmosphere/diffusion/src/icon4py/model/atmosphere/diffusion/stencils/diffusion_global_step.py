@@ -34,7 +34,7 @@ def _diffusion_global_step(
     exner: fa.CellKField[wpfloat],
     diff_multfac_vn: fa.KField[wpfloat],
     smag_limit: fa.KField[vpfloat],
-    enh_smag_fac: fa.KField[float],
+    enh_smag_fac: fa.KField[wpfloat],
     diff_multfac_n2w: fa.KHalfField[wpfloat],
     rbf_coeff_1: gtx.Field[gtx.Dims[dims.VertexDim, dims.V2EDim], wpfloat],
     rbf_coeff_2: gtx.Field[gtx.Dims[dims.VertexDim, dims.V2EDim], wpfloat],

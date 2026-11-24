@@ -171,48 +171,52 @@ def _courant_number(
     z_mass = p_dtime * p_mflx_contra_v
 
     # below
-    z_mass_pos = z_mass > 0.0
+    z_mass_pos = z_mass > wpfloat(0.0)
     zm = z_mass
     gt_p0 = where(z_mass_pos & (k_half <= nlev - 1), zm >= m_b0, False)
-    zm = zm - where(gt_p0, m_b0, 0.0)
+    zm = zm - where(gt_p0, m_b0, wpfloat(0.0))
     gt_p1 = gt_p0 & where(z_mass_pos & (k_half <= nlev - 2), zm >= m_b1, False)
-    zm = zm - where(gt_p1, m_b1, 0.0)
+    zm = zm - where(gt_p1, m_b1, wpfloat(0.0))
     gt_p2 = gt_p1 & where(z_mass_pos & (k_half <= nlev - 3), zm >= m_b2, False)
-    zm = zm - where(gt_p2, m_b2, 0.0)
+    zm = zm - where(gt_p2, m_b2, wpfloat(0.0))
     gt_p3 = gt_p2 & where(z_mass_pos & (k_half <= nlev - 4), zm >= m_b3, False)
-    zm = zm - where(gt_p3, m_b3, 0.0)
+    zm = zm - where(gt_p3, m_b3, wpfloat(0.0))
     cfl_below = (
-        where(gt_p0, 1.0, 0.0)
-        + where(gt_p1, 1.0, 0.0)
-        + where(gt_p2, 1.0, 0.0)
-        + where(gt_p3, 1.0, 0.0)
+        where(gt_p0, wpfloat(1.0), wpfloat(0.0))
+        + where(gt_p1, wpfloat(1.0), wpfloat(0.0))
+        + where(gt_p2, wpfloat(1.0), wpfloat(0.0))
+        + where(gt_p3, wpfloat(1.0), wpfloat(0.0))
     )
     jks_below = where(gt_p3, m_b4, where(gt_p2, m_b3, where(gt_p1, m_b2, where(gt_p0, m_b1, m_b0))))
     # Only the boundary half levels, whose result is discarded, divide by the zero mass of the
     # cell beyond the column; the 0/0 there would make a gradient NaN.
-    frac_below = where(z_mass_pos, zm / where(jks_below == 0.0, 1.0, jks_below), 0.0)
-    cfl_below = cfl_below + where(frac_below < 1.0, frac_below, 1.0 - wp_eps)
+    frac_below = where(
+        z_mass_pos, zm / where(jks_below == wpfloat(0.0), wpfloat(1.0), jks_below), wpfloat(0.0)
+    )
+    cfl_below = cfl_below + where(frac_below < wpfloat(1.0), frac_below, wpfloat(1.0) - wp_eps)
 
     # above
-    z_mass_neg = z_mass <= 0.0
+    z_mass_neg = z_mass <= wpfloat(0.0)
     zm = z_mass
     gt_m0 = where(z_mass_neg & (k_half >= 2), abs(zm) >= m_a0, False)
-    zm = zm + where(gt_m0, m_a0, 0.0)
+    zm = zm + where(gt_m0, m_a0, wpfloat(0.0))
     gt_m1 = gt_m0 & where(z_mass_neg & (k_half >= 3), abs(zm) >= m_a1, False)
-    zm = zm + where(gt_m1, m_a1, 0.0)
+    zm = zm + where(gt_m1, m_a1, wpfloat(0.0))
     gt_m2 = gt_m1 & where(z_mass_neg & (k_half >= 4), abs(zm) >= m_a2, False)
-    zm = zm + where(gt_m2, m_a2, 0.0)
+    zm = zm + where(gt_m2, m_a2, wpfloat(0.0))
     gt_m3 = gt_m2 & where(z_mass_neg & (k_half >= 5), abs(zm) >= m_a3, False)
-    zm = zm + where(gt_m3, m_a3, 0.0)
+    zm = zm + where(gt_m3, m_a3, wpfloat(0.0))
     jks_above = where(gt_m3, m_a4, where(gt_m2, m_a3, where(gt_m1, m_a2, where(gt_m0, m_a1, m_a0))))
     cfl_above = -(
-        where(gt_m0, 1.0, 0.0)
-        + where(gt_m1, 1.0, 0.0)
-        + where(gt_m2, 1.0, 0.0)
-        + where(gt_m3, 1.0, 0.0)
+        where(gt_m0, wpfloat(1.0), wpfloat(0.0))
+        + where(gt_m1, wpfloat(1.0), wpfloat(0.0))
+        + where(gt_m2, wpfloat(1.0), wpfloat(0.0))
+        + where(gt_m3, wpfloat(1.0), wpfloat(0.0))
     )
-    frac_above = where(z_mass_neg, zm / where(jks_above == 0.0, 1.0, jks_above), 0.0)
-    cfl_above = cfl_above + where(abs(frac_above) < 1.0, frac_above, wp_eps - 1.0)
+    frac_above = where(
+        z_mass_neg, zm / where(jks_above == wpfloat(0.0), wpfloat(1.0), jks_above), wpfloat(0.0)
+    )
+    cfl_above = cfl_above + where(abs(frac_above) < wpfloat(1.0), frac_above, wp_eps - wpfloat(1.0))
 
     return concat_where(
         (dims.KHalfDim >= 1) & (dims.KHalfDim < num_levels), cfl_below + cfl_above, zero_half
@@ -231,35 +235,35 @@ def _upwind_cells(
     # The value of `f` in the cell js levels below (upward flow) or above (downward flow) the
     # face, as `_sum_neighbor_contributions` in `compute_ppm4gpu_fractional_flux`.
     below = where(
-        js == 0.0,
+        js == wpfloat(0.0),
         _below_0(f, zero_half, num_levels),
         where(
-            js == 1.0,
+            js == wpfloat(1.0),
             _below_1(f, zero_half, num_levels),
             where(
-                js == 2.0,
+                js == wpfloat(2.0),
                 _below_2(f, zero_half, num_levels),
                 where(
-                    js == 3.0,
+                    js == wpfloat(3.0),
                     _below_3(f, zero_half, num_levels),
-                    where(js == 4.0, _below_4(f, zero_half, num_levels), zero_half),
+                    where(js == wpfloat(4.0), _below_4(f, zero_half, num_levels), zero_half),
                 ),
             ),
         ),
     )
     above = where(
-        js == 0.0,
+        js == wpfloat(0.0),
         _above_0(f, zero_half),
         where(
-            js == 1.0,
+            js == wpfloat(1.0),
             _above_1(f, zero_half),
             where(
-                js == 2.0,
+                js == wpfloat(2.0),
                 _above_2(f, zero_half),
                 where(
-                    js == 3.0,
+                    js == wpfloat(3.0),
                     _above_3(f, zero_half),
-                    where(js == 4.0, _above_4(f, zero_half), zero_half),
+                    where(js == wpfloat(4.0), _above_4(f, zero_half), zero_half),
                 ),
             ),
         ),
@@ -279,18 +283,18 @@ def _upwind_cells_integer(
     # The sum of `f` over the js + 1 whole cells below (upward flow) or above (downward flow) the
     # face, as `_sum_neighbor_contributions_all` in `compute_ppm4gpu_integer_flux`.
     below = (
-        where(js >= 0.0, _below_0(f, zero_half, num_levels), zero_half)
-        + where(js >= 1.0, _below_1(f, zero_half, num_levels), zero_half)
-        + where(js >= 2.0, _below_2(f, zero_half, num_levels), zero_half)
-        + where(js >= 3.0, _below_3(f, zero_half, num_levels), zero_half)
-        + where(js >= 4.0, _below_4(f, zero_half, num_levels), zero_half)
+        where(js >= wpfloat(0.0), _below_0(f, zero_half, num_levels), zero_half)
+        + where(js >= wpfloat(1.0), _below_1(f, zero_half, num_levels), zero_half)
+        + where(js >= wpfloat(2.0), _below_2(f, zero_half, num_levels), zero_half)
+        + where(js >= wpfloat(3.0), _below_3(f, zero_half, num_levels), zero_half)
+        + where(js >= wpfloat(4.0), _below_4(f, zero_half, num_levels), zero_half)
     )
     above = (
-        where(js >= 0.0, _above_0(f, zero_half), zero_half)
-        + where(js >= 1.0, _above_1(f, zero_half), zero_half)
-        + where(js >= 2.0, _above_2(f, zero_half), zero_half)
-        + where(js >= 3.0, _above_3(f, zero_half), zero_half)
-        + where(js >= 4.0, _above_4(f, zero_half), zero_half)
+        where(js >= wpfloat(0.0), _above_0(f, zero_half), zero_half)
+        + where(js >= wpfloat(1.0), _above_1(f, zero_half), zero_half)
+        + where(js >= wpfloat(2.0), _above_2(f, zero_half), zero_half)
+        + where(js >= wpfloat(3.0), _above_3(f, zero_half), zero_half)
+        + where(js >= wpfloat(4.0), _above_4(f, zero_half), zero_half)
     )
     return where(upward, below, zero_half) + where(downward, above, zero_half)
 
@@ -327,8 +331,8 @@ def _ppm_vertical_flux(
         p_cc_below = concat_where(dims.KDim < elev, p_cc(dims.KDim + 1), p_cc)
         p_cc_min_last = minimum(p_cc(dims.KDim - 1), p_cc)
         p_cc_min = where(k == elev, p_cc_min_last, minimum(p_cc_min_last, p_cc_below))
-        slope_l = minimum(abs(slope), 2.0 * (p_cc - p_cc_min))
-        slope = where(slope >= 0.0, slope_l, -slope_l)
+        slope_l = minimum(abs(slope), wpfloat(2.0) * (p_cc - p_cc_min))
+        slope = where(slope >= wpfloat(0.0), slope_l, -slope_l)
     z_slope = concat_where(dims.KDim >= 1, slope, zero_full)
 
     quadratic = _compute_ppm_quadratic_face_values(p_cc=p_cc, p_cellhgt_mc_now=p_cellhgt_mc_now)
@@ -364,29 +368,35 @@ def _ppm_vertical_flux(
     # fractional flux, `compute_ppm4gpu_fractional_flux` with slev = 0
     js = floor(abs(z_cfl))
     z_cflfrac = abs(z_cfl) - js
-    up = z_cfl > 0.0
-    down = z_cfl < 0.0
-    wsign = where(up, 1.0, -1.0)
-    up_frac = up & (z_cflfrac != 0.0)
-    down_frac = down & (z_cflfrac != 0.0)
+    up = z_cfl > wpfloat(0.0)
+    down = z_cfl < wpfloat(0.0)
+    wsign = where(up, wpfloat(1.0), wpfloat(-1.0))
+    up_frac = up & (z_cflfrac != wpfloat(0.0))
+    down_frac = down & (z_cflfrac != wpfloat(0.0))
     p_cc_jks = _upwind_cells(p_cc, js, up_frac, down_frac, zero_half, num_levels)
     mass_jks = _upwind_cells(p_cellmass_now, js, up_frac, down_frac, zero_half, num_levels)
     delta_q_jks = _upwind_cells(z_delta_q, js, up_frac, down_frac, zero_half, num_levels)
     a1_jks = _upwind_cells(z_a1, js, up_frac, down_frac, zero_half, num_levels)
     z_q_int = (
         p_cc_jks
-        + wsign * (delta_q_jks * (1.0 - z_cflfrac))
-        - a1_jks * (1.0 - 3.0 * z_cflfrac + 2.0 * z_cflfrac * z_cflfrac)
+        + wsign * (delta_q_jks * (wpfloat(1.0) - z_cflfrac))
+        - a1_jks * (wpfloat(1.0) - wpfloat(3.0) * z_cflfrac + wpfloat(2.0) * z_cflfrac * z_cflfrac)
     )
     k_half_float = astype(k_half, wpfloat)
-    flux = where(k_half_float - js >= 0.0, wsign * mass_jks * z_cflfrac * z_q_int / p_dtime, 0.0)
+    flux = where(
+        k_half_float - js >= wpfloat(0.0),
+        wsign * mass_jks * z_cflfrac * z_q_int / p_dtime,
+        wpfloat(0.0),
+    )
 
     # integer flux, `compute_ppm4gpu_integer_flux` with slev = 0
-    js_int = js - 1.0
+    js_int = js - wpfloat(1.0)
     tracer_mass_jks = _upwind_cells_integer(
         p_cc * p_cellmass_now, js_int, up, down, zero_half, num_levels
     )
-    flux = flux + where(k_half_float - js_int >= 0.0, wsign * tracer_mass_jks / p_dtime, 0.0)
+    flux = flux + where(
+        k_half_float - js_int >= wpfloat(0.0), wsign * tracer_mass_jks / p_dtime, wpfloat(0.0)
+    )
 
     return concat_where((dims.KHalfDim >= 1) & (dims.KHalfDim < num_levels), flux, zero_half)
 
@@ -580,7 +590,7 @@ def _tracer_advection_global_step(
             dual_normal_cell_1=dual_normal_cell_1,
             primal_normal_cell_2=primal_normal_cell_2,
             dual_normal_cell_2=dual_normal_cell_2,
-            p_dthalf=0.5 * p_dtime,
+            p_dthalf=wpfloat(0.5) * p_dtime,
         )
     else:
         distv_bary_1 = zero_edge

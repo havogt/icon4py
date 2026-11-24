@@ -103,7 +103,7 @@ def _compute_hydrostatic_pressure_on_model_levels(
         _scan_pressure,
         range=(dims.KDim, vertical_start, vertical_end),
         forward=False,
-        init=(0.0, 0.0, True),
+        init=(wpfloat(0.0), wpfloat(0.0), True),
     )(ddqz_z_full, virtual_temperature, pressure_ifc(dims.KDim + 0.5))
     return pressure, pressure_ifc_on_model_levels
 

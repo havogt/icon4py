@@ -165,7 +165,7 @@ def initialize_solve_nonhydro_diagnostic_state(
             dtype=ta.vpfloat,
         ),
     )
-    max_vertical_cfl = data_alloc.scalar_like_array(0.0, allocator)
+    max_vertical_cfl = data_alloc.scalar_like_array(ta.wpfloat(0.0), allocator)
     theta_v_at_cells_on_half_levels = data_alloc.zero_field(
         grid,
         dims.CellDim,

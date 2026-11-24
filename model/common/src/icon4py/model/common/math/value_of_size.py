@@ -73,3 +73,17 @@ def value_of_size_on_half_levels_wp(
     value: wpfloat, field: fa.KHalfField[wpfloat]
 ) -> fa.KHalfField[wpfloat]:
     return where(field == field, value, value)  # noqa: PLR0124 [comparison-with-itself]
+
+
+@gtx.field_operator
+def value_of_size_on_cells_on_model_levels_f64(
+    value: gtx.float64, field: fa.CellKField[gtx.float64]
+) -> fa.CellKField[gtx.float64]:
+    return where(field == field, value, value)  # noqa: PLR0124 [comparison-with-itself]
+
+
+@gtx.field_operator
+def value_of_size_on_edges_f64(
+    value: gtx.float64, field: fa.EdgeField[gtx.float64]
+) -> fa.EdgeField[gtx.float64]:
+    return where(field == field, value, value)  # noqa: PLR0124 [comparison-with-itself]
