@@ -80,6 +80,52 @@ if hasattr(nd_array_field, "CuPyArrayField"):
         _plain = nd_array_field.CuPyArrayField  # type: ignore[attr-defined]
 
 
+def _register_pytrees() -> None:
+    # gt4py registers its field classes as JAX and torch pytrees by their exact type, so a tagged
+    # field takes gt4py's flattening of its buffer and domain and adds its quantity
+    try:
+        import jax  # type: ignore[import-not-found]  # noqa: PLC0415 [import-outside-top-level]
+        from gt4py.next.embedded.array_libraries import (  # noqa: PLC0415 [import-outside-top-level]
+            jax_ops,
+        )
+    except ImportError:
+        pass
+    else:
+
+        def flatten_jax(field_: Field) -> tuple[Any, Any]:
+            children, domain = jax_ops._flatten_field(field_)
+            return children, (domain, field_.quantity)
+
+        def unflatten_jax(aux: Any, children: Any) -> Field:
+            domain, quantity_ = aux
+            return Field(quantity_, jax_ops._unflatten_field(domain, children))
+
+        for tagged in Field._TAGGED.values():
+            jax.tree_util.register_pytree_node(tagged, flatten_jax, unflatten_jax)
+    try:
+        import torch.utils._pytree as torch_pytree  # type: ignore[import-not-found]  # noqa: PLC0415 [import-outside-top-level]
+        from gt4py.next.embedded.array_libraries import (  # noqa: PLC0415 [import-outside-top-level]
+            torch_ops,
+        )
+    except ImportError:
+        pass
+    else:
+
+        def flatten_torch(field_: Field) -> tuple[Any, Any]:
+            children, domain = torch_ops._flatten_field(field_)
+            return children, (domain, field_.quantity)
+
+        def unflatten_torch(children: Any, context: Any) -> Field:
+            domain, quantity_ = context
+            return Field(quantity_, torch_ops._unflatten_field(children, domain))
+
+        for tagged in Field._TAGGED.values():
+            torch_pytree.register_pytree_node(tagged, flatten_torch, unflatten_torch)
+
+
+_register_pytrees()
+
+
 # NOTE: temporary, replaced in part 03 (dims): the dims and the dtype come from the field type
 # instead of the quantity.
 def _dtype(quantity_: type[quantity.Quantity]) -> Any:

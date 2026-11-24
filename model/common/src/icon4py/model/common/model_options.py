@@ -256,7 +256,12 @@ def setup_program(
 
     bound_static_args = {k: v for k, v in constant_args.items() if gtx.is_scalar_type(v)}
     static_args_program = program.with_backend(backend)
-    if backend is not None:
+    if model_backends.is_embedded(backend) and backend is not None:
+        # the jit backends trace scalars, domain bounds have to be static
+        static_args_program = static_args_program.with_static_params(
+            *horizontal_sizes, *vertical_sizes, *bound_static_args
+        )
+    if not model_backends.is_embedded(backend):
         static_args_program = static_args_program.with_compilation_options(enable_jit=False)
         static_args_program.compile(
             **dict_values_to_list(horizontal_sizes),

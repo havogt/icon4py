@@ -121,9 +121,11 @@ cuda13 = ["icon4py-common[cuda13]"]
 distributed = ["icon4py-common[distributed]"]
 fortran = ["icon4py-bindings~=0.5.0"]
 io = ["icon4py-common[io]"]
+jax = ["gt4py[jax]"]
 profiling = ['viztracer>=1.1.0']
 rocm7 = ["icon4py-common[rocm7]"]
 testing = ["icon4py-testing"]
+torch = ["gt4py[torch]", "torch>=2.15"]
 
 [project.urls]
 Homepage = 'https://github.com/C2SM/icon4py'
@@ -470,6 +472,11 @@ explicit = true
 name = 'gridtools'
 url = 'https://gridtools.github.io/pypi/'
 
+[[tool.uv.index]]
+explicit = true
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+
 [tool.uv.sources]
 # dace = { index = "gridtools" }
 # gt4py = { git = "https://github.com/GridTools/gt4py", branch = "main" }
@@ -487,6 +494,7 @@ icon4py-common = { workspace = true }
 icon4py-driver = { workspace = true }
 icon4py-testing = { workspace = true }
 icon4py-tools = { workspace = true }
+torch = { index = "pytorch-cpu" }
 
 [tool.uv.workspace]
 members = [

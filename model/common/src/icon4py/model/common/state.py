@@ -65,7 +65,7 @@ def fields(
     """
     return {
         name: field_
-        for name, quantity_, _ in _declarations(type(state))  # type: ignore[arg-type]
+        for name, quantity_, _ in _declarations(type(state))
         if issubclass(quantity_, kind)
         and not (exclude is not None and issubclass(quantity_, exclude))
         and (field_ := getattr(state, name)) is not None
@@ -97,8 +97,7 @@ def allocate[S: State](
         return field_
 
     values: dict[str, Any] = {}
-    # type objects are hashable, but typeshed's cache wrapper cannot say so
-    for name, quantity_, optional in _declarations(cls):  # type: ignore[arg-type]
+    for name, quantity_, optional in _declarations(cls):
         if optional and only is not None and name not in only:
             values[name] = None
             continue
@@ -134,10 +133,12 @@ def copy[S1: State, S2: State](
 
 def leaf_quantities(cls: type[State]) -> dict[str, type[quantity.Quantity]]:
     """The quantity of each `Field` leaf of a `state.State` class, by name, in declaration order."""
-    return {name: quantity_ for name, quantity_, _ in _declarations(cls)}  # type: ignore[arg-type]
+    return {name: quantity_ for name, quantity_, _ in _declarations(cls)}
 
 
-@functools.cache
+_DECLARATIONS: dict[type[State], Sequence[tuple[str, type[quantity.Quantity], bool]]] = {}
+
+
 def _declarations(cls: type[State]) -> Sequence[tuple[str, type[quantity.Quantity], bool]]:
     """
     The `(name, quantity, optional)` triples of a `state.State` class's `Field` leaves, in
@@ -147,12 +148,16 @@ def _declarations(cls: type[State]) -> Sequence[tuple[str, type[quantity.Quantit
     Behind `allocate`, `fields` and `leaf_quantities`. Code that handles any state walks it instead of a
     per-state list of fields: `copy` (through `fields`), the physics driver and the IO.
     """
-    hints = typing.get_type_hints(cls)
-    return tuple(
-        declaration
-        for field_ in dataclasses.fields(cls)  # type: ignore[arg-type]
-        if (declaration := _declaration(field_.name, hints[field_.name])) is not None
-    )
+    # an explicit cache, not `functools.cache`: torch.compile reads a filled entry as a
+    # constant, and cannot trace `typing.get_type_hints`
+    if (declarations := _DECLARATIONS.get(cls)) is None:
+        hints = typing.get_type_hints(cls)
+        declarations = _DECLARATIONS[cls] = tuple(
+            declaration
+            for field_ in dataclasses.fields(cls)  # type: ignore[arg-type]
+            if (declaration := _declaration(field_.name, hints[field_.name])) is not None
+        )
+    return declarations
 
 
 def _declaration(name: str, hint: Any) -> tuple[str, type[quantity.Quantity], bool] | None:

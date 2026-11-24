@@ -11,6 +11,7 @@ import dataclasses
 import functools
 
 import gt4py.next as gtx
+from gt4py.next import common as gtx_common
 
 from icon4py.model.common import dimension as dims, field_type_aliases as fa, type_alias as ta
 
@@ -55,11 +56,21 @@ class DiffusionInterpolationState:
     ]  # factors for green gauss gradient (nproma,4,nblks_c,2)
     nudgecoeff_e: fa.EdgeField[ta.wpfloat]  # Nudging coefficients for edges
 
+    # Views of `geofac_n2s` through GT4Py's internal API: `gtx.as_field` without an allocator
+    # copies the buffer to NumPy, whatever array library it is of.
     @functools.cached_property
     def geofac_n2s_c(self) -> fa.CellField[ta.wpfloat]:
-        return gtx.as_field((dims.CellDim,), data=self.geofac_n2s.ndarray[:, 0])
+        return gtx_common._field(
+            self.geofac_n2s.ndarray[:, 0],
+            domain={dims.CellDim: self.geofac_n2s.domain[dims.CellDim].unit_range},
+        )
 
     @functools.cached_property
     def geofac_n2s_nbh(self) -> gtx.Field[gtx.Dims[dims.CellDim, dims.C2E2CDim], ta.wpfloat]:
-        geofac_nbh_ar = self.geofac_n2s.ndarray[:, 1:]
-        return gtx.as_field((dims.CellDim, dims.C2E2CDim), geofac_nbh_ar)
+        return gtx_common._field(
+            self.geofac_n2s.ndarray[:, 1:],
+            domain={
+                dims.CellDim: self.geofac_n2s.domain[dims.CellDim].unit_range,
+                dims.C2E2CDim: (0, self.geofac_n2s.ndarray.shape[1] - 1),
+            },
+        )

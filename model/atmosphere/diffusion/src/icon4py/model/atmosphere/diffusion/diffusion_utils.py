@@ -144,7 +144,7 @@ def _init_nabla2_factor_in_upper_damping_zone(
         ((1 + nshift) <= dims.KHalfDim)
         & (dims.KHalfDim < (nshift + end_index_of_damping_layer + 1)),
         physical_heights,
-        wpfloat(0.0),
+        wpfloat(0.0) * physical_heights,
     )
     diff_multfac_n2w = (
         wpfloat(1.0)

@@ -40,7 +40,14 @@ CPU = DeviceType.CPU
 GPU = gtx.CUPY_DEVICE_TYPE
 
 type BackendDescriptor = dict[str, Any]
+
+
 type BackendLike = DeviceType | gtx_typing.Backend | BackendDescriptor | None
+
+
+def is_embedded(backend: Any) -> bool:
+    """Whether `backend` executes embedded: `None`, or one of GT4Py's embedded backends."""
+    return backend is None or isinstance(backend, gtx_backend.EmbeddedBackend)
 
 
 DEFAULT_BACKEND: Final = "embedded"

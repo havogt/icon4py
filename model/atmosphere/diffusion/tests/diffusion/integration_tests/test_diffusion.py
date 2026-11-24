@@ -8,18 +8,26 @@
 from __future__ import annotations
 
 import collections
+import dataclasses
+from typing import Any
 
+import gt4py.next as gtx
 import gt4py.next.typing as gtx_typing
 import numpy as np
 import pytest
 
 import icon4py.model.common.grid.states as grid_states
 from icon4py.model.atmosphere.diffusion import diffusion, diffusion_states, diffusion_utils
-from icon4py.model.common import dimension as dims
+from icon4py.model.common import dimension as dims, model_backends, state, states, type_alias as ta
 from icon4py.model.common.decomposition import definitions as decomp_defs
-from icon4py.model.common.grid import geometry_attributes as geometry_meta, vertical as v_grid
+from icon4py.model.common.grid import (
+    geometry_attributes as geometry_meta,
+    icon as icon_grid,
+    vertical as v_grid,
+)
 from icon4py.model.common.utils import data_allocation as data_alloc
 from icon4py.model.testing import (
+    compiled_run,
     definitions as test_defs,
     grid_utils,
     reference_funcs as ref_funcs,
@@ -40,6 +48,27 @@ from ..utils import (
 grid_functionality = collections.defaultdict(dict)
 
 
+def _diagnostic_state(
+    savepoint: sb.IconDiffusionInitSavepoint, grid: icon_grid.IconGrid, backend: Any
+) -> states.DiffusionDiagnostics:
+    """
+    The diagnostic state of `savepoint`; a field it does not have is zero.
+
+    The savepoint gives a field of size 1 for a field it does not have, which embedded execution
+    cannot write on the grid's domain.
+    """
+
+    diagnostics = construct_diagnostic_state_from_savepoint(savepoint)
+    dummies = {
+        name: data_alloc.zero_field(
+            grid, dims.CellDim, dims.KHalfDim, dtype=ta.vpfloat, allocator=backend
+        )
+        for name, value in state.fields(diagnostics).items()
+        if max(value.domain.shape) == 1
+    }
+    return dataclasses.replace(diagnostics, **dummies)
+
+
 def get_grid_for_experiment(experiment: test_defs.Experiment, backend: gtx_typing.Backend):
     return _get_or_initialize(experiment, backend, "grid")
 
@@ -54,7 +83,15 @@ def get_cell_geometry_for_experiment(experiment: test_defs.Experiment, backend: 
 
 def _get_or_initialize(experiment: test_defs.Experiment, backend: gtx_typing.Backend, name: str):
     if not grid_functionality[experiment.name].get(name):
-        geometry_ = grid_utils.get_grid_geometry(backend, experiment.grid, experiment.config)
+        # The grid and its geometry are computed with NumPy, then converted. Embedded execution
+        # cannot narrow a domain through a connectivity with skip values on a limited-area grid.
+        embedded = test_utils.is_embedded(backend)
+        geometry_ = grid_utils.get_grid_geometry(
+            None if embedded else backend,
+            experiment.grid,
+            experiment.config,
+            keep_skip_values=not embedded,
+        )
         grid = geometry_.grid
 
         cell_params = grid_states.CellParams(
@@ -98,6 +135,10 @@ def _get_or_initialize(experiment: test_defs.Experiment, backend: gtx_typing.Bac
             primal_edge_lengths=geometry_.get(geometry_meta.EDGE_LENGTH),
             dual_edge_lengths=geometry_.get(geometry_meta.DUAL_EDGE_LENGTH),
         )
+        if embedded and backend is not None:
+            grid = compiled_run.with_connectivities_on(grid, backend.allocator)
+            edge_params = compiled_run.to_array_ns(edge_params, backend.allocator)
+            cell_params = compiled_run.to_array_ns(cell_params, backend.allocator)
         grid_functionality[experiment.name]["grid"] = grid
         grid_functionality[experiment.name]["edge_geometry"] = edge_params
         grid_functionality[experiment.name]["cell_geometry"] = cell_params
@@ -150,7 +191,6 @@ def test_smagorinski_factor_diffusion_type_5():
     assert all(p >= 0 for p in params.smagorinski_factor)
 
 
-@pytest.mark.uses_concat_where
 @pytest.mark.datatest
 @pytest.mark.single_precision_ready
 # TODO(havogt): Remove custom `experiment` parametrization
@@ -299,7 +339,6 @@ def _verify_init_values_against_savepoint(
     )
 
 
-@pytest.mark.uses_concat_where
 @pytest.mark.datatest
 @pytest.mark.single_precision_ready
 @pytest.mark.parametrize(
@@ -353,7 +392,6 @@ def test_verify_diffusion_init_against_savepoint(  # noqa: PLR0917 [too-many-pos
 
 @pytest.mark.datatest
 @pytest.mark.single_precision_ready
-@pytest.mark.embedded_remap_error
 @pytest.mark.parametrize(
     "experiment_description, step_date_init, step_date_exit",
     [
@@ -378,6 +416,7 @@ def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-argume
     interpolation_state: diffusion_states.DiffusionInterpolationState,
     metric_state: diffusion_states.DiffusionMetricState,
     backend,
+    granule_run,
 ):
     grid = get_grid_for_experiment(experiment, backend)
     cell_geometry = get_cell_geometry_for_experiment(experiment, backend)
@@ -385,7 +424,7 @@ def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-argume
 
     dtime = savepoint_diffusion_init.dtime()
 
-    diagnostic_state = construct_diagnostic_state_from_savepoint(savepoint_diffusion_init)
+    diagnostic_state = _diagnostic_state(savepoint_diffusion_init, grid, backend)
     prognostic_state = savepoint_diffusion_init.construct_prognostics()
 
     vertical_config = experiment.config.vertical_grid
@@ -417,13 +456,12 @@ def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-argume
     verify_diffusion_fields(config, diagnostic_state, prognostic_state, savepoint_diffusion_init)
     assert savepoint_diffusion_init.fac_bdydiff_v() == diffusion_granule.fac_bdydiff_v
 
-    diffusion_granule.run(*diffusion_views(prognostic_state, diagnostic_state, dtime))
+    granule_run(diffusion_granule)(*diffusion_views(prognostic_state, diagnostic_state, dtime))
     verify_diffusion_fields(config, diagnostic_state, prognostic_state, savepoint_diffusion_exit)
 
 
 @pytest.mark.datatest
 @pytest.mark.single_precision_ready
-@pytest.mark.embedded_remap_error
 @pytest.mark.parametrize("experiment_description", [test_defs.Experiments.MCH_CH_R04B09])
 @pytest.mark.parametrize("linit", [True])
 def test_run_diffusion_initial_step(  # noqa: PLR0917 [too-many-positional-arguments]
@@ -434,6 +472,7 @@ def test_run_diffusion_initial_step(  # noqa: PLR0917 [too-many-positional-argum
     interpolation_state: diffusion_states.DiffusionInterpolationState,
     metric_state: diffusion_states.DiffusionMetricState,
     backend,
+    granule_run,
 ):
     grid = get_grid_for_experiment(experiment, backend)
     cell_geometry = get_cell_geometry_for_experiment(experiment, backend)
@@ -447,7 +486,7 @@ def test_run_diffusion_initial_step(  # noqa: PLR0917 [too-many-positional-argum
         vct_a=vct_a,
         vct_b=vct_b,
     )
-    diagnostic_state = construct_diagnostic_state_from_savepoint(savepoint_diffusion_init)
+    diagnostic_state = _diagnostic_state(savepoint_diffusion_init, grid, backend)
     prognostic_state = savepoint_diffusion_init.construct_prognostics()
     config = experiment.config.diffusion
     params = diffusion.DiffusionParams(config)
@@ -470,7 +509,7 @@ def test_run_diffusion_initial_step(  # noqa: PLR0917 [too-many-positional-argum
 
     assert savepoint_diffusion_init.fac_bdydiff_v() == diffusion_granule.fac_bdydiff_v
 
-    diffusion_granule.run(
+    granule_run(diffusion_granule)(
         *diffusion_views(prognostic_state, diagnostic_state, dtime, initial_run=True)
     )
 

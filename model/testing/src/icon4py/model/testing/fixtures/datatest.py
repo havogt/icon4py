@@ -8,19 +8,25 @@
 from __future__ import annotations
 
 import pkgutil
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import gt4py.next.typing as gtx_typing
 import pytest
+from gt4py.next import experimental as gtx_experimental
 
 import icon4py.model.common.decomposition.definitions as decomposition
 from icon4py.model.common import model_backends, model_options, type_alias as ta
 from icon4py.model.common.grid import base as base_grid
-from icon4py.model.testing import datatest_utils as dt_utils, definitions as test_defs
+from icon4py.model.testing import compiled_run, datatest_utils as dt_utils, definitions as test_defs
 
 
 if TYPE_CHECKING:
     from icon4py.model.testing import serialbox
+
+
+#: GT4Py's experimental embedded backends, by name; importing one imports its array library
+_EXPERIMENTAL_BACKENDS = ("embedded_torch", "embedded_jax", "torch_compile", "jax_jit")
 
 
 def _get_backend_like(spec: str) -> model_backends.BackendLike:
@@ -33,6 +39,8 @@ def _get_backend_like(spec: str) -> model_backends.BackendLike:
         backend_like = pkgutil.resolve_name(spec)
     elif spec in model_backends.BACKENDS:
         backend_like = model_backends.BACKENDS[spec]
+    elif spec in _EXPERIMENTAL_BACKENDS:
+        backend_like = getattr(gtx_experimental, spec)
     else:
         raise ValueError(
             f"Invalid backend name in '--backend' option. It should be one of {[*model_backends.BACKENDS.keys()]}"
@@ -71,6 +79,16 @@ def backend(request: pytest.FixtureRequest) -> gtx_typing.Backend | None:
     backend_like = _get_backend_like(spec)
     # We create a generic concrete backend (no program specific customization).
     return model_options.customize_backend(None, backend_like)
+
+
+@pytest.fixture
+def granule_run(
+    request: pytest.FixtureRequest, backend: gtx_typing.Backend | None
+) -> Callable[[Any], Callable[..., None]]:
+    """`granule.run`, or with `--compiled-run` the run under torch.compile or jax.jit."""
+    if not request.config.getoption("compiled_run", False):
+        return lambda granule: granule.run
+    return lambda granule: compiled_run.compiled_run(granule, backend)
 
 
 @pytest.fixture

@@ -93,6 +93,14 @@ def pytest_addoption(parser: pytest.Parser):
 
     with contextlib.suppress(ValueError):
         parser.addoption(
+            "--compiled-run",
+            action="store_true",
+            default=False,
+            help="Run granules under torch.compile or jax.jit, on --backend embedded_torch or embedded_jax.",
+        )
+
+    with contextlib.suppress(ValueError):
+        parser.addoption(
             "--grid",
             action="store",
             help="Grid to use.",
