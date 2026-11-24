@@ -170,7 +170,7 @@ def get_backend_fixture_value(item: pytest.Item) -> gtx_typing.Backend | None:
 
 
 def is_embedded(backend: gtx_typing.Backend | None) -> bool:
-    return model_backends.as_gt4py_backend(backend) is None
+    return model_backends.is_embedded(backend)
 
 
 def is_roundtrip(backend: gtx_typing.Backend | None) -> bool:

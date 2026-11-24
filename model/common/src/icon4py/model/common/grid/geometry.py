@@ -19,7 +19,6 @@ from icon4py.model.common import (
     constants,
     dimension as dims,
     field_type_aliases as fa,
-    model_backends,
     type_alias as ta,
 )
 from icon4py.model.common.decomposition import definitions as decomposition
@@ -33,7 +32,7 @@ from icon4py.model.common.grid import (
     icon,
 )
 from icon4py.model.common.math import coordinate_transformations as coord_trans, utils as math_utils
-from icon4py.model.common.states import factory, model, utils as state_utils
+from icon4py.model.common.old_states import factory, model, utils as state_utils
 from icon4py.model.common.utils import data_allocation as data_alloc
 
 
@@ -735,9 +734,7 @@ class GridGeometry(factory.FieldSource):
     def _register_cartesian_coordinates_icosahedron(self) -> None:
         """Register Cartesian coordinate conversions for icosahedron geometry."""
         cartesian_vertices = factory.EmbeddedFieldOperatorProvider(
-            func=coord_trans.geographical_to_cartesian_on_vertices.with_backend(
-                model_backends.as_gt4py_backend(self.backend)
-            ),
+            func=coord_trans.geographical_to_cartesian_on_vertices.with_backend(self.backend),
             domain={
                 dims.VertexDim: (
                     h_grid.vertex_domain(h_grid.Zone.LOCAL),
@@ -757,9 +754,7 @@ class GridGeometry(factory.FieldSource):
         )
         self.register_provider(cartesian_vertices)
         cartesian_edge_centers = factory.EmbeddedFieldOperatorProvider(
-            func=coord_trans.geographical_to_cartesian_on_edges.with_backend(
-                model_backends.as_gt4py_backend(self.backend)
-            ),
+            func=coord_trans.geographical_to_cartesian_on_edges.with_backend(self.backend),
             domain={
                 dims.EdgeDim: (
                     h_grid.edge_domain(h_grid.Zone.LOCAL),
@@ -779,9 +774,7 @@ class GridGeometry(factory.FieldSource):
         )
         self.register_provider(cartesian_edge_centers)
         cartesian_cell_centers = factory.EmbeddedFieldOperatorProvider(
-            func=coord_trans.geographical_to_cartesian_on_cells.with_backend(
-                model_backends.as_gt4py_backend(self.backend)
-            ),
+            func=coord_trans.geographical_to_cartesian_on_cells.with_backend(self.backend),
             domain={
                 dims.CellDim: (
                     h_grid.cell_domain(h_grid.Zone.LOCAL),

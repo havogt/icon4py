@@ -6,27 +6,30 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 """
-A granule's `run` on an `EmbeddedBackend`, under `torch.compile` or `jax.jit`.
+A granule's `run` on GT4Py's eager embedded torch or JAX backend, under torch.compile or jax.jit.
 
 The compiled `run` has the signature of the granule's and, like it, updates the fields of the
-states it is given. Arguments that are no states, e.g. `dtime` or `initial_run`, are constants of
-the compiled program: one compilation per set of values.
+states it is given. Everything else, e.g. `dtime` or `initial_run` and a state's other leaves, is
+a constant of the compiled program: one compilation per set of values.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import functools
+import inspect
 import logging
+import typing
 from collections.abc import Callable
+from types import ModuleType
 from typing import Any
 
 import gt4py.next as gtx
 import numpy as np
-from gt4py.next import common as gtx_common
+from gt4py.next import backend as gtx_backend, common as gtx_common
 from gt4py.next.ffront import decorator as gtx_decorator
 
-from icon4py.model.common import model_backends
+from icon4py.model.common import model_backends, state
 
 
 def to_array_ns(obj: Any, xp: Any) -> Any:
@@ -77,27 +80,76 @@ def _python_scalar(value: Any) -> Any:
     return value.item() if isinstance(value, np.generic) else value
 
 
-def _fields(state: Any) -> dict[str, Any]:
-    return {f.name: getattr(state, f.name) for f in dataclasses.fields(state)}
+# An argument of `run` as a template: a state's fields refer to their position in the list of the
+# distinct fields, which keeps a field that two states share (e.g. a component's in-place input
+# and output) one field in the trace; everything else is a constant of the compiled program.
+_Template = tuple[tuple[str, Any], ...]
+
+
+def _template(arguments: dict[str, Any], fields: list[gtx.Field]) -> _Template:
+    positions: dict[int, int] = {}
+
+    def leaf(value: Any) -> Any:
+        if isinstance(value, gtx.Field):
+            if id(value) not in positions:
+                positions[id(value)] = len(fields)
+                fields.append(value)
+            return ("field", positions[id(value)])
+        return ("constant", _python_scalar(value))
+
+    return tuple(
+        (
+            name,
+            (
+                type(value),
+                tuple((f.name, leaf(getattr(value, f.name))) for f in dataclasses.fields(value)),
+            )
+            if _is_state(value)
+            else leaf(value),
+        )
+        for name, value in arguments.items()
+    )
+
+
+def _rebuilt(template: _Template, fields: list[gtx.Field]) -> dict[str, Any]:
+    def leaf(value: tuple[str, Any]) -> Any:
+        kind, payload = value
+        return fields[payload] if kind == "field" else payload
+
+    return {
+        name: kind_or_type(**{n: leaf(v) for n, v in payload})
+        if isinstance(kind_or_type, type)
+        else leaf((kind_or_type, payload))
+        for name, (kind_or_type, payload) in template
+    }
+
+
+def _library(backend: Any) -> str:
+    # the eager embedded backends only: the jit backends compile each program themselves
+    if type(backend) is gtx_backend.EmbeddedBackend:
+        return typing.cast(ModuleType, backend.allocator).__name__.split(".")[0]
+    raise ValueError(f"Compiled runs need an eager embedded backend, got '{backend}'.")
 
 
 def compiled_run(granule: Any, backend: Any) -> Callable[..., None]:
     """`granule.run` under `torch.compile` or `jax.jit`, by the array library of `backend`."""
-    if not isinstance(backend, model_backends.EmbeddedBackend):
-        raise ValueError(f"Compiled runs need an 'EmbeddedBackend', got '{backend}'.")
-    library = backend.array_ns_name.split(".")[0]
-    compile_ = {"torch": _torch_compile, "jax": _jax_jit}.get(library)
+    compile_ = {"torch": _torch_compile, "jax": _jax_jit}.get(library := _library(backend))
     if compile_ is None:
-        raise ValueError(f"No compiled run on '{backend.array_ns_name}'.")
-    cache: dict[tuple, Callable[..., None]] = {}
+        raise ValueError(f"No compiled run on '{library}'.")
+    signature = inspect.signature(granule.run)
+    cache: dict[_Template, Callable[[list[gtx.Field]], None]] = {}
 
-    def run(**kwargs: Any) -> None:
-        states = {k: v for k, v in kwargs.items() if _is_state(v)}
-        constants = {k: _python_scalar(v) for k, v in kwargs.items() if k not in states}
-        key = tuple(sorted(constants.items()))
-        if key not in cache:
-            cache[key] = compile_(granule, constants)
-        cache[key](**states)
+    def run(*args: Any, **kwargs: Any) -> None:
+        arguments = signature.bind(*args, **kwargs).arguments
+        fields: list[gtx.Field] = []
+        template = _template(arguments, fields)
+        if template not in cache:
+            # read the declarations of the states before the trace, see `state._declarations`
+            for value in arguments.values():
+                if isinstance(value, state.State):
+                    state.fields(value)
+            cache[template] = compile_(granule, template)
+        cache[template](fields)
 
     return run
 
@@ -140,12 +192,12 @@ def _call_embedded_programs_nonstrictly(granule: Any) -> None:
         if (
             isinstance(value, functools.partial)
             and isinstance(value.func, gtx_decorator.Program)
-            and value.func.backend is None
+            and model_backends.is_embedded(value.func.backend)
         ):
             setattr(granule, name, _NonstrictProgram(value))
 
 
-def _torch_compile(granule: Any, constants: dict[str, Any]) -> Callable[..., None]:
+def _torch_compile(granule: Any, template: _Template) -> Callable[[list[gtx.Field]], None]:
     import torch  # noqa: PLC0415 [import-outside-top-level]
 
     _call_embedded_programs_nonstrictly(granule)
@@ -154,11 +206,11 @@ def _torch_compile(granule: Any, constants: dict[str, Any]) -> Callable[..., Non
     # GT4Py puts the domains in the pytree context, which takes no symbolic ints: a recompilation
     # for other grid sizes must not make them dynamic
     return torch.compile(
-        lambda **states: granule.run(**states, **constants), fullgraph=True, dynamic=False
+        lambda fields: granule.run(**_rebuilt(template, fields)), fullgraph=True, dynamic=False
     )
 
 
-def _jax_jit(granule: Any, constants: dict[str, Any]) -> Callable[..., None]:
+def _jax_jit(granule: Any, template: _Template) -> Callable[[list[gtx.Field]], None]:
     import jax  # type: ignore[import-not-found]  # noqa: PLC0415 [import-outside-top-level]
 
     # The programs the granule binds with `setup_program` share the grid's offset provider dict.
@@ -168,29 +220,23 @@ def _jax_jit(granule: Any, constants: dict[str, Any]) -> Callable[..., None]:
     concrete_offset_provider = dict(offset_provider)
     # the granule's own fields get traced buffers in the trace, which must not outlive it
     scratch_fields = [value for value in vars(granule).values() if isinstance(value, gtx.Field)]
-    state_types: dict[str, type] = {}
 
-    def traced_run(connectivities: dict, states: dict[str, dict[str, Any]]) -> dict:
+    def traced_run(connectivities: dict, fields: list[gtx.Field]) -> list[Any]:
         concrete_buffers = [field.ndarray for field in scratch_fields]
         offset_provider.update(connectivities)
         try:
-            rebuilt = {k: state_types[k](**fields) for k, fields in states.items()}
-            granule.run(**rebuilt, **constants)
+            granule.run(**_rebuilt(template, fields))
         finally:
             offset_provider.update(concrete_offset_provider)
             for field, buffer in zip(scratch_fields, concrete_buffers, strict=True):
                 object.__setattr__(field, "_ndarray", buffer)
-        return {k: _fields(state) for k, state in rebuilt.items()}
+        # JAX's `out` assignment gives the fields new buffers
+        return [field.ndarray for field in fields]
 
     jitted = jax.jit(traced_run)
 
-    def run(**states: Any) -> None:
-        state_types.update({k: type(v) for k, v in states.items()})
-        results = jitted(concrete_offset_provider, {k: _fields(v) for k, v in states.items()})
-        for name, state in states.items():
-            for field_name, result in results[name].items():
-                field = getattr(state, field_name)
-                if isinstance(field, gtx.Field):
-                    object.__setattr__(field, "_ndarray", result.ndarray)
+    def run(fields: list[gtx.Field]) -> None:
+        for field, buffer in zip(fields, jitted(concrete_offset_provider, fields), strict=True):
+            object.__setattr__(field, "_ndarray", buffer)
 
     return run

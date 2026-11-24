@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import collections
+import dataclasses
 from typing import Any
 
 import gt4py.next as gtx
@@ -17,7 +18,7 @@ import pytest
 
 import icon4py.model.common.grid.states as grid_states
 from icon4py.model.atmosphere.diffusion import diffusion, diffusion_states, diffusion_utils
-from icon4py.model.common import dimension as dims, model_backends, type_alias as ta
+from icon4py.model.common import dimension as dims, model_backends, state, states, type_alias as ta
 from icon4py.model.common.decomposition import definitions as decomp_defs
 from icon4py.model.common.grid import (
     geometry_attributes as geometry_meta,
@@ -35,7 +36,13 @@ from icon4py.model.testing import (
 )
 
 from ..fixtures import *  # noqa: F403
-from ..utils import diff_multfac_vn_numpy, smag_limit_numpy, verify_diffusion_fields
+from ..utils import (
+    construct_diagnostic_state_from_savepoint,
+    diff_multfac_vn_numpy,
+    diffusion_views,
+    smag_limit_numpy,
+    verify_diffusion_fields,
+)
 
 
 grid_functionality = collections.defaultdict(dict)
@@ -43,7 +50,7 @@ grid_functionality = collections.defaultdict(dict)
 
 def _diagnostic_state(
     savepoint: sb.IconDiffusionInitSavepoint, grid: icon_grid.IconGrid, backend: Any
-) -> diffusion_states.DiffusionDiagnosticState:
+) -> states.DiffusionDiagnostics:
     """
     The diagnostic state of `savepoint`; a field it does not have is zero.
 
@@ -51,17 +58,15 @@ def _diagnostic_state(
     cannot write on the grid's domain.
     """
 
-    def field(name: str) -> gtx.Field:
-        value = getattr(savepoint, name)()
-        if max(value.domain.shape) > 1:
-            return value
-        return data_alloc.zero_field(
+    diagnostics = construct_diagnostic_state_from_savepoint(savepoint)
+    dummies = {
+        name: data_alloc.zero_field(
             grid, dims.CellDim, dims.KHalfDim, dtype=ta.vpfloat, allocator=backend
         )
-
-    return diffusion_states.DiffusionDiagnosticState(
-        hdef_ic=field("hdef_ic"), div_ic=field("div_ic"), dwdx=field("dwdx"), dwdy=field("dwdy")
-    )
+        for name, value in state.fields(diagnostics).items()
+        if max(value.domain.shape) == 1
+    }
+    return dataclasses.replace(diagnostics, **dummies)
 
 
 def get_grid_for_experiment(experiment: test_defs.Experiment, backend: gtx_typing.Backend):
@@ -80,11 +85,12 @@ def _get_or_initialize(experiment: test_defs.Experiment, backend: gtx_typing.Bac
     if not grid_functionality[experiment.name].get(name):
         # The grid and its geometry are computed with NumPy, then converted. Embedded execution
         # cannot narrow a domain through a connectivity with skip values on a limited-area grid.
+        embedded = test_utils.is_embedded(backend)
         geometry_ = grid_utils.get_grid_geometry(
-            model_backends.as_gt4py_backend(backend),
+            None if embedded else backend,
             experiment.grid,
             experiment.config,
-            keep_skip_values=not test_utils.is_embedded(backend),
+            keep_skip_values=not embedded,
         )
         grid = geometry_.grid
 
@@ -129,10 +135,10 @@ def _get_or_initialize(experiment: test_defs.Experiment, backend: gtx_typing.Bac
             primal_edge_lengths=geometry_.get(geometry_meta.EDGE_LENGTH),
             dual_edge_lengths=geometry_.get(geometry_meta.DUAL_EDGE_LENGTH),
         )
-        if isinstance(backend, model_backends.EmbeddedBackend):
-            grid = compiled_run.with_connectivities_on(grid, backend)
-            edge_params = compiled_run.to_array_ns(edge_params, backend)
-            cell_params = compiled_run.to_array_ns(cell_params, backend)
+        if embedded and backend is not None:
+            grid = compiled_run.with_connectivities_on(grid, backend.allocator)
+            edge_params = compiled_run.to_array_ns(edge_params, backend.allocator)
+            cell_params = compiled_run.to_array_ns(cell_params, backend.allocator)
         grid_functionality[experiment.name]["grid"] = grid
         grid_functionality[experiment.name]["edge_geometry"] = edge_params
         grid_functionality[experiment.name]["cell_geometry"] = cell_params
@@ -295,7 +301,7 @@ def _verify_init_values_against_savepoint(
     )
 
     # this is done in diffusion.run(...) because it depends on the dtime
-    diffusion_utils.scale_k.with_backend(model_backends.as_gt4py_backend(backend))(
+    diffusion_utils.scale_k.with_backend(backend)(
         diffusion_granule.enh_smag_fac,
         dtime,
         diffusion_granule.diff_multfac_smag,
@@ -450,9 +456,7 @@ def test_run_diffusion_single_step(  # noqa: PLR0917 [too-many-positional-argume
     verify_diffusion_fields(config, diagnostic_state, prognostic_state, savepoint_diffusion_init)
     assert savepoint_diffusion_init.fac_bdydiff_v() == diffusion_granule.fac_bdydiff_v
 
-    granule_run(diffusion_granule)(
-        diagnostic_state=diagnostic_state, prognostic_state=prognostic_state, dtime=dtime
-    )
+    granule_run(diffusion_granule)(*diffusion_views(prognostic_state, diagnostic_state, dtime))
     verify_diffusion_fields(config, diagnostic_state, prognostic_state, savepoint_diffusion_exit)
 
 
@@ -506,10 +510,7 @@ def test_run_diffusion_initial_step(  # noqa: PLR0917 [too-many-positional-argum
     assert savepoint_diffusion_init.fac_bdydiff_v() == diffusion_granule.fac_bdydiff_v
 
     granule_run(diffusion_granule)(
-        diagnostic_state=diagnostic_state,
-        prognostic_state=prognostic_state,
-        dtime=dtime,
-        initial_run=True,
+        *diffusion_views(prognostic_state, diagnostic_state, dtime, initial_run=True)
     )
 
     verify_diffusion_fields(
@@ -543,9 +544,7 @@ def test_verify_special_diffusion_inital_step_values_against_initial_savepoint(
 
     diff_multfac_vn = data_alloc.zero_field(icon_grid, dims.KDim, allocator=backend)
     smag_limit = data_alloc.zero_field(icon_grid, dims.KDim, allocator=backend)
-    diffusion_utils.setup_fields_for_initial_step.with_backend(
-        model_backends.as_gt4py_backend(backend)
-    )(
+    diffusion_utils.setup_fields_for_initial_step.with_backend(backend)(
         params.K4,
         config.hdiff_efdt_ratio,
         diff_multfac_vn,
